@@ -1,0 +1,25 @@
+schema_version: "2.0.0"
+particle:
+  count: 2000
+  mass: 1.0
+  moi_perpendicular: 0.1
+  aspect_ratio: 2.0
+system:
+  alpha: 0.8
+  volume: 100000.0
+  translational_temperature: 1.0
+  rotational_temperature: 1.0
+flow:
+  mode: hcs
+  shear_rate: 0.0
+time:
+  dt: 0.01
+  steps: 1000
+collision:
+  mode: pair_resolved
+  angular_model: vss_rank2
+  artifact: models/collision_operator_v2
+simulation:
+  seed: 12345
+  output: results/dsmc_v2.csv
+
