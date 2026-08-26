@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(CURDIR)/hpc/python.sh
 PYTHONPATH := $(CURDIR)/contracts/python:$(CURDIR)/Coll_Models_v2/src:$(CURDIR)/DSMC_0D_v2/src
 export PYTHONPATH
 

@@ -276,9 +276,10 @@ Do not build the HPC environment with Negishi's system `python3`: on older
 login-node configurations it is Python 3.6 and cannot install this project.
 The setup script creates `.conda-v2` with Python 3.11, installs the three local
 packages, and leaves any failed `.venv` untouched. All supplied Slurm scripts
-call `hpc/python.sh`, which selects `.conda-v2` directly; no interactive conda
-activation is required inside a batch job. To use a different compatible
-interpreter, export its absolute path as `DSMC_V2_PYTHON` before submission.
+and the top-level Makefile call `hpc/python.sh`, which selects `.conda-v2`
+directly; no interactive conda activation is required inside a batch job. To
+use a different compatible interpreter, export its absolute path as
+`DSMC_V2_PYTHON` before submission.
 
 Generate and submit the accepted-hit pilot and production shards:
 
