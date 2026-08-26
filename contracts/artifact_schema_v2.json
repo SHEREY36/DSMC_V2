@@ -1,0 +1,15 @@
+{
+  "schema_version": "2.0.0",
+  "artifact_type": "collision_operator_v2",
+  "required_files": [
+    "manifest.json",
+    "pair_clock_v2.json",
+    "energy_library_v2.npz",
+    "vss_rank2_v2.json",
+    "vss_theta_diagnostics_v2.json",
+    "reduced_surfaces_v2.json",
+    "node_estimates_v2.json"
+  ],
+  "runtime_modes": ["pair_resolved", "moment16"],
+  "angular_model": "vss_rank2"
+}
