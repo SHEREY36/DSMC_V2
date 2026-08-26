@@ -10,9 +10,11 @@
 
 set -euo pipefail
 RUNS_ROOT=${1:-results/ctc}
-OUTPUT=${2:-models/collision_operator_v2}
+OUTPUT=${2:-models/microscopic_closure_v2}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 python3 "$ROOT/Coll_Models_v2/scripts/build_artifact.py" \
-  --runs-root "$ROOT/$RUNS_ROOT" --output "$ROOT/$OUTPUT" --bootstrap 2000
+  --runs-root "$ROOT/$RUNS_ROOT" --output "$ROOT/$OUTPUT" --bootstrap 2000 \
+  --gamma-max-table "$ROOT/Coll_Models_v2/models/legacy_bl/gamma_max_table.json" \
+  --one-hit-table "$ROOT/Coll_Models_v2/models/legacy_bl/one_hit_table.json"

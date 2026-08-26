@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "byte_order": "little",
   "attempt": {
     "file": "attempts_v2.bin",

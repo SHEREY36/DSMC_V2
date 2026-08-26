@@ -20,7 +20,7 @@
 	IF (WRITE_V2) THEN
 		close(1010); close(1012)
 		open(unit=1014, status='replace', file=TRIM(output_dir)//'/_RAW_SUCCESS')
-		write(1014,'(A)') 'schema=2.0.0'
+		write(1014,'(A)') 'schema=2.1.0'
 		close(1014)
 	END IF
 	RETURN

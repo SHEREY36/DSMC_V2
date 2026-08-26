@@ -1,15 +1,27 @@
 # Coll_Models_v2
 
-Standalone conversion of finalized CTC records into DSMC collision operators.
-It does not read HCS, USF, Fourier, DEM, or LAMMPS ensemble results.
+This package reads finalized CTC attempt/outcome streams and exports only the
+three conservative microscopic closures:
+
+- `routing16_v2.json` for the BL-compatible translational loss split;
+- `vss_rank2_v2.json` for direction-only rank-2 scattering;
+- `rotational_direction_v2.npz` for paired post-spin directions.
+
+It does not fit a collision clock, replace the conditional GMM, correct total
+loss, or read DEM ensemble results.
 
 ```bash
-python3 scripts/estimate_node.py RUN [RUN_SHARD ...] --output node.json
-python3 scripts/estimate_grid.py --runs-root ../results/ctc --output ../coefficients
-python3 scripts/build_artifact.py --runs-root ../results/ctc \
-  --output ../models/collision_operator_v2
+python3 scripts/estimate_grid.py \
+  --runs-root ../results/ctc --output ../coefficients --bootstrap 2000 \
+  --gamma-max-table models/legacy_bl/gamma_max_table.json \
+  --one-hit-table models/legacy_bl/one_hit_table.json
+
+python3 scripts/build_artifact.py \
+  --runs-root ../results/ctc --output ../models/microscopic_closure_v2 \
+  --gamma-max-table models/legacy_bl/gamma_max_table.json \
+  --one-hit-table models/legacy_bl/one_hit_table.json
 ```
 
-The output separates pair/cell collision clock, joint retained-energy outcome,
-loss routing, and direction-only VSS rank-2 scattering.
+The copied JSON tables define the unchanged v1 BL denominator. They are
+read-only inputs, not refitted outputs.
 

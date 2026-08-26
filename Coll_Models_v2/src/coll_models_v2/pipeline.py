@@ -10,6 +10,7 @@ from pathlib import Path
 from dsmc_v2_contracts import FEATURE_NAMES, load_run
 
 from .estimate import estimate_node
+from .legacy_bl import LegacyBL
 
 
 def discover_runs(root: str | Path) -> list[Path]:
@@ -33,34 +34,46 @@ def group_runs(paths) -> dict[tuple[float, float, float], list[Path]]:
 
 def _precision_status(result: dict) -> tuple[bool, list[str]]:
     reasons = []
-    sigma = result["quantities"]["sigma0"]
+    sigma = result["quantities"]["sigma_ctc"]
     if sigma["ci_low"] is None or 0.5 * (sigma["ci_high"] - sigma["ci_low"]) > 0.01 * abs(sigma["estimate"]):
-        reasons.append("clock_precision")
+        reasons.append("cross_section_qa_precision")
+    if not result["qa"]["cross_section_pass"]:
+        reasons.append("cross_section_polynomial_disagreement")
     if not result["qa"]["vss_representable"] and result["theta"] == 1.0:
         reasons.append("vss_unrepresentable")
     if result["alpha"] < 1.0:
-        for family in ("eta_gamma", "eta_ftr"):
-            for index, feature in enumerate(FEATURE_NAMES):
-                row = result["quantities"][f"{family}_{feature}"]
-                if row["ci_low"] is None:
-                    reasons.append(f"{family}_{feature}_missing")
-                    continue
-                half = 0.5 * (row["ci_high"] - row["ci_low"])
-                threshold = max(0.05, 0.15 * abs(row["estimate"])) if index < 12 \
-                    else max(0.10, 0.25 * abs(row["estimate"]))
-                if half > threshold:
-                    reasons.append(f"{family}_{feature}_precision")
+        f0 = result["quantities"]["F0"]
+        if f0["ci_low"] is None or 0.5 * (f0["ci_high"] - f0["ci_low"]) > 0.01 * abs(f0["estimate"]):
+            reasons.append("F0_precision")
+        if not result["qa"]["total_loss_compatibility_pass"]:
+            reasons.append("preserved_BL_total_loss_mismatch")
+        if not result["qa"]["score_tail_pass"]:
+            reasons.append("score_tail_instability")
+        for index, feature in enumerate(FEATURE_NAMES):
+            row = result["quantities"][f"beta_{feature}"]
+            if row["ci_low"] is None:
+                reasons.append(f"beta_{feature}_missing")
+                continue
+            half = 0.5 * (row["ci_high"] - row["ci_low"])
+            threshold = max(0.05, 0.15 * abs(row["estimate"])) if index < 12 \
+                else max(0.10, 0.25 * abs(row["estimate"]))
+            if half > threshold:
+                reasons.append(f"beta_{feature}_precision")
+    if result["theta"] == 1.0:
+        b2 = result["quantities"]["B2"]
+        if b2["ci_low"] is None or 0.5 * (b2["ci_high"] - b2["ci_low"]) > 0.01 * abs(b2["estimate"]):
+            reasons.append("B2_precision")
     return not reasons, reasons
 
 
 def estimate_grid(runs_root: str | Path, output_directory: str | Path,
-                  n_bootstrap: int = 2000) -> list[dict]:
+                  bl: LegacyBL, n_bootstrap: int = 2000) -> list[dict]:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     grouped = group_runs(discover_runs(runs_root))
     results = []
     for key, paths in sorted(grouped.items()):
-        result = estimate_node(paths, n_bootstrap=n_bootstrap)
+        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap)
         passed, reasons = _precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
         results.append(result)
@@ -89,4 +102,3 @@ def estimate_grid(runs_root: str | Path, output_directory: str | Path,
                 "continuation_reasons": ";".join(result["qa"]["continuation_reasons"]),
             })
     return results
-

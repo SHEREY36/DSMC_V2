@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 ALPHAS = [round(0.50 + 0.05 * i, 2) for i in range(10)] + [0.975, 0.99]
-THETAS = [round(0.1 * i, 1) for i in range(1, 21)]
-ASPECT_RATIOS = [1.0, 1.5, 2.0, 3.0, 4.0]
+THETAS = [round(0.1 * i, 1) for i in range(1, 13)]
+ASPECT_RATIOS = [1.1, 1.25, 1.5, 2.0, 2.5, 3.0]
 FIELDS = ["task_id", "stage", "role", "alpha", "theta", "aspect_ratio",
           "seed", "nsamples", "shard", "output_directory"]
 
@@ -26,12 +26,12 @@ def base_rows(stage: str, samples: int, shard: int, results_root: str):
     for ai, ar in enumerate(ASPECT_RATIOS):
         for ti, theta in enumerate(THETAS):
             for alpha in ALPHAS:
-                rows.append({"task_id": task, "stage": stage, "role": "energy",
+                rows.append({"task_id": task, "stage": stage, "role": "routing",
                     "alpha": alpha, "theta": theta, "aspect_ratio": ar,
                     "seed": seed_for(ti, ai, shard), "nsamples": samples, "shard": shard,
                     "output_directory": f"{results_root}/{stage}/alpha_{alpha:.3f}_theta_{theta:.3f}_AR_{ar:.3f}_shard_{shard:02d}"})
                 task += 1
-        rows.append({"task_id": task, "stage": stage, "role": "elastic_scattering_clock",
+        rows.append({"task_id": task, "stage": stage, "role": "vss_elastic_reference",
             "alpha": 1.0, "theta": 1.0, "aspect_ratio": ar,
             "seed": seed_for(9, ai, shard), "nsamples": samples, "shard": shard,
             "output_directory": f"{results_root}/{stage}/alpha_1.000_theta_1.000_AR_{ar:.3f}_shard_{shard:02d}"})
@@ -50,7 +50,8 @@ def continuation_rows(qa_path: str, samples: int, shard: int, results_root: str)
             alpha, theta, ar = map(float, (source["alpha"], source["theta"], source["aspect_ratio"]))
             ai = ASPECT_RATIOS.index(ar)
             ti = min(range(len(THETAS)), key=lambda i: abs(THETAS[i] - theta))
-            rows.append({"task_id": len(rows), "stage": "continuation", "role": "energy",
+            role = "vss_elastic_reference" if alpha >= 1.0 else "routing"
+            rows.append({"task_id": len(rows), "stage": "continuation", "role": role,
                 "alpha": alpha, "theta": theta, "aspect_ratio": ar,
                 "seed": seed_for(ti, ai, shard), "nsamples": samples, "shard": shard,
                 "output_directory": f"{results_root}/continuation/alpha_{alpha:.3f}_theta_{theta:.3f}_AR_{ar:.3f}_shard_{shard:02d}"})

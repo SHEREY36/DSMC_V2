@@ -12,7 +12,7 @@ import numpy as np
 from .features import FEATURE_NAMES, pair_score_kernel
 
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "2.1.0"
 ATTEMPT_REAL_NAMES = (
     *(f"c1_{a}" for a in "xyz"), *(f"c2_{a}" for a in "xyz"),
     *(f"omega1_{a}" for a in "xyz"), *(f"omega2_{a}" for a in "xyz"),
@@ -102,6 +102,26 @@ def attempt_scores(run: RunDataV2) -> np.ndarray:
     )
 
 
+def attempt_energy(run: RunDataV2) -> np.ndarray:
+    """Incoming pair energy for every proposal in the CTC energy convention.
+
+    The trajectory code stores twice the usual physical kinetic energy in both
+    translational and rotational modes.  Keeping that convention here makes
+    the BL fractional-loss denominator exactly commensurate with the stored
+    CTC losses; the common factor cancels in every routing ratio.
+    """
+    values = np.asarray(run.attempts["values"])
+    c1, c2 = _vec(values, AI, "c1"), _vec(values, AI, "c2")
+    w1, w2 = _vec(values, AI, "omega1"), _vec(values, AI, "omega2")
+    vcm = 0.5 * (c1 + c2)
+    mass = float(run.metadata["mass"])
+    moi = float(run.metadata["moi_perpendicular"])
+    return (
+        mass * (np.sum((c1 - vcm) ** 2, axis=1) + np.sum((c2 - vcm) ** 2, axis=1))
+        + moi * (np.sum(w1 ** 2, axis=1) + np.sum(w2 ** 2, axis=1))
+    )
+
+
 def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
     errors: list[str] = []
     warnings: list[str] = []
@@ -170,6 +190,16 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
     identity_error = max(identity_error, reference_error)
     if identity_error > 5.0e-12:
         errors.append(f"dissipation identity error {identity_error:.3e}")
+    incoming_by_key = {
+        (int(attempts[i]["event_id"]), int(attempts[i]["attempt_index"])): energy
+        for i, energy in enumerate(attempt_energy(run)) if attempts[i]["hit"] == 1
+    }
+    incoming_error = max(
+        abs(incoming_by_key[(int(row["event_id"]), int(row["attempt_index"]))]
+            - row["values"][OI["e_initial"]])
+        / max(1.0, abs(row["values"][OI["e_initial"]])) for row in outcomes)
+    if incoming_error > 5.0e-12:
+        errors.append(f"attempt/outcome incoming-energy error {incoming_error:.3e}")
     elastic_error = float(np.max(np.abs(ov[:, OI["elastic_rel_error"]])))
     if elastic_error > elastic_tolerance:
         errors.append(f"elastic replay error {elastic_error:.3e} exceeds {elastic_tolerance:.3e}")
@@ -191,6 +221,7 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
         "n_outcomes": int(len(outcomes)),
         "elastic_error_max": elastic_error,
         "dissipation_identity_error_max": identity_error,
+        "incoming_energy_identity_error_max": incoming_error,
         "negative_loss_fraction": negative_fraction,
     }
 
@@ -209,25 +240,31 @@ def finalize_run(directory: str | Path, require_pass: bool = True) -> dict:
     }
     delta = np.zeros(len(attempts))
     delta_tr = np.zeros(len(attempts))
-    e_initial = np.zeros(len(attempts))
+    e_try = attempt_energy(run)
     angle_b2 = np.zeros(len(attempts))
+    legendre = np.zeros((len(attempts), 4))
     for i in np.flatnonzero(hit):
         row = outcome_by_key[(int(attempts[i]["event_id"]), int(attempts[i]["attempt_index"]))]
         values = row["values"]
         delta[i] = values[OI["delta_total"]]
         delta_tr[i] = values[OI["delta_tr"]]
-        e_initial[i] = values[OI["e_initial"]]
         cosine = float(np.dot(
             np.array([values[OI[f"ghat_pre_{a}"]] for a in "xyz"]),
             np.array([values[OI[f"ghat_post_{a}"]] for a in "xyz"]),
         ))
-        angle_b2[i] = 1.0 - 0.5 * (3.0 * cosine * cosine - 1.0)
+        p1 = cosine
+        p2 = 0.5 * (3.0 * cosine * cosine - 1.0)
+        p3 = 0.5 * (5.0 * cosine ** 3 - 3.0 * cosine)
+        p4 = 0.125 * (35.0 * cosine ** 4 - 30.0 * cosine * cosine + 3.0)
+        legendre[i] = (p1, p2, p3, p4)
+        angle_b2[i] = 1.0 - p2
     path = Path(directory) / "attempt_blocks_v2.csv"
-    fields = ["block_id", "n_try", "n_hit", "sum_delta", "sum_delta_tr", "sum_e_initial", "sum_b2"]
+    fields = ["block_id", "n_try", "n_hit", "sum_delta", "sum_delta_tr",
+              "sum_e_try", "sum_b2", "sum_p1", "sum_p2", "sum_p3", "sum_p4"]
     for name in FEATURE_NAMES:
         fields.extend((f"sum_try_K_{name}", f"sum_hit_K_{name}",
                        f"sum_delta_K_{name}", f"sum_delta_tr_K_{name}",
-                       f"sum_e_initial_K_{name}"))
+                       f"sum_e_try_K_{name}"))
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -237,14 +274,18 @@ def finalize_run(directory: str | Path, require_pass: bool = True) -> dict:
             row = {
                 "block_id": block, "n_try": int(np.sum(mask)), "n_hit": int(np.sum(hmask)),
                 "sum_delta": float(np.sum(delta[mask])), "sum_delta_tr": float(np.sum(delta_tr[mask])),
-                "sum_e_initial": float(np.sum(e_initial[mask])), "sum_b2": float(np.sum(angle_b2[mask])),
+                "sum_e_try": float(np.sum(e_try[mask])), "sum_b2": float(np.sum(angle_b2[mask])),
+                "sum_p1": float(np.sum(legendre[mask, 0])),
+                "sum_p2": float(np.sum(legendre[mask, 1])),
+                "sum_p3": float(np.sum(legendre[mask, 2])),
+                "sum_p4": float(np.sum(legendre[mask, 3])),
             }
             for j, name in enumerate(FEATURE_NAMES):
                 row[f"sum_try_K_{name}"] = float(np.sum(scores[mask, j]))
                 row[f"sum_hit_K_{name}"] = float(np.sum(scores[hmask, j]))
                 row[f"sum_delta_K_{name}"] = float(np.sum(delta[mask] * scores[mask, j]))
                 row[f"sum_delta_tr_K_{name}"] = float(np.sum(delta_tr[mask] * scores[mask, j]))
-                row[f"sum_e_initial_K_{name}"] = float(np.sum(e_initial[mask] * scores[mask, j]))
+                row[f"sum_e_try_K_{name}"] = float(np.sum(e_try[mask] * scores[mask, j]))
             writer.writerow(row)
     metadata = dict(run.metadata)
     metadata.update(n_attempts=len(attempts), n_outcomes=len(outcomes), finalized=True)
@@ -261,5 +302,5 @@ def finalize_run(directory: str | Path, require_pass: bool = True) -> dict:
     }
     (Path(directory) / "schema_v2.json").write_text(json.dumps(schema, indent=2) + "\n")
     if qa["status"] == "pass":
-        (Path(directory) / "_SUCCESS").write_text("schema=2.0.0\n")
+        (Path(directory) / "_SUCCESS").write_text("schema=2.1.0\n")
     return qa

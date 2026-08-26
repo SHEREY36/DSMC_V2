@@ -51,7 +51,7 @@
 	!$OMP& prerot_buffer, ftr_buffer, orient_buffer, uvec_buffer,             &
 	!$OMP& buffer_idx, buffer_ftr_idx, buffer_orient_idx, buffer_uvec_idx)
 
-	! Schema v2.0.0: typed little-endian headers followed by float64 payloads.
+	! Schema v2.1.0: typed little-endian headers followed by float64 payloads.
 	INTEGER, PARAMETER :: N_ATTEMPT_REAL = 21, N_OUTCOME_REAL = 65
 	INTEGER(INT64), DIMENSION(MAX_BUFFER) :: attempt_event, attempt_index, attempt_block
 	INTEGER(INT32), DIMENSION(MAX_BUFFER) :: attempt_hit

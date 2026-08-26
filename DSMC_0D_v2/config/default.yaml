@@ -1,25 +1,45 @@
-schema_version: "2.0.0"
+schema_version: "2.1.0"
+
 particle:
-  count: 2000
+  AR: 2.0
+  radius: 0.5
   mass: 1.0
-  moi_perpendicular: 0.1
-  aspect_ratio: 2.0
+
 system:
+  kTt: 1.0
+  kTr: 1.0
   alpha: 0.8
-  volume: 100000.0
-  translational_temperature: 1.0
-  rotational_temperature: 1.0
+  eta: 1.0
+  phi: 0.001
+  domain: [50.0, 50.0, 50.0]
+  C_alpha: 1.0  # used only when routing=legacy_rank0
+
+time:
+  dt: 0.01
+  dtau: 0.1
+  t_end: 10.0
+  tau_end: null
+  equilibration_time: 0.0
+
 flow:
   mode: hcs
   shear_rate: 0.0
-time:
-  dt: 0.01
-  steps: 1000
-collision:
-  mode: pair_resolved
-  angular_model: vss_rank2
-  artifact: models/collision_operator_v2
-simulation:
-  seed: 12345
-  output: results/dsmc_v2.csv
 
+simulation:
+  seeds: [42]
+  output_dir: results/
+  sphere_collision: false
+  use_isotropic_eps: true
+
+preprocessing:
+  model_root: DSMC_0D_v2/models
+  dissipation:
+    beta_a: 1.21
+    beta_b: 3.67
+
+microscopic_closure:
+  routing: ctc_moment16       # or legacy_rank0
+  angular: ctc_vss_rank2      # or legacy
+  routing_artifact: models/microscopic_closure_v2/routing16_v2.json
+  vss_artifact: models/microscopic_closure_v2/vss_rank2_v2.json
+  rotational_direction_artifact: models/microscopic_closure_v2/rotational_direction_v2.npz

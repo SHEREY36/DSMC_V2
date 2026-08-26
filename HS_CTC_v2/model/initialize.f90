@@ -106,7 +106,7 @@
 		filepath = TRIM(output_dir) // '/metadata_v2.json'
 		open(unit=1011, status='replace', file=filepath)
 		write(1011,'(A)') '{'
-		write(1011,'(A)') '  "schema_version": "2.0.0",'
+		write(1011,'(A)') '  "schema_version": "2.1.0",'
 		write(1011,'(A)') '  "byte_order": "little",'
 		write(1011,'(A,I0,A)') '  "attempt_record_bytes": ', 32 + 8*N_ATTEMPT_REAL, ','
 		write(1011,'(A,I0,A)') '  "outcome_record_bytes": ', 32 + 8*N_OUTCOME_REAL, ','
@@ -120,6 +120,10 @@
 		write(1011,'(A,ES24.16,A)') '  "mass": ', MASS, ','
 		write(1011,'(A,ES24.16,A)') '  "moi_perpendicular": ', moI(2), ','
 		write(1011,'(A,ES24.16,A)') '  "proposal_area": ', 4.D0*BMAX*BMAX, ','
+		write(1011,'(A,ES24.16,A)') '  "collision_cross_section": ', &
+			PI*DIA*DIA*(0.32D0*AR_INPUT**2.D0 + 0.694D0*AR_INPUT - 0.0213D0), ','
+		write(1011,'(A)') '  "collision_cross_section_scale": 1.0,'
+		write(1011,'(A)') '  "collision_cross_section_model": "frozen_v1_polynomial",'
 		write(1011,'(A,I0,A)') '  "nsamples": ', NSAMPLES, ','
 		write(1011,'(A,I0,A)') '  "seed": ', RUN_SEED, ','
 		write(1011,'(A)') '  "rng_contract": "event_stream_common_across_alpha",'

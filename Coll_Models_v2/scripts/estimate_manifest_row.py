@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from coll_models_v2.estimate import estimate_node
+from coll_models_v2.legacy_bl import LegacyBL
 
 
 def main():
@@ -13,11 +14,14 @@ def main():
     parser.add_argument("--index", type=int, required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--bootstrap", type=int, default=2000)
+    parser.add_argument("--gamma-max-table", required=True)
+    parser.add_argument("--one-hit-table", required=True)
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
     row = rows[args.index]
-    result = estimate_node(row["run_directories"].split(";"), args.bootstrap)
+    bl = LegacyBL.load(args.gamma_max_table, args.one_hit_table)
+    result = estimate_node(row["run_directories"].split(";"), bl, args.bootstrap)
     path = Path(args.output) / (
         f"alpha_{float(row['alpha']):.3f}_theta_{float(row['theta']):.3f}_"
         f"AR_{float(row['aspect_ratio']):.3f}.json")
@@ -27,4 +31,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

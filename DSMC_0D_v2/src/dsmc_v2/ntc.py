@@ -1,43 +1,89 @@
-"""Unbiased no-time-counter proposal clock."""
-
-from __future__ import annotations
-
-from dataclasses import dataclass
+"""No-time-counter candidate selection for homogeneous DSMC."""
 
 import numpy as np
 
 
-def sample_distinct_pair(count: int, rng: np.random.Generator) -> tuple[int, int]:
-    if count < 2:
-        raise ValueError("at least two particles are required")
-    first = int(rng.integers(count))
-    second = int(rng.integers(count - 1))
-    if second >= first:
-        second += 1
-    return (first, second) if first < second else (second, first)
+class NTCWorkspace:
+    """Reusable buffers for vectorized NTC candidate screening."""
+
+    def __init__(self, capacity, seed):
+        self.rng = np.random.default_rng(int(seed) + 0x9E3779B97F4A7C15)
+        self.capacity = 0
+        self.p1 = None
+        self.p2 = None
+        self.rand = None
+        self.eij = None
+        self.v1 = None
+        self.v2 = None
+        self.vrel = None
+        self.prod = None
+        self.cr = None
+        self.abs_cr = None
+        self.norm = None
+        self.mask = None
+        self.ensure_capacity(capacity)
+
+    def ensure_capacity(self, n):
+        n = int(max(1, n))
+        if n <= self.capacity:
+            return
+        capacity = max(n, 2 * self.capacity if self.capacity else 1024)
+        self.capacity = capacity
+        self.p1 = np.empty(capacity, dtype=np.int64)
+        self.p2 = np.empty(capacity, dtype=np.int64)
+        self.rand = np.empty(capacity, dtype=np.float64)
+        self.eij = np.empty((capacity, 3), dtype=np.float64)
+        self.v1 = np.empty((capacity, 3), dtype=np.float64)
+        self.v2 = np.empty((capacity, 3), dtype=np.float64)
+        self.vrel = np.empty((capacity, 3), dtype=np.float64)
+        self.prod = np.empty((capacity, 3), dtype=np.float64)
+        self.cr = np.empty(capacity, dtype=np.float64)
+        self.abs_cr = np.empty(capacity, dtype=np.float64)
+        self.norm = np.empty(capacity, dtype=np.float64)
+        self.mask = np.empty(capacity, dtype=bool)
+
+    def fill_particle_indices(self, Np, n):
+        self.rng.random(n, out=self.rand[:n])
+        np.multiply(self.rand[:n], float(Np), out=self.rand[:n])
+        np.floor(self.rand[:n], out=self.rand[:n])
+        self.p1[:n] = self.rand[:n]
+
+        self.rng.random(n, out=self.rand[:n])
+        np.multiply(self.rand[:n], float(Np), out=self.rand[:n])
+        np.floor(self.rand[:n], out=self.rand[:n])
+        self.p2[:n] = self.rand[:n]
+
+        np.equal(self.p2[:n], self.p1[:n], out=self.mask[:n])
+        same_idx = np.nonzero(self.mask[:n])[0]
+        if same_idx.size:
+            self.p2[same_idx] = (self.p2[same_idx] + 1) % Np
+
+    def screen_candidates(self, vel, Np, n, vrmax):
+        self.ensure_capacity(n)
+        self.fill_particle_indices(Np, n)
+
+        self.rng.standard_normal(size=(n, 3), out=self.eij[:n])
+        np.multiply(self.eij[:n], self.eij[:n], out=self.prod[:n])
+        np.sum(self.prod[:n], axis=1, out=self.norm[:n])
+        np.sqrt(self.norm[:n], out=self.norm[:n])
+        np.maximum(self.norm[:n], 1.0e-30, out=self.norm[:n])
+        np.divide(self.eij[:n], self.norm[:n, None], out=self.eij[:n])
+
+        np.take(vel, self.p1[:n], axis=0, out=self.v1[:n])
+        np.take(vel, self.p2[:n], axis=0, out=self.v2[:n])
+        np.subtract(self.v1[:n], self.v2[:n], out=self.vrel[:n])
+        np.multiply(self.eij[:n], self.vrel[:n], out=self.prod[:n])
+        np.sum(self.prod[:n], axis=1, out=self.cr[:n])
+        np.abs(self.cr[:n], out=self.abs_cr[:n])
+
+        vrmax_temp = float(np.max(self.abs_cr[:n]))
+        self.rng.random(n, out=self.rand[:n])
+        np.multiply(self.rand[:n], vrmax, out=self.rand[:n])
+        np.greater_equal(self.abs_cr[:n], self.rand[:n], out=self.mask[:n])
+        return vrmax_temp, np.nonzero(self.mask[:n])[0]
 
 
-@dataclass
-class NTCClock:
-    carry: float = 0.0
-
-    def candidate_count(self, particle_count: int, volume: float, dt: float,
-                        rate_majorant: float) -> int:
-        if volume <= 0.0 or dt < 0.0 or rate_majorant < 0.0:
-            raise ValueError("invalid NTC clock argument")
-        expected = (particle_count * (particle_count - 1) / (2.0 * volume)
-                    * rate_majorant * dt + self.carry)
-        result = int(np.floor(expected))
-        self.carry = expected - result
-        return result
-
-
-def acceptance_probability(relative_speed: float, cross_section: float,
-                           speed_majorant: float, area_majorant: float) -> float:
-    if speed_majorant <= 0.0 or area_majorant <= 0.0:
-        return 0.0
-    probability = relative_speed * cross_section / (speed_majorant * area_majorant)
-    if probability > 1.0 + 1.0e-12:
-        raise RuntimeError(f"NTC majorant violated: acceptance={probability}")
-    return float(np.clip(probability, 0.0, 1.0))
-
+def candidate_count(Np, sigma_c, vrmax, volume, dt):
+    """Return the stochastic NTC candidate count for one homogeneous cell."""
+    mean = 2.0 * float(Np) * float(Np - 1) * sigma_c * vrmax * (0.5 * dt) / volume
+    return int(np.floor(mean + np.random.rand()))

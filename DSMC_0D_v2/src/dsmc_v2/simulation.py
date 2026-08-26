@@ -1,143 +1,168 @@
-"""Sequential-state 0D DSMC using the versioned CTC collision operator."""
+"""Conservative public HCS DSMC driver based on the proven v1 time march."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from contextlib import nullcontext
+from pathlib import Path
 
 import numpy as np
 
 from dsmc_v2_contracts import cell_features
 
-from .angular import sample_direction
-from .artifact import CollisionArtifactV2
-from .ntc import NTCClock, acceptance_probability, sample_distinct_pair
-from .reconstruction import reconstruct_post_state
-from .state import ParticleState
+from .artifact import MicroscopicClosure
+from .kernel import SpherocylinderKernel
+from .legacy_models import LegacyModels
+from .ntc import NTCWorkspace, candidate_count
+from .particle import particle_parameters
+from .pressure import accumulate_pij_c, compute_pij_k, normalise_pij_c
+from .state import initialize_particles
 
 
-@dataclass
-class StepDiagnostics:
-    candidates: int = 0
-    accepted: int = 0
-    reconstruction_draws: int = 0
-    infeasible_draws: int = 0
-    maximum_energy_error: float = 0.0
-    maximum_angular_momentum_error: float = 0.0
+def _closure_from_config(config: dict) -> tuple[str, str, MicroscopicClosure | None]:
+    closure_config = config.get("microscopic_closure", {})
+    routing = closure_config.get("routing", "legacy_rank0")
+    angular = closure_config.get("angular", "legacy")
+    if routing not in ("legacy_rank0", "ctc_moment16"):
+        raise ValueError("routing must be legacy_rank0 or ctc_moment16")
+    if angular not in ("legacy", "ctc_vss_rank2"):
+        raise ValueError("angular must be legacy or ctc_vss_rank2")
+    if routing == "legacy_rank0" and angular == "legacy":
+        return routing, angular, None
+    return routing, angular, MicroscopicClosure(
+        closure_config["routing_artifact"], closure_config["vss_artifact"],
+        closure_config["rotational_direction_artifact"])
 
 
-class HomogeneousDSMC:
-    def __init__(self, state: ParticleState, artifact: CollisionArtifactV2,
-                 alpha: float, aspect_ratio: float, mass: float = 1.0,
-                 moi_perpendicular: float = 1.0, mode: str = "pair_resolved",
-                 seed: int = 12345, max_reconstruction_draws: int = 64):
-        if mode not in ("pair_resolved", "moment16"):
-            raise ValueError("mode must be pair_resolved or moment16")
-        if not 0.0 < alpha <= 1.0 or aspect_ratio < 1.0:
-            raise ValueError("invalid alpha or aspect ratio")
-        self.state, self.artifact = state, artifact
-        self.alpha, self.aspect_ratio = float(alpha), float(aspect_ratio)
-        self.mass, self.moi = float(mass), float(moi_perpendicular)
-        self.mode, self.max_reconstruction_draws = mode, int(max_reconstruction_draws)
-        self.rng, self.clock = np.random.default_rng(seed), NTCClock()
+def _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha) -> int:
+    coefficient = 0.5 * (1.0 + alpha)
+    state.velocity[p1] = v1 - coefficient * cr * normal
+    state.velocity[p2] = v2 + coefficient * cr * normal
+    return 2
 
-    def _total_internal_energy(self) -> float:
-        peculiar = self.state.velocity - np.mean(self.state.velocity, axis=0)
-        return float(self.mass * np.einsum("ni,ni->", peculiar, peculiar)
-                     + self.moi * np.einsum("ni,ni->", self.state.omega, self.state.omega))
 
-    def _moment_outcome(self, first: int, second: int, gamma: float,
-                        ftr: float, theta: float) -> np.ndarray | None:
-        s = self.state
-        template = self.artifact.sample_pair_outcome(
-            s.velocity[first], s.velocity[second], s.omega[first], s.omega[second],
-            s.axis[first], s.axis[second], self.alpha, theta, self.aspect_ratio, self.rng)
-        g = s.velocity[second] - s.velocity[first]
-        etr = 0.5 * self.mass * np.dot(g, g)
-        er1 = self.moi * np.dot(s.omega[first], s.omega[first])
-        er2 = self.moi * np.dot(s.omega[second], s.omega[second])
-        total = etr + er1 + er2
-        loss = gamma * total
-        etr_post = etr - ftr * loss
-        erot_post = er1 + er2 - (1.0 - ftr) * loss
-        if etr_post < 0.0 or erot_post < 0.0:
-            return None
-        retained = etr_post + erot_post
-        split = template[2] / max(template[2] + template[3], 1.0e-30)
-        result = template.copy()
-        result[0] = retained / max(total, 1.0e-30)
-        result[1:4] = np.array([etr_post, split * erot_post,
-                                (1.0 - split) * erot_post]) / max(retained, 1.0e-30)
-        return result
+def _write_row(handle, time: float, tau: float, state, mass: float) -> None:
+    ttr, trot, total = state.temperatures(mass)
+    handle.write(f"{time:13.6f} {tau:13.6f} {ttr:13.6f} {trot:13.6f} {total:13.6f}\n")
 
-    def step(self, dt: float, volume: float, shear_rate: float = 0.0) -> StepDiagnostics:
-        state = self.state
-        if shear_rate:
-            state.velocity[:, 0] -= float(shear_rate) * state.velocity[:, 1] * float(dt)
-        state.advance_axes(dt)
-        ttr, trot = state.temperatures(self.mass, self.moi)
-        theta = ttr / trot
-        area = self.artifact.proposal_area(self.aspect_ratio)
-        # Total energy is non-increasing through collisions, so this remains a
-        # finite-population bound even if rotation transfers into translation.
-        speed_majorant = 2.0 * np.sqrt(max(self._total_internal_energy(), 0.0) / self.mass)
-        diagnostics = StepDiagnostics()
-        diagnostics.candidates = self.clock.candidate_count(
-            state.count, volume, dt, speed_majorant * area)
-        if diagnostics.candidates == 0 or speed_majorant == 0.0:
-            return diagnostics
-        if self.mode == "moment16":
-            features = cell_features(state.velocity, state.omega, state.axis,
-                                     self.mass, self.moi, np.isclose(self.aspect_ratio, 1.0))
-            sigma_cell, gamma_cell, ftr_cell = self.artifact.reduced_means(
-                self.alpha, theta, self.aspect_ratio, features)
-        for _ in range(diagnostics.candidates):
-            first, second = sample_distinct_pair(state.count, self.rng)
-            g = state.velocity[second] - state.velocity[first]
-            relative_speed = float(np.linalg.norm(g))
-            if self.mode == "pair_resolved":
-                sigma = self.artifact.pair_cross_section(
-                    state.velocity[first], state.velocity[second],
-                    state.omega[first], state.omega[second],
-                    state.axis[first], state.axis[second], self.aspect_ratio)
-            else:
-                sigma = sigma_cell
-            probability = acceptance_probability(relative_speed, sigma, speed_majorant, area)
-            if self.rng.random() >= probability or relative_speed <= 1.0e-30:
-                continue
-            accepted_result = None
-            for _draw in range(self.max_reconstruction_draws):
-                diagnostics.reconstruction_draws += 1
-                if self.mode == "pair_resolved":
-                    outcome = self.artifact.sample_pair_outcome(
-                        state.velocity[first], state.velocity[second],
-                        state.omega[first], state.omega[second],
-                        state.axis[first], state.axis[second], self.alpha, theta,
-                        self.aspect_ratio, self.rng)
-                else:
-                    outcome = self._moment_outcome(first, second, gamma_cell, ftr_cell, theta)
-                    if outcome is None:
-                        diagnostics.infeasible_draws += 1
-                        continue
-                alpha_eff = self.artifact.alpha_eff(self.alpha, self.aspect_ratio)
-                direction = sample_direction(g / relative_speed, alpha_eff, self.rng)
-                accepted_result = reconstruct_post_state(
-                    state.velocity[first], state.velocity[second],
-                    state.omega[first], state.omega[second],
-                    state.axis[first], state.axis[second], direction, outcome,
-                    self.mass, self.moi, self.aspect_ratio, self.rng)
-                if accepted_result is not None:
-                    break
-                diagnostics.infeasible_draws += 1
-            if accepted_result is None:
-                continue
-            state.velocity[first], state.velocity[second] = accepted_result.velocity1, accepted_result.velocity2
-            state.omega[first], state.omega[second] = accepted_result.omega1, accepted_result.omega2
-            diagnostics.accepted += 1
-            diagnostics.maximum_energy_error = max(diagnostics.maximum_energy_error,
-                                                     accepted_result.energy_error)
-            diagnostics.maximum_angular_momentum_error = max(
-                diagnostics.maximum_angular_momentum_error,
-                accepted_result.angular_momentum_error)
-        state.normalize_constraints()
-        return diagnostics
 
+def run_simulation(config: dict, seed: int, output_path: str | Path,
+                   pressure_path: str | Path | None = None) -> dict:
+    """Run one realization while preserving the v1 clock and scalar kernel."""
+    flow = config.get("flow", {})
+    flow_mode = flow.get("mode", "hcs")
+    if flow_mode not in ("hcs", "usf"):
+        raise ValueError("flow.mode must be hcs or usf")
+    shear_rate = float(flow.get("shear_rate", 0.0))
+    np.random.seed(int(seed))
+    axis_rng = np.random.default_rng(int(seed) + 0x6A09E667)
+    direction_rng = np.random.default_rng(int(seed) + 0xBB67AE85)
+    vss_rng = np.random.default_rng(int(seed) + 0x3C6EF372)
+    params = particle_parameters(config)
+    alpha = float(config["system"]["alpha"])
+    ktt, ktr = float(config["system"]["kTt"]), float(config["system"]["kTr"])
+    volume = float(np.prod(config["system"]["domain"]))
+    count = math.ceil(float(config["system"]["phi"]) * volume / params.volume)
+    sphere = bool(config.get("simulation", {}).get("sphere_collision", False))
+    state = initialize_particles(count, ktt, ktr, params.mass, params.inertia,
+                                 axis_rng, sphere)
+    routing, angular, closure = _closure_from_config(config)
+    if sphere:
+        models = kernel = None
+    else:
+        dissipation = config["preprocessing"]["dissipation"]
+        models = LegacyModels(config["preprocessing"].get("model_root", "models"),
+                              params.aspect_ratio, float(dissipation["beta_a"]),
+                              float(dissipation["beta_b"]))
+        kernel = SpherocylinderKernel(
+            params, models, alpha, float(dissipation["beta_a"]),
+            float(dissipation["beta_b"]), float(config["system"].get("C_alpha", 1.0)),
+            closure, routing, angular, direction_rng, vss_rng,
+            float(config["time"].get("equilibration_time", 0.0)),
+            bool(config.get("simulation", {}).get("use_isotropic_eps", True)))
+
+    dt = float(config["time"]["dt"])
+    dtau = float(config["time"]["dtau"])
+    end_time = float(config["time"]["t_end"])
+    tau_end = config["time"].get("tau_end")
+    tau_end = None if tau_end is None else float(tau_end)
+    vrmax = 5.0 * np.sqrt(2.0) * np.sqrt(ktt / params.mass)
+    time, collisions, output_index = 0.0, 0, 0
+    workspace = NTCWorkspace(capacity=1024, seed=seed)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    maximum_ftr, minimum_ftr = -np.inf, np.inf
+    pressure_path = Path(pressure_path) if pressure_path is not None else None
+    if flow_mode == "usf" and pressure_path is None:
+        pressure_path = output_path.with_name(output_path.stem + "_pressure.txt")
+    if pressure_path is not None:
+        pressure_path.parent.mkdir(parents=True, exist_ok=True)
+    pressure_accumulator = np.zeros((3, 3)) if flow_mode == "usf" else None
+    last_pressure_time = 0.0
+    pressure_context = pressure_path.open("w", buffering=65536) if pressure_path else nullcontext(None)
+    with output_path.open("w", buffering=65536) as handle, pressure_context as pressure_handle:
+        while time < end_time and (tau_end is None or collisions / count < tau_end
+                                   or collisions / count >= output_index * dtau):
+            tau = collisions / float(count)
+            if tau >= output_index * dtau:
+                _write_row(handle, time, tau, state, params.mass)
+                if pressure_handle is not None:
+                    kinetic = compute_pij_k(state.velocity, params.mass, volume)
+                    collisional = normalise_pij_c(
+                        pressure_accumulator, time - last_pressure_time, volume)
+                    values = [kinetic[0, 0], kinetic[0, 1], kinetic[0, 2],
+                              kinetic[1, 1], kinetic[1, 2], kinetic[2, 2],
+                              collisional[0, 0], collisional[0, 1], collisional[0, 2],
+                              collisional[1, 1], collisional[1, 2], collisional[2, 2]]
+                    pressure_handle.write(f"{time:13.6f} {tau:13.6f} "
+                                          + " ".join(f"{value:13.6f}" for value in values) + "\n")
+                    pressure_accumulator[:] = 0.0
+                    last_pressure_time = time
+                output_index += 1
+            if flow_mode == "usf":
+                state.velocity[:, 0] -= shear_rate * state.velocity[:, 1] * dt
+            ttr, trot, _ = state.temperatures(params.mass)
+            theta = ttr / trot if trot > 0.0 else 1.0
+            if kernel is not None and routing == "ctc_moment16":
+                features = cell_features(state.velocity, state.omega, state.axis,
+                                         params.mass, params.inertia, sphere=False)
+                ftr = closure.routing_fraction(alpha, theta, params.aspect_ratio, features)
+                kernel.set_cell_routing(ftr)
+                minimum_ftr, maximum_ftr = min(minimum_ftr, ftr), max(maximum_ftr, ftr)
+
+            n_candidates = candidate_count(count, params.sigma_c, vrmax, volume, dt)
+            vrmax_temp = 0.0
+            if n_candidates > 0:
+                vrmax_temp, accepted = workspace.screen_candidates(
+                    state.velocity, count, n_candidates, vrmax)
+                for position in accepted:
+                    p1, p2 = int(workspace.p1[position]), int(workspace.p2[position])
+                    normal = workspace.eij[position].copy()
+                    v1, v2 = state.velocity[p1].copy(), state.velocity[p2].copy()
+                    vrel = v1 - v2
+                    cr = float(np.dot(normal, vrel))
+                    if cr < 0.0:
+                        normal, cr = -normal, -cr
+                    speed = float(np.linalg.norm(vrel))
+                    if sphere:
+                        collisions += _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha)
+                    else:
+                        collisions += kernel.collide(
+                            state, p1, p2, normal, v1, v2, vrel, speed, time, theta)
+                    if pressure_accumulator is not None:
+                        accumulate_pij_c(pressure_accumulator, v1, v2,
+                                         state.velocity[p1], params.mass, speed,
+                                         eij_override=normal)
+            if vrmax < vrmax_temp:
+                vrmax = vrmax_temp
+            state.advance_axes(dt)
+            time += dt
+    return {
+        "particles": count, "collisions": collisions,
+        "cpp": collisions / float(count), "sigma_c": params.sigma_c,
+        "routing": routing, "angular": angular, "flow": flow_mode,
+        "minimum_Ftr": None if not np.isfinite(minimum_ftr) else minimum_ftr,
+        "maximum_Ftr": None if not np.isfinite(maximum_ftr) else maximum_ftr,
+        "output": str(output_path),
+        "pressure_output": None if pressure_path is None else str(pressure_path),
+    }

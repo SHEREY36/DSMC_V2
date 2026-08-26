@@ -1,8 +1,7 @@
-"""Zero-dimensional DSMC runtime for the v2 spherocylinder operator."""
+"""Conservative zero-dimensional DSMC runtime."""
 
-from .simulation import HomogeneousDSMC
+from .simulation import run_simulation
 from .state import ParticleState
 
-__all__ = ["HomogeneousDSMC", "ParticleState"]
-__version__ = "2.0.0"
-
+__all__ = ["ParticleState", "run_simulation"]
+__version__ = "2.1.0"

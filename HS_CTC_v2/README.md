@@ -17,6 +17,7 @@ PYTHONPATH=../contracts/python python3 scripts/finalize_run.py OUTPUT_DIR
 ```
 
 `v2` writes every attempted trajectory to `attempts_v2.bin` and every accepted
-outcome to `outcomes_v2.bin`. Finalization validates their one-to-one link and
-creates the 128-block sufficient-statistics table and `_SUCCESS` marker.
-
+outcome to `outcomes_v2.bin`. `NSAMPLES` is the number of accepted outcomes;
+misses do not count against it, but remain in the attempt stream. Finalization
+validates the one-to-one hit link, calculates all-attempt energy/score sums,
+and creates the 128-block sufficient-statistics table and `_SUCCESS` marker.

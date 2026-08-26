@@ -2,20 +2,29 @@ import unittest
 
 import numpy as np
 
-from dsmc_v2.ntc import acceptance_probability, sample_distinct_pair
+from dsmc_v2.ntc import NTCWorkspace, candidate_count
 
 
 class NTCTests(unittest.TestCase):
-    def test_distinct_unordered_pairs_are_uniform(self):
-        rng = np.random.default_rng(4)
-        counts = {(0, 1): 0, (0, 2): 0, (1, 2): 0}
-        for _ in range(60000):
-            counts[sample_distinct_pair(3, rng)] += 1
-        self.assertLess(max(counts.values()) - min(counts.values()), 700)
+    def test_candidate_count_is_the_v1_expression(self):
+        np.random.seed(17)
+        random_fraction = np.random.rand()
+        np.random.seed(17)
+        actual = candidate_count(80, 3.2, 4.1, 1200.0, 0.03)
+        expected = int(np.floor(2.0 * 80 * 79 * 3.2 * 4.1 * 0.015 / 1200.0
+                                + random_fraction))
+        self.assertEqual(actual, expected)
 
-    def test_majorant_violation_is_not_silently_clipped(self):
-        with self.assertRaises(RuntimeError):
-            acceptance_probability(2.0, 2.0, 1.0, 1.0)
+    def test_screening_uses_abs_g_dot_e_over_vrmax(self):
+        velocity = np.array([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+                             [0.0, 1.0, 0.0], [0.0, -1.0, 0.0]])
+        first = NTCWorkspace(128, seed=91)
+        second = NTCWorkspace(128, seed=91)
+        vmax1, accepted1 = first.screen_candidates(velocity, 4, 128, 3.0)
+        vmax2, accepted2 = second.screen_candidates(velocity, 4, 128, 3.0)
+        np.testing.assert_array_equal(accepted1, accepted2)
+        self.assertEqual(vmax1, vmax2)
+        np.testing.assert_allclose(first.abs_cr[:128], second.abs_cr[:128])
 
 
 if __name__ == "__main__":

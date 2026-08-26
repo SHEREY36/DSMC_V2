@@ -1,15 +1,13 @@
 {
-  "schema_version": "2.0.0",
-  "artifact_type": "collision_operator_v2",
+  "schema_version": "2.1.0",
+  "artifact_type": "microscopic_closure_v2",
   "required_files": [
     "manifest.json",
-    "pair_clock_v2.json",
-    "energy_library_v2.npz",
+    "routing16_v2.json",
     "vss_rank2_v2.json",
-    "vss_theta_diagnostics_v2.json",
-    "reduced_surfaces_v2.json",
-    "node_estimates_v2.json"
+    "rotational_direction_v2.npz"
   ],
-  "runtime_modes": ["pair_resolved", "moment16"],
-  "angular_model": "vss_rank2"
+  "production_changes": ["dissipation_routing", "angular_scattering"],
+  "forbidden_files": ["pair_clock_v2.json", "energy_library_v2.npz"],
+  "preserved_runtime": ["v1_ntc", "frozen_sigma_c", "conditional_gmm", "BL_total_loss"]
 }

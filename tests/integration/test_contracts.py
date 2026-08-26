@@ -18,10 +18,11 @@ class ContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             metadata = {
-                "schema_version": "2.0.0", "nsamples": 1, "seed": 1,
+                "schema_version": "2.1.0", "nsamples": 1, "seed": 1,
                 "alpha": 0.8, "theta": 1.0, "aspect_ratio": 1.0,
                 "velocity_scale": np.sqrt(2.0), "omega_scale": np.sqrt(2.0),
-                "proposal_area": 4.0, "byte_order": "little",
+                "proposal_area": 4.0, "byte_order": "little", "mass": 1.0,
+                "moi_perpendicular": 1.0,
                 "attempt_record_bytes": 200, "outcome_record_bytes": 552,
             }
             (root / "metadata_v2.json").write_text(json.dumps(metadata))

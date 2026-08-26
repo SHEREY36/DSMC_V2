@@ -3,6 +3,7 @@ __pycache__/
 *.o
 *.mod
 *.so
+HS_CTC_v2/build/SphCyl
 *.egg-info/
 .pytest_cache/
 .venv/

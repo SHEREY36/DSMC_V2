@@ -31,7 +31,7 @@ class SplineSurface:
     knots: list[list[float]]
     coefficients: list[float]
     ridge: float
-    schema_version: str = "2.0.0"
+    schema_version: str = "2.1.0"
 
     def evaluate(self, coordinates: np.ndarray) -> np.ndarray:
         coordinates = np.atleast_2d(np.asarray(coordinates, dtype=float))
@@ -93,4 +93,3 @@ def transformed_coordinates(alpha: np.ndarray, theta: np.ndarray,
     return np.column_stack((1.0 - np.asarray(alpha) ** 2,
                             np.log(np.asarray(theta)),
                             np.log(np.asarray(aspect_ratio))))
-
