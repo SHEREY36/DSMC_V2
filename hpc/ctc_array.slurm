@@ -16,4 +16,5 @@ IFS=, read -r TASK_ID STAGE ROLE ALPHA THETA AR SEED NSAMPLES SHARD OUTPUT_DIR <
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
 cd "$ROOT/HS_CTC_v2"
 srun ./build/SphCyl "$ALPHA" "$THETA" 1.0 "$AR" "$ROOT/$OUTPUT_DIR" "$SEED" "$NSAMPLES" v2
-PYTHONPATH="$ROOT/contracts/python" python3 scripts/finalize_run.py "$ROOT/$OUTPUT_DIR"
+PYTHONPATH="$ROOT/contracts/python" \
+"$ROOT/hpc/python.sh" scripts/finalize_run.py "$ROOT/$OUTPUT_DIR"

@@ -209,9 +209,11 @@ has bounded memory; donor coverage remains an explicit QA diagnostic.
 
 ## Build and local verification
 
-From the repository root:
+The Python packages require Python 3.10 or newer. Check the interpreter before
+creating the environment:
 
 ```bash
+python3 --version
 python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 python3 -m pip install -e contracts -e Coll_Models_v2 -e DSMC_0D_v2
@@ -263,20 +265,28 @@ On the cluster login node:
 ```bash
 git clone YOUR_REMOTE DSMC_V2
 cd DSMC_V2
-python3 -m venv .venv --system-site-packages
-source .venv/bin/activate
-python3 -m pip install -e contracts -e Coll_Models_v2 -e DSMC_0D_v2
+module load conda
+bash hpc/setup_negishi_env.sh
+hpc/python.sh -c "import sys, numpy, scipy; print(sys.version); print(numpy.__version__, scipy.__version__)"
 make -C HS_CTC_v2/build clean all
 mkdir -p logs results manifests coefficients models
 ```
 
+Do not build the HPC environment with Negishi's system `python3`: on older
+login-node configurations it is Python 3.6 and cannot install this project.
+The setup script creates `.conda-v2` with Python 3.11, installs the three local
+packages, and leaves any failed `.venv` untouched. All supplied Slurm scripts
+call `hpc/python.sh`, which selects `.conda-v2` directly; no interactive conda
+activation is required inside a batch job. To use a different compatible
+interpreter, export its absolute path as `DSMC_V2_PYTHON` before submission.
+
 Generate and submit the accepted-hit pilot and production shards:
 
 ```bash
-python3 hpc/make_manifest.py --stage pilot --output manifests/pilot.csv
+hpc/python.sh hpc/make_manifest.py --stage pilot --output manifests/pilot.csv
 bash hpc/submit_manifest.sh manifests/pilot.csv
 
-python3 hpc/make_manifest.py --stage production --output manifests/production.csv
+hpc/python.sh hpc/make_manifest.py --stage production --output manifests/production.csv
 bash hpc/submit_manifest.sh manifests/production.csv
 ```
 
@@ -285,7 +295,7 @@ estimation manifest and submit at most 50 simultaneous estimators:
 
 ```bash
 PYTHONPATH=contracts/python:Coll_Models_v2/src \
-python3 hpc/make_estimation_manifest.py \
+hpc/python.sh hpc/make_estimation_manifest.py \
   --runs-root results/ctc --output manifests/estimate.csv
 
 N=$(( $(wc -l < manifests/estimate.csv) - 1 ))
@@ -297,12 +307,12 @@ Create the QA table and continuation manifest:
 
 ```bash
 PYTHONPATH=contracts/python:Coll_Models_v2/src \
-python3 Coll_Models_v2/scripts/estimate_grid.py \
+hpc/python.sh Coll_Models_v2/scripts/estimate_grid.py \
   --runs-root results/ctc --output coefficients --bootstrap 2000 \
   --gamma-max-table Coll_Models_v2/models/legacy_bl/gamma_max_table.json \
   --one-hit-table Coll_Models_v2/models/legacy_bl/one_hit_table.json
 
-python3 hpc/make_manifest.py --stage continuation --shard 2 \
+hpc/python.sh hpc/make_manifest.py --stage continuation --shard 2 \
   --qa-summary coefficients/qa_summary.csv \
   --output manifests/continuation_02.csv
 bash hpc/submit_manifest.sh manifests/continuation_02.csv
@@ -332,7 +342,7 @@ Run HCS or set `flow.mode: usf` with a nonzero `shear_rate`:
 
 ```bash
 PYTHONPATH=contracts/python:Coll_Models_v2/src:DSMC_0D_v2/src \
-python3 DSMC_0D_v2/scripts/run_simulation.py \
+hpc/python.sh DSMC_0D_v2/scripts/run_simulation.py \
   --config DSMC_0D_v2/config/default.yaml
 ```
 

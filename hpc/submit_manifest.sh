@@ -6,7 +6,7 @@ cd "$ROOT"
 mkdir -p logs manifests/split
 MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
 MAX_ARRAY=${MAX_ARRAY:-1000}
-mapfile -t PARTS < <(python3 hpc/split_manifest.py "$MANIFEST" --max-rows "$MAX_ARRAY" --output-dir manifests/split)
+mapfile -t PARTS < <(hpc/python.sh hpc/split_manifest.py "$MANIFEST" --max-rows "$MAX_ARRAY" --output-dir manifests/split)
 for PART in "${PARTS[@]}"; do
     ROWS=$(( $(wc -l < "$PART") - 1 ))
     if (( ROWS > 0 )); then

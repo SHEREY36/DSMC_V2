@@ -7,6 +7,7 @@ HS_CTC_v2/build/SphCyl
 *.egg-info/
 .pytest_cache/
 .venv/
+.conda-v2/
 dist/
 logs/
 results/
