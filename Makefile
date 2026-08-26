@@ -27,4 +27,3 @@ install:
 
 clean:
 	$(MAKE) -C HS_CTC_v2/build clean
-

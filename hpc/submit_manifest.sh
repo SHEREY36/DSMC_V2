@@ -13,4 +13,3 @@ for PART in "${PARTS[@]}"; do
         sbatch --array="0-$((ROWS - 1))%50" hpc/ctc_array.slurm "$PART"
     fi
 done
-

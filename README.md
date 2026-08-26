@@ -222,4 +222,3 @@ held-out operator validation target, not a feature of this 0D driver.
 All packages and schemas are `2.0.0`. The repository release tag is `v2.0.0`.
 Commits use the repository owner's configured Git identity and contain no AI or
 Codex co-author/contributor trailers.
-

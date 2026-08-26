@@ -15,4 +15,3 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 python3 "$ROOT/Coll_Models_v2/scripts/estimate_manifest_row.py" \
   --manifest "$MANIFEST" --index "$SLURM_ARRAY_TASK_ID" --output "$ROOT/$OUTPUT" --bootstrap 2000
-

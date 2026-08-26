@@ -16,4 +16,3 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 python3 "$ROOT/Coll_Models_v2/scripts/build_artifact.py" \
   --runs-root "$ROOT/$RUNS_ROOT" --output "$ROOT/$OUTPUT" --bootstrap 2000
-
