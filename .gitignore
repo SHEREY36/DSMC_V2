@@ -10,6 +10,8 @@ HS_CTC_v2/build/SphCyl
 .conda-v2/
 dist/
 logs/
+ctc_v2_*.out
+ctc_v2_*.err
 results/
 runs/
 manifests/

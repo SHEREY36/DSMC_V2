@@ -281,15 +281,33 @@ directly; no interactive conda activation is required inside a batch job. To
 use a different compatible interpreter, export its absolute path as
 `DSMC_V2_PYTHON` before submission.
 
-Generate and submit the accepted-hit pilot and production shards:
+### One-command Negishi submission
+
+The root job file contains the `morri353` account, `cpu` partition, one node,
+20 OpenMP CPUs, 32 GB, 24-hour limit, and `0-869%50` array declaration. From
+the repository root, submit the 20,000-accepted-hit pilot with:
 
 ```bash
-hpc/python.sh hpc/make_manifest.py --stage pilot --output manifests/pilot.csv
-bash hpc/submit_manifest.sh manifests/pilot.csv
-
-hpc/python.sh hpc/make_manifest.py --stage production --output manifests/production.csv
-bash hpc/submit_manifest.sh manifests/production.csv
+sbatch job_alpha_sweep.slurm
+squeue -A morri353
 ```
+
+The job creates the parameter row internally for each array index, so no
+manifest command is required before submission. Its logs are
+`ctc_v2_JOBID_TASKID.out` and `.err` in the submission directory. Completed
+nodes contain `_SUCCESS`; resubmitting an already completed node skips it.
+
+After the pilot has completed and passed its initial checks, submit the
+separate 80,000-hit production shard with:
+
+```bash
+sbatch --export=ALL,DSMC_STAGE=production job_alpha_sweep.slurm
+squeue -A morri353
+```
+
+Use `sacct -A morri353 -j JOBID --format=JobID,State,Elapsed,ExitCode` to inspect
+completed or failed tasks. The older manifest submission helpers remain for
+QA-selected continuation arrays, whose task count is not known in advance.
 
 Only directories containing `_SUCCESS` are estimated. Build the grouped
 estimation manifest and submit at most 50 simultaneous estimators:

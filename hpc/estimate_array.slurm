@@ -1,9 +1,11 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH --account=morri353
+#SBATCH --partition=cpu
 #SBATCH --job-name=estimate_v2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/estimate_%A_%a.out
 #SBATCH --error=logs/estimate_%A_%a.err

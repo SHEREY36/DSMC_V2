@@ -1,10 +1,12 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH --account=morri353
+#SBATCH --partition=cpu
 #SBATCH --job-name=artifact_v2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=20
-#SBATCH --time=06:00:00
+#SBATCH --mem=32G
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/artifact_%j.out
 #SBATCH --error=logs/artifact_%j.err
 
