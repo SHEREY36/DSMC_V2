@@ -107,6 +107,22 @@ sigma_CTC = A0 N_hit / N_try
 is reported only as QA against the frozen polynomial. It never changes the
 DSMC clock.
 
+### Binary decoding and post-processing
+
+The `.bin` files are typed tables, not text. `contracts` freezes the
+little-endian NumPy dtypes: an attempt record is 200 bytes and an accepted
+outcome record is 552 bytes. `load_run()` checks the metadata version and file
+sizes, memory-maps both files without converting them to CSV, and exposes
+named integer headers plus float64 fields. It then verifies record counts,
+unique IDs, the hit/outcome one-to-one relation, finite values, unit vectors,
+energy identities, and elastic replay error.
+
+Every Coll_Models estimator calls this reader. The estimator forms the 16
+scores from the incoming attempt states, joins accepted outcomes by
+`(event_id, attempt_index)`, accumulates 128 deterministic blocks, and performs
+the bootstrap from those blocks. Users should never open, edit, or manually
+convert the binary files.
+
 ## DSMC-compatible routing estimator
 
 For proposal `j`, the unchanged BL mean fractional loss is
@@ -281,7 +297,7 @@ directly; no interactive conda activation is required inside a batch job. To
 use a different compatible interpreter, export its absolute path as
 `DSMC_V2_PYTHON` before submission.
 
-### One-command Negishi submission
+### One-command Negishi stages
 
 The root job file contains the `morri353` account, `cpu` partition, one node,
 20 OpenMP CPUs, 32 GB, 24-hour limit, and `0-869%50` array declaration. From
@@ -297,51 +313,79 @@ manifest command is required before submission. Its logs are
 `ctc_v2_JOBID_TASKID.out` and `.err` in the submission directory. Completed
 nodes contain `_SUCCESS`; resubmitting an already completed node skips it.
 
-After the pilot has completed and passed its initial checks, submit the
-separate 80,000-hit production shard with:
+Production is deliberately not launched automatically. First require all 870
+pilot nodes to finish and estimate the pilot directly from the binary files:
 
 ```bash
-sbatch --export=ALL,DSMC_STAGE=production job_alpha_sweep.slurm
+find results/ctc/pilot -name _SUCCESS | wc -l
+sbatch job_estimate_pilot.slurm
 squeue -A morri353
 ```
 
-Use `sacct -A morri353 -j JOBID --format=JobID,State,Elapsed,ExitCode` to inspect
-completed or failed tasks. The older manifest submission helpers remain for
-QA-selected continuation arrays, whose task count is not known in advance.
-
-Only directories containing `_SUCCESS` are estimated. Build the grouped
-estimation manifest and submit at most 50 simultaneous estimators:
+The count must be 870. After the estimation array finishes successfully,
+create the pilot QA tables:
 
 ```bash
-PYTHONPATH=contracts/python:Coll_Models_v2/src \
-hpc/python.sh hpc/make_estimation_manifest.py \
-  --runs-root results/ctc --output manifests/estimate.csv
-
-N=$(( $(wc -l < manifests/estimate.csv) - 1 ))
-sbatch --array="0-$((N-1))%50" hpc/estimate_array.slurm \
-  manifests/estimate.csv coefficients/node_estimates
+sbatch job_summarize_pilot.slurm
+cat coefficients/pilot/summary.json
 ```
 
-Create the QA table and continuation manifest:
+Inspect pilot failures before spending the larger allocation. When the pilot
+audits are acceptable, submit the separate 80,000-hit shard:
 
 ```bash
-PYTHONPATH=contracts/python:Coll_Models_v2/src \
-hpc/python.sh Coll_Models_v2/scripts/estimate_grid.py \
-  --runs-root results/ctc --output coefficients --bootstrap 2000 \
-  --gamma-max-table Coll_Models_v2/models/legacy_bl/gamma_max_table.json \
-  --one-hit-table Coll_Models_v2/models/legacy_bl/one_hit_table.json
-
-hpc/python.sh hpc/make_manifest.py --stage continuation --shard 2 \
-  --qa-summary coefficients/qa_summary.csv \
-  --output manifests/continuation_02.csv
-bash hpc/submit_manifest.sh manifests/continuation_02.csv
+sbatch job_production_sweep.slurm
+squeue -A morri353
 ```
 
-Repeat with increasing shard numbers until all nodes pass or reach the cap.
-Then build the three-file microscopic closure bundle:
+Pilot and production write different directories and seeds. They are joined
+only by the combined estimator, giving 100,000 accepted outcomes per node.
+After all production nodes finish:
 
 ```bash
-sbatch hpc/aggregate.slurm results/ctc models/microscopic_closure_v2
+find results/ctc/production -name _SUCCESS | wc -l
+sbatch job_estimate_combined.slurm
+```
+
+Again, the count must be 870. After the combined estimation array finishes:
+
+```bash
+sbatch job_summarize_combined.slurm
+cat coefficients/combined/summary.json
+```
+
+If `n_continue` is nonzero, submit 100,000 additional hits only for failed
+nodes:
+
+```bash
+sbatch job_continuation_sweep.slurm
+```
+
+Then rerun `job_estimate_combined.slurm` and
+`job_summarize_combined.slurm`. If another round is requested, increment the
+shard number so it has an independent deterministic stream:
+
+```bash
+sbatch --export=ALL,DSMC_SHARD=3 job_continuation_sweep.slurm
+```
+
+Continue with shard 4, 5, and so on only when QA requests it, stopping at one
+million outcomes per node. When `coefficients/combined/summary.json` reports
+`"all_pass": true`, build the runtime bundle:
+
+```bash
+sbatch job_build_artifact.slurm
+```
+
+The artifact job independently refuses to run unless all 870 combined QA rows
+pass. It writes `routing16_v2.json`, `vss_rank2_v2.json`, and
+`rotational_direction_v2.npz` under `models/microscopic_closure_v2/`.
+
+For every submitted job, use:
+
+```bash
+squeue -A morri353
+sacct -A morri353 -j JOBID --format=JobID,State,Elapsed,ExitCode
 ```
 
 ## Running DSMC

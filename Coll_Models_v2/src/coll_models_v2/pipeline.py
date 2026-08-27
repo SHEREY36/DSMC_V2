@@ -32,7 +32,7 @@ def group_runs(paths) -> dict[tuple[float, float, float], list[Path]]:
     return dict(grouped)
 
 
-def _precision_status(result: dict) -> tuple[bool, list[str]]:
+def precision_status(result: dict) -> tuple[bool, list[str]]:
     reasons = []
     sigma = result["quantities"]["sigma_ctc"]
     if sigma["ci_low"] is None or 0.5 * (sigma["ci_high"] - sigma["ci_low"]) > 0.01 * abs(sigma["estimate"]):
@@ -74,7 +74,7 @@ def estimate_grid(runs_root: str | Path, output_directory: str | Path,
     results = []
     for key, paths in sorted(grouped.items()):
         result = estimate_node(paths, bl, n_bootstrap=n_bootstrap)
-        passed, reasons = _precision_status(result)
+        passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
         results.append(result)
         tag = f"alpha_{key[0]:.3f}_theta_{key[1]:.3f}_AR_{key[2]:.3f}.json"

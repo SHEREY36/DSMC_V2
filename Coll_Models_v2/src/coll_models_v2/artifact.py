@@ -8,17 +8,18 @@ from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import FEATURE_NAMES, load_run
+from dsmc_v2_contracts import FEATURE_NAMES
 
-from .direction_library import build_direction_library
+from .direction_library import build_direction_library_from_paths
 from .estimate import estimate_node
 from .legacy_bl import LegacyBL
 from .surfaces import fit_surface, transformed_coordinates
 
 
 def _node_key(run) -> tuple[float, float, float]:
-    return (float(run.metadata["alpha"]), float(run.metadata["theta"]),
-            float(run.metadata["aspect_ratio"]))
+    values = run if isinstance(run, dict) else run.metadata
+    return (float(values["alpha"]), float(values["theta"]),
+            float(values["aspect_ratio"]))
 
 
 def _fit_routing_surfaces(nodes: list[dict]) -> dict:
@@ -48,18 +49,49 @@ def _fit_routing_surfaces(nodes: list[dict]) -> dict:
     return surfaces
 
 
+def _path_key(path) -> tuple[float, float, float]:
+    metadata = json.loads((Path(path) / "metadata_v2.json").read_text())
+    return (float(metadata["alpha"]), float(metadata["theta"]),
+            float(metadata["aspect_ratio"]))
+
+
+def _load_node_estimates(directory, expected_groups) -> list[dict]:
+    nodes = [json.loads(path.read_text()) for path in sorted(Path(directory).glob("alpha_*.json"))]
+    keys = {_node_key(node) for node in nodes}
+    if len(nodes) != len(keys):
+        raise ValueError("precomputed node estimates contain duplicate keys")
+    if keys != set(expected_groups):
+        missing = sorted(set(expected_groups) - keys)
+        extra = sorted(keys - set(expected_groups))
+        raise ValueError(f"precomputed node grid mismatch; missing={missing}, extra={extra}")
+    for node in nodes:
+        key = _node_key(node)
+        expected = {Path(path).resolve() for path in expected_groups[key]}
+        actual = {Path(path).resolve() for path in node.get("source_runs", [])}
+        if actual != expected:
+            raise ValueError(f"stale node estimate for {key}; expected shards={sorted(expected)}, "
+                             f"estimated shards={sorted(actual)}")
+    failed = [node for node in nodes if not node.get("qa", {}).get("precision_pass", False)]
+    if failed:
+        raise ValueError(f"{len(failed)} precomputed nodes have not passed precision QA")
+    return sorted(nodes, key=_node_key)
+
+
 def build_artifact(run_directories, output_directory, bl: LegacyBL,
-                   n_bootstrap: int = 2000) -> dict:
+                   n_bootstrap: int = 2000, node_estimates=None) -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
-    runs = [load_run(path) for path in run_directories]
-    if not runs:
+    paths = [Path(path) for path in run_directories]
+    if not paths:
         raise ValueError("no CTC runs supplied")
     grouped = defaultdict(list)
-    for path, run in zip(run_directories, runs):
-        grouped[_node_key(run)].append(path)
-    nodes = [estimate_node(paths, bl, n_bootstrap=n_bootstrap)
-             for _, paths in sorted(grouped.items())]
+    for path in paths:
+        grouped[_path_key(path)].append(path)
+    if node_estimates:
+        nodes = _load_node_estimates(node_estimates, grouped)
+    else:
+        nodes = [estimate_node(shards, bl, n_bootstrap=n_bootstrap)
+                 for _, shards in sorted(grouped.items())]
     failed_audits = [node for node in nodes if node["alpha"] < 1.0 and
                      (not node["qa"]["total_loss_compatibility_pass"] or
                       not node["qa"]["cross_section_pass"])]
@@ -140,8 +172,9 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
             "sigma_multiplier": 3.0, "pass": bool(theta_pass), "rows": theta_diagnostics},
     }, indent=2, sort_keys=True) + "\n")
 
-    direction = build_direction_library([run for run in runs
-                                         if float(run.metadata["alpha"]) < 1.0])
+    inelastic_paths = [path for key, shards in grouped.items() if key[0] < 1.0
+                       for path in shards]
+    direction = build_direction_library_from_paths(inelastic_paths)
     direction.save(str(output / "rotational_direction_v2.npz"))
     manifest = {
         "schema_version": "2.1.0", "artifact_type": "microscopic_closure_v2",
@@ -150,7 +183,7 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
                       "Zr", "reservoir_clipping", "time_integration", "outputs"],
         "files": ["routing16_v2.json", "vss_rank2_v2.json",
                   "rotational_direction_v2.npz"],
-        "n_runs": len(runs), "n_nodes": len(nodes),
+        "n_runs": len(paths), "n_nodes": len(nodes),
         "dem_calibration_used": False, "p_eta": None,
         "pair_clock_exported": False, "energy_kernel_exported": False,
     }

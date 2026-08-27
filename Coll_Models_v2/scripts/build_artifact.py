@@ -14,6 +14,8 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=2000)
     parser.add_argument("--gamma-max-table", required=True)
     parser.add_argument("--one-hit-table", required=True)
+    parser.add_argument("--node-estimates",
+                        help="directory of QA-passed per-node estimator JSON files")
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
     args = parser.parse_args()
@@ -22,7 +24,7 @@ def main():
         parser.error("provide run directories or --runs-root")
     bl = LegacyBL.load(args.gamma_max_table, args.one_hit_table,
                        args.beta_a, args.beta_b)
-    result = build_artifact(runs, args.output, bl, args.bootstrap)
+    result = build_artifact(runs, args.output, bl, args.bootstrap, args.node_estimates)
     print(f"Wrote {result['artifact_type']} with {result['n_nodes']} node(s) to {args.output}")
 
 

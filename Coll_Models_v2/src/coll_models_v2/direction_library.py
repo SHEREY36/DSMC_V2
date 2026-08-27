@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial import cKDTree
 
+from dsmc_v2_contracts import load_run
 from dsmc_v2_contracts.io import OI, RunDataV2, _vec
 
 
@@ -93,8 +94,8 @@ class DirectionLibrary:
         return self.directions[int(rng.choice(index, p=weights))]
 
 
-def build_direction_library(runs: list[RunDataV2],
-                            maximum_donors: int = 500_000) -> DirectionLibrary:
+def _build_direction_library(runs, run_count: int,
+                             maximum_donors: int = 500_000) -> DirectionLibrary:
     """Build a deterministic, node-stratified donor subset.
 
     The full accepted streams remain the source of routing/VSS statistics, but
@@ -103,7 +104,7 @@ def build_direction_library(runs: list[RunDataV2],
     index, keeping the deployed cKDTree below a documented memory ceiling.
     """
     features, directions = [], []
-    quota = max(64, int(maximum_donors) // max(len(runs), 1))
+    quota = max(64, int(maximum_donors) // max(run_count, 1))
     for run in runs:
         values = run.outcomes["values"]
         mass = float(run.metadata["mass"])
@@ -143,3 +144,20 @@ def build_direction_library(runs: list[RunDataV2],
     return DirectionLibrary(mean, scale, np.min(raw, axis=0), np.max(raw, axis=0),
                             standardized, np.asarray(directions),
                             float(np.quantile(distance[:, 1], 0.95)))
+
+
+def build_direction_library(runs: list[RunDataV2],
+                            maximum_donors: int = 500_000) -> DirectionLibrary:
+    return _build_direction_library(runs, len(runs), maximum_donors)
+
+
+def build_direction_library_from_paths(run_directories,
+                                       maximum_donors: int = 500_000) -> DirectionLibrary:
+    """Load one raw shard at a time so artifact export has bounded open files."""
+    paths = list(run_directories)
+
+    def runs():
+        for path in paths:
+            yield load_run(path)
+
+    return _build_direction_library(runs(), len(paths), maximum_donors)
