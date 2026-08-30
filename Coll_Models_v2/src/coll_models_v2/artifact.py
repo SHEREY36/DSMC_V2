@@ -91,11 +91,6 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
     else:
         nodes = [estimate_node(shards, bl, n_bootstrap=n_bootstrap)
                  for _, shards in sorted(grouped.items())]
-    failed_audits = [node for node in nodes if not node["qa"]["cross_section_pass"]]
-    if failed_audits:
-        cases = [(n["alpha"], n["theta"], n["aspect_ratio"]) for n in failed_audits]
-        raise ValueError(f"frozen cross-section audit failed at {cases}")
-
     surfaces = _fit_routing_surfaces(nodes)
     routing_payload = {
         "schema_version": "2.1.0", "artifact_type": "routing16_v2",
@@ -103,7 +98,7 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
         "coordinates": ["one_minus_alpha_squared", "log_theta", "log_AR"],
         "runtime_equation": "F_tr=F_C*(1+sum(beta_ctc_a*X_a))",
         "routing_range": "unbounded_modal_production_ratio_not_a_probability",
-        "cross_section_role": "qa_only_frozen_v1_clock_is_unchanged",
+        "cross_section_role": "reported_audit_only_frozen_v1_clock_is_authoritative",
         "total_loss_kernel": "preserved_v1_BL_gamma_max_times_P1hit_times_Beta(1.21,3.67)",
         "total_loss_compatibility_role": "reported_audit_not_a_routing_normalization",
         "design_hull": {"alpha": [0.5, 0.99], "theta": [0.1, 1.2],

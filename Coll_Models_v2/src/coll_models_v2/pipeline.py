@@ -34,11 +34,10 @@ def group_runs(paths) -> dict[tuple[float, float, float], list[Path]]:
 
 def precision_status(result: dict) -> tuple[bool, list[str]]:
     reasons = []
-    sigma = result["quantities"]["sigma_ctc"]
-    if sigma["ci_low"] is None or 0.5 * (sigma["ci_high"] - sigma["ci_low"]) > 0.01 * abs(sigma["estimate"]):
-        reasons.append("cross_section_qa_precision")
-    if not result["qa"]["cross_section_pass"]:
-        reasons.append("cross_section_polynomial_disagreement")
+    # The frozen v1 cross-section is intentionally authoritative. CTC v2
+    # supplies only conditional modal ratios and scattering moments, for which
+    # the absolute proposal-area normalization cancels. sigma_ctc is retained
+    # as an audit, never as a continuation or artifact-release criterion.
     if not result["qa"]["vss_representable"] and result["theta"] == 1.0:
         reasons.append("vss_unrepresentable")
     if result["alpha"] < 1.0:

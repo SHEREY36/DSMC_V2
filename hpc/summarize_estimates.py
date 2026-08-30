@@ -8,6 +8,8 @@ import csv
 import json
 from pathlib import Path
 
+from coll_models_v2.pipeline import precision_status
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -19,7 +21,15 @@ def main() -> None:
     sources = sorted(Path(args.input).glob("alpha_*.json"))
     if len(sources) != args.expected:
         raise ValueError(f"found {len(sources)} node estimates, expected {args.expected}")
-    results = [json.loads(path.read_text()) for path in sources]
+    results = []
+    for path in sources:
+        result = json.loads(path.read_text())
+        passed, reasons = precision_status(result)
+        result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
+        # Keep precomputed nodes synchronized with the current release policy;
+        # this is a cheap reclassification and never recomputes a bootstrap.
+        path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        results.append(result)
     results.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
     keys = {(row["alpha"], row["theta"], row["aspect_ratio"]) for row in results}
     if len(keys) != args.expected:

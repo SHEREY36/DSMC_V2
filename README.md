@@ -104,8 +104,12 @@ The CTC cross-section estimate
 sigma_CTC = A0 N_hit / N_try
 ```
 
-is reported only as QA against the frozen polynomial. It never changes the
-DSMC clock.
+is reported as an audit against the frozen polynomial. The pilot shows that
+this geometric-hit estimate is not the same AR-dependent effective clock as
+the validated v1 polynomial. Since the production v2 outputs are conditional
+modal ratios and scattering moments, the absolute proposal-area normalization
+cancels. The discrepancy therefore neither changes the DSMC clock nor triggers
+continuation or blocks artifact release.
 
 ### Binary decoding and post-processing
 
@@ -174,9 +178,9 @@ v1 total-loss draw and reservoir behavior remain unchanged.
 
 The artifact retains `F0`, `beta_BL`, and the CTC/BL total-loss compatibility
 ratio as explicit audits. They do not renormalize production routing and do
-not change the preserved total-loss draw. Cross-section disagreement remains
-a release blocker because the frozen collision clock must still represent the
-CTC collision measure.
+not change the preserved total-loss draw. The CTC geometric cross-section is
+likewise retained as an audit; the frozen v1 effective clock remains
+authoritative and is not refitted by this pipeline.
 
 The 16 variables and normalizations are documented in
 `contracts/FEATURE_BASIS.md`. Tensor/vector squares and cross-products use

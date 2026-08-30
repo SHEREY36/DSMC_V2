@@ -10,7 +10,7 @@ def _quantity(value):
 
 
 class PipelineQATests(unittest.TestCase):
-    def test_preserved_bl_mismatch_is_audit_not_continuation_reason(self):
+    def test_preserved_clock_and_bl_mismatches_are_audit_only(self):
         quantities = {
             "sigma_ctc": _quantity(1.0),
             "F_C": _quantity(1.2),
@@ -23,7 +23,7 @@ class PipelineQATests(unittest.TestCase):
             "theta": 0.5,
             "quantities": quantities,
             "qa": {
-                "cross_section_pass": True,
+                "cross_section_pass": False,
                 "total_loss_compatibility_pass": False,
                 "vss_representable": True,
                 "score_tail_pass": True,
