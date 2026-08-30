@@ -34,9 +34,9 @@ class _Closure:
 class _RoutingClosure:
     @staticmethod
     def _routing_quantity(name, alpha, theta, aspect_ratio):
-        if name == "F0":
+        if name == "F_C":
             return 1.2
-        return 0.25 if name == "beta_a2_tr" else 0.0
+        return 0.25 if name == "beta_ctc_a2_tr" else 0.0
 
 
 def _state():

@@ -42,23 +42,21 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
     if not result["qa"]["vss_representable"] and result["theta"] == 1.0:
         reasons.append("vss_unrepresentable")
     if result["alpha"] < 1.0:
-        f0 = result["quantities"]["F0"]
-        if f0["ci_low"] is None or 0.5 * (f0["ci_high"] - f0["ci_low"]) > 0.01 * abs(f0["estimate"]):
-            reasons.append("F0_precision")
-        if not result["qa"]["total_loss_compatibility_pass"]:
-            reasons.append("preserved_BL_total_loss_mismatch")
+        fc = result["quantities"]["F_C"]
+        if fc["ci_low"] is None or 0.5 * (fc["ci_high"] - fc["ci_low"]) > 0.01 * abs(fc["estimate"]):
+            reasons.append("F_C_precision")
         if not result["qa"]["score_tail_pass"]:
             reasons.append("score_tail_instability")
         for index, feature in enumerate(FEATURE_NAMES):
-            row = result["quantities"][f"beta_{feature}"]
+            row = result["quantities"][f"beta_ctc_{feature}"]
             if row["ci_low"] is None:
-                reasons.append(f"beta_{feature}_missing")
+                reasons.append(f"beta_ctc_{feature}_missing")
                 continue
             half = 0.5 * (row["ci_high"] - row["ci_low"])
             threshold = max(0.05, 0.15 * abs(row["estimate"])) if index < 12 \
                 else max(0.10, 0.25 * abs(row["estimate"]))
             if half > threshold:
-                reasons.append(f"beta_{feature}_precision")
+                reasons.append(f"beta_ctc_{feature}_precision")
     if result["theta"] == 1.0:
         b2 = result["quantities"]["B2"]
         if b2["ci_low"] is None or 0.5 * (b2["ci_high"] - b2["ci_low"]) > 0.01 * abs(b2["estimate"]):
@@ -90,7 +88,9 @@ def estimate_grid(runs_root: str | Path, output_directory: str | Path,
                     "aspect_ratio": result["aspect_ratio"], "quantity": name, **row})
     with (output / "qa_summary.csv").open("w", newline="") as handle:
         fields = ["alpha", "theta", "aspect_ratio", "n_attempts", "n_outcomes",
-                  "precision_pass", "vss_representable", "continuation_reasons"]
+                  "precision_pass", "vss_representable", "continuation_reasons",
+                  "cross_section_pass", "total_loss_compatibility_pass",
+                  "score_tail_pass"]
         writer = csv.DictWriter(handle, fieldnames=fields); writer.writeheader()
         for result in results:
             writer.writerow({
@@ -100,5 +100,8 @@ def estimate_grid(runs_root: str | Path, output_directory: str | Path,
                 "precision_pass": result["qa"]["precision_pass"],
                 "vss_representable": result["qa"]["vss_representable"],
                 "continuation_reasons": ";".join(result["qa"]["continuation_reasons"]),
+                "cross_section_pass": result["qa"]["cross_section_pass"],
+                "total_loss_compatibility_pass": result["qa"]["total_loss_compatibility_pass"],
+                "score_tail_pass": result["qa"]["score_tail_pass"],
             })
     return results

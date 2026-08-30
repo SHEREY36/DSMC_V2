@@ -42,7 +42,9 @@ def main() -> None:
                                  "quantity": name, **quantity})
 
     qa_fields = ["alpha", "theta", "aspect_ratio", "n_attempts", "n_outcomes",
-                 "precision_pass", "vss_representable", "continuation_reasons"]
+                 "precision_pass", "vss_representable", "continuation_reasons",
+                 "cross_section_pass", "total_loss_compatibility_pass",
+                 "score_tail_pass"]
     with (output / "qa_summary.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=qa_fields)
         writer.writeheader()
@@ -54,11 +56,23 @@ def main() -> None:
                 "precision_pass": result["qa"]["precision_pass"],
                 "vss_representable": result["qa"]["vss_representable"],
                 "continuation_reasons": ";".join(result["qa"]["continuation_reasons"]),
+                "cross_section_pass": result["qa"]["cross_section_pass"],
+                "total_loss_compatibility_pass": result["qa"]["total_loss_compatibility_pass"],
+                "score_tail_pass": result["qa"]["score_tail_pass"],
             })
     passing = sum(bool(row["qa"]["precision_pass"]) for row in results)
     summary = {"schema_version": "2.1.0", "n_nodes": len(results),
                "n_pass": passing, "n_continue": len(results) - passing,
-               "all_pass": passing == len(results)}
+               "all_pass": passing == len(results),
+               "audit": {
+                   "cross_section_pass": sum(bool(row["qa"]["cross_section_pass"])
+                                             for row in results),
+                   "total_loss_compatibility_pass": sum(
+                       bool(row["qa"]["total_loss_compatibility_pass"])
+                       for row in results),
+                   "vss_representable": sum(bool(row["qa"]["vss_representable"])
+                                            for row in results),
+               }}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"Summarized {len(results)} nodes: {passing} pass, "
           f"{len(results) - passing} require continuation")

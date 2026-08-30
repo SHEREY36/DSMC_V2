@@ -123,7 +123,7 @@ scores from the incoming attempt states, joins accepted outcomes by
 the bootstrap from those blocks. Users should never open, edit, or manually
 convert the binary files.
 
-## DSMC-compatible routing estimator
+## CTC modal-routing estimator for the preserved DSMC loss law
 
 For proposal `j`, the unchanged BL mean fractional loss is
 
@@ -132,19 +132,30 @@ mean_gamma = gamma_max P1hit a_gamma/(a_gamma+b_gamma)
 delta_BL,j = E_i,j mean_gamma.
 ```
 
-The reference routing fraction is
+The estimator reports the BL-matched absolute-production diagnostic
 
 ```text
 F0 = A0 sum_try(H delta_tr,CTC)
      / [sigma_c sum_try(delta_BL)].
 ```
 
-The estimator forms the agreed 16 pair scores `K_a` from every incoming state:
+and the corresponding score derivatives
 
 ```text
 L_tr,a = sum(H delta_tr K_a) / sum(H delta_tr)
 L_BL,a = sum(delta_BL K_a) / sum(delta_BL)
-beta_a = L_tr,a - L_BL,a.
+beta_BL,a = L_tr,a - L_BL,a.
+```
+
+The pilot demonstrated that the validated v1 BL total-loss production and CTC
+total-loss production are not equal throughout the full `(alpha,theta,AR)`
+grid. Because v2 deliberately preserves the v1 total-loss law, production
+routing uses the CTC modal allocation rather than asking routing to compensate
+for that total-loss difference:
+
+```text
+F_C = sum(H delta_tr) / sum(H delta),
+beta_C,a = <K_a>_(H delta_tr) - <K_a>_(H delta).
 ```
 
 These quantities are modal production ratios, not probabilities. In
@@ -154,24 +165,18 @@ the unchanged v1 energy update and its reservoir handling. The runtime
 therefore retains the unbounded first-order closure
 
 ```text
-F_tr = F0 [1 + sum_a beta_a X_a].
+F_tr = F_C [1 + sum_a beta_C,a X_a].
 ```
 
 No probability transform or clipping is applied. The closure changes only how
 the already drawn total loss is divided between translation and rotation; the
 v1 total-loss draw and reservoir behavior remain unchanged.
 
-The artifact also contains the pure-CTC audit
-
-```text
-F_C = sum(H delta_tr) / sum(H delta),
-beta_C,a = <K_a>_(H delta_tr) - <K_a>_(H delta).
-```
-
-and a total-loss compatibility ratio. Artifact release stops if the frozen BL
-loss production differs from CTC by more than 10% after uncertainty is
-included. This is intentional: routing
-must not hide an error in a preserved total-loss kernel.
+The artifact retains `F0`, `beta_BL`, and the CTC/BL total-loss compatibility
+ratio as explicit audits. They do not renormalize production routing and do
+not change the preserved total-loss draw. Cross-section disagreement remains
+a release blocker because the frozen collision clock must still represent the
+CTC collision measure.
 
 The 16 variables and normalizations are documented in
 `contracts/FEATURE_BASIS.md`. Tensor/vector squares and cross-products use

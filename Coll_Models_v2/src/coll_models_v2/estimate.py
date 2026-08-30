@@ -121,7 +121,10 @@ def _evaluate(sums: np.ndarray, metadata: dict, bl: LegacyBL) -> np.ndarray:
         # multiplicative first-order closure used on the present design grid.
         if f0 <= 0.0 or fc <= 0.0:
             raise ValueError(f"routing reference must be positive; F0={f0}, FC={fc}")
-        cm = f0 / (3.0 * theta / (3.0 * theta + 2.0))
+        # C_M belongs to the production modal-routing closure. The BL-matched
+        # F0 remains an audit quantity, while F_C is the reference consumed by
+        # DSMC when its validated total-loss law is preserved.
+        cm = fc / (3.0 * theta / (3.0 * theta + 2.0))
         total_audit = area * sd / (sigma_poly * sbl)
         scalar.extend([f0, cm, fc, total_audit])
     scalar.extend([b2, alpha_eff, sp1 / nhit, sp2 / nhit, sp3 / nhit, sp4 / nhit])
