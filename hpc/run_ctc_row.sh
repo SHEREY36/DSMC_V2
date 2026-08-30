@@ -7,6 +7,9 @@ EXPECTED_TASK=${2:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 IFS=, read -r TASK_ID STAGE ROLE ALPHA THETA AR SEED NSAMPLES SHARD OUTPUT_DIR <<< "$ROW"
+# Accept manifests produced before v2.1.1, whose CRLF row ending otherwise
+# becomes an invisible carriage return in the output directory name.
+OUTPUT_DIR=${OUTPUT_DIR%$'\r'}
 if [[ -n "$EXPECTED_TASK" && "$TASK_ID" != "$EXPECTED_TASK" ]]; then
     printf 'ERROR: expected task %s but manifest returned %s.\n' "$EXPECTED_TASK" "$TASK_ID" >&2
     exit 2

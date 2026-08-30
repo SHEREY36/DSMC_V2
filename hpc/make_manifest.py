@@ -77,7 +77,11 @@ def main():
         rows = base_rows(args.stage, samples, shard, args.results_root)
     path = Path(args.output); path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS); writer.writeheader(); writer.writerows(rows)
+        # The rows are consumed by Bash as well as Python.  Force Unix newlines
+        # so the final output_directory field never acquires a literal '\r'.
+        writer = csv.DictWriter(handle, fieldnames=FIELDS, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
     print(f"Wrote {len(rows)} tasks to {path}")
 
 

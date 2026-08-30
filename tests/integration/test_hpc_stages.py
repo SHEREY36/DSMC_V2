@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,25 @@ class HPCStageTests(unittest.TestCase):
             _, combined_paths = node_paths(0, "combined", root)
             self.assertEqual(pilot_paths, [pilot])
             self.assertEqual(combined_paths, [pilot, production, continuation])
+
+    def test_estimator_reads_legacy_cr_suffixed_pilot_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "results" / "ctc"
+            expected = Path(base_rows("pilot", 20_000, 0, str(root))[0]["output_directory"])
+            legacy = Path(str(expected) + "\r")
+            legacy.mkdir(parents=True)
+            (legacy / "_SUCCESS").touch()
+            _, paths = node_paths(0, "pilot", root)
+            self.assertEqual(paths, [legacy])
+
+    def test_manifest_has_unix_line_endings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "pilot.csv"
+            subprocess.run([
+                sys.executable, str(ROOT / "hpc" / "make_manifest.py"),
+                "--stage", "pilot", "--output", str(manifest),
+            ], check=True, capture_output=True, text=True)
+            self.assertNotIn(b"\r", manifest.read_bytes())
 
     def test_all_root_jobs_target_the_negishi_account(self):
         jobs = sorted(ROOT.glob("job_*.slurm"))

@@ -14,20 +14,31 @@ from coll_models_v2.pipeline import precision_status
 from make_manifest import base_rows
 
 
+def finalized_path(path: Path) -> Path | None:
+    """Resolve a completed shard, including the pre-v2.1.1 CRLF path bug."""
+    if (path / "_SUCCESS").is_file():
+        return path
+    legacy = Path(str(path) + "\r")
+    if (legacy / "_SUCCESS").is_file():
+        return legacy
+    return None
+
+
 def node_paths(index: int, scope: str, runs_root: Path) -> tuple[dict, list[Path]]:
     pilot_rows = base_rows("pilot", 20_000, 0, str(runs_root))
     production_rows = base_rows("production", 80_000, 1, str(runs_root))
     if index < 0 or index >= len(pilot_rows):
         raise IndexError(f"task index {index} lies outside 0..{len(pilot_rows) - 1}")
     row = pilot_rows[index]
-    required = [Path(row["output_directory"])]
+    expected = [Path(row["output_directory"])]
     if scope == "combined":
-        required.append(Path(production_rows[index]["output_directory"]))
-    missing = [path for path in required if not (path / "_SUCCESS").is_file()]
+        expected.append(Path(production_rows[index]["output_directory"]))
+    resolved = [finalized_path(path) for path in expected]
+    missing = [path for path, actual in zip(expected, resolved) if actual is None]
     if missing:
         raise FileNotFoundError("required finalized shard(s) missing: "
                                 + ", ".join(map(str, missing)))
-    paths = list(required)
+    paths = [path for path in resolved if path is not None]
     if scope == "combined":
         pattern = (f"alpha_{float(row['alpha']):.3f}_theta_{float(row['theta']):.3f}_"
                    f"AR_{float(row['aspect_ratio']):.3f}_shard_*")
