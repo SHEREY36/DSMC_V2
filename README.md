@@ -147,15 +147,19 @@ L_BL,a = sum(delta_BL K_a) / sum(delta_BL)
 beta_a = L_tr,a - L_BL,a.
 ```
 
-The runtime uses the derivative-equivalent bounded form
+These quantities are modal production ratios, not probabilities. In
+particular, `F_tr > 1` means that translation loses more than the net
+dissipation while rotation gains the difference. This is already supported by
+the unchanged v1 energy update and its reservoir handling. The runtime
+therefore retains the unbounded first-order closure
 
 ```text
-logit(F_tr) = logit(F0) + sum_a eta_a X_a,
-eta_a = beta_a/(1-F0).
+F_tr = F0 [1 + sum_a beta_a X_a].
 ```
 
-This guarantees `0 < F_tr < 1` without clipping. It changes only how the
-already drawn total loss is divided between translation and rotation.
+No probability transform or clipping is applied. The closure changes only how
+the already drawn total loss is divided between translation and rotation; the
+v1 total-loss draw and reservoir behavior remain unchanged.
 
 The artifact also contains the pure-CTC audit
 

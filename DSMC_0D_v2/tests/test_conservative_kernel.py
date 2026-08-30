@@ -31,6 +31,14 @@ class _Closure:
         return np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
 
 
+class _RoutingClosure:
+    @staticmethod
+    def _routing_quantity(name, alpha, theta, aspect_ratio):
+        if name == "F0":
+            return 1.2
+        return 0.25 if name == "beta_a2_tr" else 0.0
+
+
 def _state():
     velocity = np.array([[1.0, 0.2, 0.0], [-1.0, -0.2, 0.0]])
     energy = np.array([0.3, 0.4])
@@ -96,6 +104,16 @@ class ConservativeKernelTests(unittest.TestCase):
                                    np.dot(states[0].velocity[0] - states[0].velocity[1],
                                           states[0].velocity[0] - states[0].velocity[1]), places=13)
         self.assertFalse(np.allclose(states[0].velocity, states[1].velocity))
+
+    def test_modal_routing_is_not_probability_clipped(self):
+        from dsmc_v2.artifact import MicroscopicClosure
+
+        features = np.zeros(16)
+        features[0] = 0.4
+        value = MicroscopicClosure.routing_fraction(
+            _RoutingClosure(), 0.8, 1.0, 2.0, features)
+        self.assertAlmostEqual(value, 1.2 * (1.0 + 0.25 * 0.4))
+        self.assertGreater(value, 1.0)
 
 
 if __name__ == "__main__":

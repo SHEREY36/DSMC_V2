@@ -13,10 +13,6 @@ from coll_models_v2.surfaces import SplineSurface
 from dsmc_v2_contracts import FEATURE_NAMES
 
 
-def _logistic(value: float) -> float:
-    return float(1.0 / (1.0 + np.exp(-np.clip(value, -35.0, 35.0))))
-
-
 class MicroscopicClosure:
     def __init__(self, routing_path: str | Path, vss_path: str | Path,
                  direction_path: str | Path):
@@ -63,10 +59,15 @@ class MicroscopicClosure:
     def routing_fraction(self, alpha: float, theta: float, aspect_ratio: float,
                          features: np.ndarray) -> float:
         f0 = self._routing_quantity("F0", alpha, theta, aspect_ratio)
-        eta = np.array([self._routing_quantity(f"eta_{name}", alpha, theta, aspect_ratio)
-                        for name in FEATURE_NAMES])
-        logit = np.log(f0 / (1.0 - f0)) + np.dot(eta, features)
-        return _logistic(logit)
+        beta = np.array([self._routing_quantity(f"beta_{name}", alpha, theta, aspect_ratio)
+                         for name in FEATURE_NAMES])
+        # f_tr is a modal production ratio, not a probability.  The unchanged
+        # v1 energy update permits values outside [0,1] to represent energy
+        # transfer between modes while preserving the sampled total loss.
+        value = f0 * (1.0 + float(np.dot(beta, features)))
+        if not np.isfinite(value):
+            raise ValueError("non-finite 16-moment routing response")
+        return float(value)
 
     def alpha_eff(self, alpha: float, aspect_ratio: float) -> float:
         coordinate = np.array([[1.0 - alpha * alpha, np.log(aspect_ratio)]])

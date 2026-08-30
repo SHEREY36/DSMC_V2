@@ -26,7 +26,6 @@ def _fit_routing_surfaces(nodes: list[dict]) -> dict:
     inelastic = [node for node in nodes if node["alpha"] < 1.0]
     names = (["F0", "C_M", "F_C", "total_loss_compatibility_ratio"]
              + [f"beta_{name}" for name in FEATURE_NAMES]
-             + [f"eta_{name}" for name in FEATURE_NAMES]
              + [f"beta_ctc_{name}" for name in FEATURE_NAMES])
     surfaces = {}
     if (len(inelastic) >= 8 and len({n["alpha"] for n in inelastic}) >= 2
@@ -104,7 +103,8 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
         "schema_version": "2.1.0", "artifact_type": "routing16_v2",
         "feature_order": list(FEATURE_NAMES),
         "coordinates": ["one_minus_alpha_squared", "log_theta", "log_AR"],
-        "runtime_equation": "logit(F_tr)=logit(F0)+sum(eta_a*X_a)",
+        "runtime_equation": "F_tr=F0*(1+sum(beta_a*X_a))",
+        "routing_range": "unbounded_modal_production_ratio_not_a_probability",
         "cross_section_role": "qa_only_frozen_v1_clock_is_unchanged",
         "total_loss_kernel": "preserved_v1_BL_gamma_max_times_P1hit_times_Beta(1.21,3.67)",
         "design_hull": {"alpha": [0.5, 0.99], "theta": [0.1, 1.2],

@@ -113,8 +113,14 @@ def _evaluate(sums: np.ndarray, metadata: dict, bl: LegacyBL) -> np.ndarray:
             raise ValueError("non-positive loss or routing denominator")
         f0 = area * st / (sigma_poly * sbl)
         fc = st / sd
-        if not (0.0 < f0 < 1.0 and 0.0 < fc < 1.0):
-            raise ValueError(f"routing means must be in (0,1); F0={f0}, FC={fc}")
+        # These are modal production ratios, not probabilities.  Values above
+        # one are valid when translation loses energy while rotation gains
+        # part of that energy, so that delta_tr > delta_total.  The preserved
+        # v1 kernel supports this through its unbounded f_tr and reservoir
+        # handling.  Only a non-positive reference would invalidate the
+        # multiplicative first-order closure used on the present design grid.
+        if f0 <= 0.0 or fc <= 0.0:
+            raise ValueError(f"routing reference must be positive; F0={f0}, FC={fc}")
         cm = f0 / (3.0 * theta / (3.0 * theta + 2.0))
         total_audit = area * sd / (sigma_poly * sbl)
         scalar.extend([f0, cm, fc, total_audit])
@@ -125,15 +131,14 @@ def _evaluate(sums: np.ndarray, metadata: dict, bl: LegacyBL) -> np.ndarray:
     dtr_scores = sums[N_SCALARS + 32:N_SCALARS + 48]
     energy_scores = sums[N_SCALARS + 48:N_SCALARS + 64]
     if alpha >= 1.0:
-        beta = eta = beta_ctc = np.full(16, np.nan)
+        beta = beta_ctc = np.full(16, np.nan)
     else:
         # Multiplication by the constant BL mean loss cancels, but retaining
         # the expression documents which preserved DSMC production is used.
         lbl = energy_scores / se
         beta = dtr_scores / st - lbl
-        eta = beta / (1.0 - scalar[3])
         beta_ctc = dtr_scores / st - delta_scores / sd
-    return np.concatenate((np.asarray(scalar), beta, eta, beta_ctc, try_scores / ntry))
+    return np.concatenate((np.asarray(scalar), beta, beta_ctc, try_scores / ntry))
 
 
 def _quantity_names() -> list[str]:
@@ -141,7 +146,6 @@ def _quantity_names() -> list[str]:
              "F0", "C_M", "F_C", "total_loss_compatibility_ratio",
              "B2", "alpha_eff", "mean_P1", "mean_P2", "mean_P3", "mean_P4"]
             + [f"beta_{name}" for name in FEATURE_NAMES]
-            + [f"eta_{name}" for name in FEATURE_NAMES]
             + [f"beta_ctc_{name}" for name in FEATURE_NAMES]
             + [f"mean_try_score_{name}" for name in FEATURE_NAMES])
 
