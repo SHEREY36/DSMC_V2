@@ -184,10 +184,17 @@ Completed target directories are skipped. An existing target without
 move that directory to `results/quarantine` before resubmitting it.
 
 ```bash
-sbatch job_estimate_closure_sentinel.slurm
-sbatch job_summarize_closure_sentinel.slurm
+FIT_JOB=$(sbatch --parsable job_estimate_closure_sentinel.slurm)
+FIT_JOB=${FIT_JOB%%;*}
+sbatch --dependency=afterany:"$FIT_JOB" job_summarize_closure_sentinel.slurm
 cat results/closure_estimates/sentinel_report.json
 ```
+
+Use `afterany`, not `afterok`, for the sentinel summary. An infeasible moment or
+projection is a scientific gate result that must appear in the report, rather
+than leaving the summary permanently pending with `DependencyNeverSatisfied`.
+Missing or corrupt binary input still makes the fit task fail hard, and the
+summary refuses release when any of the 36 node estimates is absent.
 
 The sentinel axes are `alpha={0.5,0.8,0.95,1}`, `theta={0.2,1,2}`, and
 `AR={1.1,2,3}`. Do not submit the full grids unless

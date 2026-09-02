@@ -21,4 +21,5 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/summarize_sentinel.py \
     --runs-root results/ctc_closure/sentinel \
     --estimates results/closure_estimates/sentinel \
+    --manifest manifests/closure_sentinel.csv \
     --output results/closure_estimates/sentinel_report.json

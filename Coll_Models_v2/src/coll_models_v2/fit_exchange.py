@@ -31,6 +31,14 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
     zin2 = _weighted_mean(z_in * z_in, weight)
     zout2 = _weighted_mean(z_out * z_out, weight)
     reset_second = (zout2 - (1.0 - p_exch) * zin2) / p_exch
+    if not (0.0 < reset_mean < 1.0
+            and reset_mean * reset_mean < reset_second < reset_mean):
+        raise ValueError(
+            "infeasible reset moments for the gated affine kernel: "
+            f"p_exch={p_exch:.16g}, affine_intercept={intercept:.16g}, "
+            f"reset_mean={reset_mean:.16g}, "
+            f"reset_second_moment={reset_second:.16g}"
+        )
     projection = fit_energy_projection(reset_mean, reset_second)
     if not projection.converged:
         raise ValueError(f"energy I-projection residual {projection.residual:.3e}")
