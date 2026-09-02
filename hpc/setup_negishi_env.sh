@@ -33,6 +33,7 @@ CONDA_PACKAGES=(
     'scipy>=1.9'
     'scikit-learn>=1.2'
     'pyyaml>=6'
+    'pytest>=8'
 )
 if [[ ! -x "$ENV_DIR/bin/python" ]]; then
     conda create --prefix "$ENV_DIR" -y "${CONDA_PACKAGES[@]}"

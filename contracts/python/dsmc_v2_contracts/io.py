@@ -12,7 +12,8 @@ import numpy as np
 from .features import FEATURE_NAMES, pair_score_kernel
 
 
-SCHEMA_VERSION = "2.1.0"
+SCHEMA_VERSION = "2.2.0"
+READABLE_SCHEMA_VERSIONS = ("2.1.0", SCHEMA_VERSION)
 ATTEMPT_REAL_NAMES = (
     *(f"c1_{a}" for a in "xyz"), *(f"c2_{a}" for a in "xyz"),
     *(f"omega1_{a}" for a in "xyz"), *(f"omega2_{a}" for a in "xyz"),
@@ -38,12 +39,12 @@ OUTCOME_REAL_NAMES = (
 
 ATTEMPT_DTYPE = np.dtype([
     ("event_id", "<i8"), ("attempt_index", "<i8"), ("block_id", "<i8"),
-    ("hit", "<i4"), ("reserved", "<i4"),
+    ("hit", "<i4"), ("ensemble_id", "<i4"),
     ("values", "<f8", (len(ATTEMPT_REAL_NAMES),)),
 ], align=False)
 OUTCOME_DTYPE = np.dtype([
     ("event_id", "<i8"), ("attempt_index", "<i8"), ("block_id", "<i8"),
-    ("n_contact", "<i4"), ("reserved", "<i4"),
+    ("n_contact", "<i4"), ("ensemble_id", "<i4"),
     ("values", "<f8", (len(OUTCOME_REAL_NAMES),)),
 ], align=False)
 AI = {name: i for i, name in enumerate(ATTEMPT_REAL_NAMES)}
@@ -73,13 +74,18 @@ def load_run(directory: str | Path) -> RunDataV2:
     if not metadata_path.is_file():
         raise FileNotFoundError(metadata_path)
     metadata = json.loads(metadata_path.read_text())
-    if metadata.get("schema_version") != SCHEMA_VERSION:
+    source_version = metadata.get("schema_version")
+    if source_version not in READABLE_SCHEMA_VERSIONS:
         raise ValueError(f"unsupported schema version {metadata.get('schema_version')!r}")
     if metadata.get("byte_order") != "little":
         raise ValueError("v2 records must be little-endian")
     if int(metadata.get("attempt_record_bytes", -1)) != ATTEMPT_DTYPE.itemsize \
             or int(metadata.get("outcome_record_bytes", -1)) != OUTCOME_DTYPE.itemsize:
         raise ValueError("metadata record sizes do not match schema v2")
+    metadata = dict(metadata)
+    metadata["source_schema_version"] = source_version
+    metadata["schema_adapter"] = "read_only_2.1_to_2.2" if source_version == "2.1.0" else None
+    metadata.setdefault("ensemble_id", 0)
     return RunDataV2(
         directory,
         metadata,
@@ -149,6 +155,12 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
         errors.append("attempt block IDs must lie in 0..127")
     if np.any(outcomes["n_contact"] < 1):
         errors.append("accepted outcomes must have at least one contact")
+    if np.any(attempts["ensemble_id"] < 0) or np.any(outcomes["ensemble_id"] < 0):
+        errors.append("ensemble IDs must be nonnegative")
+    expected_ensemble = int(run.metadata.get("ensemble_id", 0))
+    if np.any(attempts["ensemble_id"] != expected_ensemble) \
+            or np.any(outcomes["ensemble_id"] != expected_ensemble):
+        errors.append("record ensemble IDs do not match metadata")
 
     av, ov = attempts["values"], outcomes["values"]
     for label, values, index, prefixes in (
@@ -288,11 +300,13 @@ def finalize_run(directory: str | Path, require_pass: bool = True) -> dict:
                 row[f"sum_e_try_K_{name}"] = float(np.sum(e_try[mask] * scores[mask, j]))
             writer.writerow(row)
     metadata = dict(run.metadata)
+    metadata.pop("schema_adapter", None)
+    metadata.pop("source_schema_version", None)
     metadata.update(n_attempts=len(attempts), n_outcomes=len(outcomes), finalized=True)
     (Path(directory) / "metadata_v2.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     (Path(directory) / "qa_v2.json").write_text(json.dumps(qa, indent=2, sort_keys=True) + "\n")
     schema = {
-        "schema_version": SCHEMA_VERSION, "byte_order": "little",
+        "schema_version": metadata["schema_version"], "byte_order": "little",
         "attempt": {"key": ["seed", "event_id", "attempt_index"],
                     "record_bytes": ATTEMPT_DTYPE.itemsize,
                     "real_fields": list(ATTEMPT_REAL_NAMES)},
@@ -302,5 +316,6 @@ def finalize_run(directory: str | Path, require_pass: bool = True) -> dict:
     }
     (Path(directory) / "schema_v2.json").write_text(json.dumps(schema, indent=2) + "\n")
     if qa["status"] == "pass":
-        (Path(directory) / "_SUCCESS").write_text("schema=2.1.0\n")
+        (Path(directory) / "_SUCCESS").write_text(
+            f"schema={metadata['schema_version']}\n")
     return qa

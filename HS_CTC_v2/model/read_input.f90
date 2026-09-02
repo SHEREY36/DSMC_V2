@@ -16,7 +16,7 @@
 	character(len=16) :: mode_arg
 
 	! Check for command-line arguments
-	! Usage: SphCyl <alpha> <kTm> <kTI> <AR> [output_dir] [seed] [nsamples] [output_mode]
+	! Usage: SphCyl <alpha> <kTm> <kTI> <AR> [output_dir] [seed] [nsamples] [output_mode] [ensemble_id]
 	! output_mode is v2 (default), legacy, or both. closure is a v1 alias for v2.
 	num_args = COMMAND_ARGUMENT_COUNT()
 
@@ -79,6 +79,13 @@
 			OUTPUT_MODE = 'v2'
 		END IF
 
+		IF (num_args >= 9) THEN
+			CALL GET_COMMAND_ARGUMENT(9, arg_val)
+			READ(arg_val, *) ENSEMBLE_ID
+		ELSE
+			ENSEMBLE_ID = 0
+		END IF
+
 		SELECT CASE (TRIM(OUTPUT_MODE))
 		CASE ('legacy')
 			WRITE_LEGACY = .TRUE.; WRITE_V2 = .FALSE.
@@ -115,6 +122,14 @@
 			write(*,*) 'seed must be between 0 and 900000000'
 			stop 2
 		END IF
+		IF (ENSEMBLE_ID < 0) THEN
+			write(*,*) 'ensemble_id must be nonnegative'
+			stop 2
+		END IF
+		IF (ENSEMBLE_ID /= 0) THEN
+			write(*,*) 'Direct excitation ensembles are release-gated until the baseline sentinel passes'
+			stop 3
+		END IF
 
 		write(*,*) 'ALPHA_PP = ', ALPHA_PP
 		write(*,*) 'kTm = ', kTm
@@ -122,7 +137,7 @@
 		write(*,*) 'AR   = ', AR_val, '  (LCYL = ', LCYL, ')'
 		write(*,*) 'Output dir: ', TRIM(output_dir)
 		write(*,*) 'Seed = ', RUN_SEED, '  NSAMPLES = ', NSAMPLES
-		write(*,*) 'Output mode: ', TRIM(OUTPUT_MODE)
+		write(*,*) 'Output mode: ', TRIM(OUTPUT_MODE), '  Ensemble ID: ', ENSEMBLE_ID
 
 	ELSE
 		! Legacy mode: read all from system_input.dat
@@ -144,7 +159,7 @@
 			TTR_INPUT = utemp; TROT_INPUT = wtemp
 		END IF
 		AR_INPUT = (LCYL + DIA)/DIA
-		WRITE_LEGACY = .TRUE.; WRITE_V2 = .TRUE.; OUTPUT_MODE = 'both'
+		WRITE_LEGACY = .TRUE.; WRITE_V2 = .TRUE.; OUTPUT_MODE = 'both'; ENSEMBLE_ID = 0
 		close(lunit)
 	END IF
 

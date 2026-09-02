@@ -3,32 +3,59 @@
 from __future__ import annotations
 
 import math
+import time as wallclock
 from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import cell_features
+from dsmc_v2_contracts import cell_features, legacy_cell_features
 
-from .artifact import MicroscopicClosure
+from .artifact import MicroscopicClosure, VariationalClosure
 from .kernel import SpherocylinderKernel
-from .legacy_models import LegacyModels
+from .legacy_models import FrozenLossModel, LegacyModels
 from .ntc import NTCWorkspace, candidate_count
 from .particle import particle_parameters
 from .pressure import accumulate_pij_c, compute_pij_k, normalise_pij_c
 from .state import initialize_particles
 
 
-def _closure_from_config(config: dict) -> tuple[str, str, MicroscopicClosure | None]:
+def runtime_gate_status(diagnostics: dict) -> dict:
+    """Evaluate the variational production limits without hiding failures."""
+    reasons = []
+    if int(diagnostics["negative_energy_repairs"]) != 0:
+        reasons.append("negative_energy_repairs_not_zero")
+    if float(diagnostics["out_of_domain_fraction"]) >= 1.0e-3:
+        reasons.append("out_of_domain_fraction_not_below_0.001")
+    if float(diagnostics["closure_overhead_fraction"]) >= 0.05:
+        reasons.append("closure_overhead_fraction_not_below_0.05")
+    return {
+        "pass": not reasons,
+        "reasons": reasons,
+        "limits": {
+            "negative_energy_repairs": 0,
+            "out_of_domain_fraction_exclusive_maximum": 1.0e-3,
+            "closure_overhead_fraction_exclusive_maximum": 0.05,
+        },
+    }
+
+
+def _closure_from_config(config: dict):
     closure_config = config.get("microscopic_closure", {})
     routing = closure_config.get("routing", "legacy_rank0")
     angular = closure_config.get("angular", "legacy")
-    if routing not in ("legacy_rank0", "ctc_moment16"):
-        raise ValueError("routing must be legacy_rank0 or ctc_moment16")
-    if angular not in ("legacy", "ctc_vss_rank2"):
-        raise ValueError("angular must be legacy or ctc_vss_rank2")
+    if routing not in ("legacy_rank0", "ctc_moment16", "variational_v2"):
+        raise ValueError("routing must be legacy_rank0, ctc_moment16, or variational_v2")
+    if angular not in ("legacy", "ctc_vss_rank2", "variational_v2"):
+        raise ValueError("angular must be legacy, ctc_vss_rank2, or variational_v2")
     if routing == "legacy_rank0" and angular == "legacy":
         return routing, angular, None
+    if routing == "variational_v2" or angular == "variational_v2":
+        if routing != "variational_v2" or angular != "variational_v2":
+            raise ValueError("variational_v2 energy and angle must be enabled together")
+        return routing, angular, VariationalClosure(
+            closure_config["artifact"],
+            bool(closure_config.get("invariant_corrections", True)))
     return routing, angular, MicroscopicClosure(
         closure_config["routing_artifact"], closure_config["vss_artifact"],
         closure_config["rotational_direction_artifact"])
@@ -71,9 +98,14 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         models = kernel = None
     else:
         dissipation = config["preprocessing"]["dissipation"]
-        models = LegacyModels(config["preprocessing"].get("model_root", "models"),
-                              params.aspect_ratio, float(dissipation["beta_a"]),
-                              float(dissipation["beta_b"]))
+        model_root = config["preprocessing"].get("model_root", "models")
+        if routing == "variational_v2":
+            models = FrozenLossModel(model_root, float(dissipation["beta_a"]),
+                                     float(dissipation["beta_b"]))
+        else:
+            models = LegacyModels(model_root, params.aspect_ratio,
+                                  float(dissipation["beta_a"]),
+                                  float(dissipation["beta_b"]))
         kernel = SpherocylinderKernel(
             params, models, alpha, float(dissipation["beta_a"]),
             float(dissipation["beta_b"]), float(config["system"].get("C_alpha", 1.0)),
@@ -92,6 +124,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     maximum_ftr, minimum_ftr = -np.inf, np.inf
+    closure_seconds = 0.0
+    march_started = wallclock.perf_counter()
     pressure_path = Path(pressure_path) if pressure_path is not None else None
     if flow_mode == "usf" and pressure_path is None:
         pressure_path = output_path.with_name(output_path.stem + "_pressure.txt")
@@ -124,11 +158,19 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             ttr, trot, _ = state.temperatures(params.mass)
             theta = ttr / trot if trot > 0.0 else 1.0
             if kernel is not None and routing == "ctc_moment16":
-                features = cell_features(state.velocity, state.omega, state.axis,
-                                         params.mass, params.inertia, sphere=False)
+                features = legacy_cell_features(state.velocity, state.omega, state.axis,
+                                                params.mass, params.inertia, sphere=False)
                 ftr = closure.routing_fraction(alpha, theta, params.aspect_ratio, features)
                 kernel.set_cell_routing(ftr)
                 minimum_ftr, maximum_ftr = min(minimum_ftr, ftr), max(maximum_ftr, ftr)
+            elif kernel is not None and routing == "variational_v2":
+                closure_started = wallclock.perf_counter()
+                features = cell_features(state.velocity, state.omega, state.axis,
+                                         params.mass, params.inertia, sphere=False)
+                closure_alpha = 1.0 if time < kernel.equilibration_time else alpha
+                kernel.set_cell_variational(
+                    closure.kernel_state(closure_alpha, theta, params.aspect_ratio, features))
+                closure_seconds += wallclock.perf_counter() - closure_started
 
             n_candidates = candidate_count(count, params.sigma_c, vrmax, volume, dt)
             vrmax_temp = 0.0
@@ -157,12 +199,22 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 vrmax = vrmax_temp
             state.advance_axes(dt)
             time += dt
-    return {
+    total_seconds = wallclock.perf_counter() - march_started
+    closure_seconds += 0.0 if kernel is None else kernel.closure_seconds
+    diagnostics = {
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
         "routing": routing, "angular": angular, "flow": flow_mode,
         "minimum_Ftr": None if not np.isfinite(minimum_ftr) else minimum_ftr,
         "maximum_Ftr": None if not np.isfinite(maximum_ftr) else maximum_ftr,
+        "negative_energy_repairs": 0 if kernel is None else kernel.negative_energy_repairs,
+        "closure_seconds": closure_seconds,
+        "closure_overhead_fraction": closure_seconds / max(total_seconds, 1.0e-30),
+        "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
+                                    else closure.out_of_domain_fraction),
         "output": str(output_path),
         "pressure_output": None if pressure_path is None else str(pressure_path),
     }
+    diagnostics["runtime_gate"] = (runtime_gate_status(diagnostics)
+                                   if routing == "variational_v2" else None)
+    return diagnostics

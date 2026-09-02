@@ -31,7 +31,7 @@ class SplineSurface:
     knots: list[list[float]]
     coefficients: list[float]
     ridge: float
-    schema_version: str = "2.1.0"
+    schema_version: str = "2.2.0"
 
     def evaluate(self, coordinates: np.ndarray) -> np.ndarray:
         coordinates = np.atleast_2d(np.asarray(coordinates, dtype=float))

@@ -106,7 +106,7 @@
 		filepath = TRIM(output_dir) // '/metadata_v2.json'
 		open(unit=1011, status='replace', file=filepath)
 		write(1011,'(A)') '{'
-		write(1011,'(A)') '  "schema_version": "2.1.0",'
+		write(1011,'(A)') '  "schema_version": "2.2.0",'
 		write(1011,'(A)') '  "byte_order": "little",'
 		write(1011,'(A,I0,A)') '  "attempt_record_bytes": ', 32 + 8*N_ATTEMPT_REAL, ','
 		write(1011,'(A,I0,A)') '  "outcome_record_bytes": ', 32 + 8*N_OUTCOME_REAL, ','
@@ -126,6 +126,7 @@
 		write(1011,'(A)') '  "collision_cross_section_model": "frozen_v1_polynomial",'
 		write(1011,'(A,I0,A)') '  "nsamples": ', NSAMPLES, ','
 		write(1011,'(A,I0,A)') '  "seed": ', RUN_SEED, ','
+		write(1011,'(A,I0,A)') '  "ensemble_id": ', ENSEMBLE_ID, ','
 		write(1011,'(A)') '  "rng_contract": "event_stream_common_across_alpha",'
 		write(1011,'(A,A,A)') '  "output_mode": "', TRIM(OUTPUT_MODE), '",' 
 		write(1011,'(A)') '  "normal_contact_velocity": "translational_relative_velocity_only",'

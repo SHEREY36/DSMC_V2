@@ -1,4 +1,4 @@
-"""Strict runtime loader for routing16, VSS, and direction-only artifacts."""
+"""Strict loaders for the legacy and variational closure artifacts."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 
 from coll_models_v2.direction_library import DirectionLibrary, conditioning
 from coll_models_v2.surfaces import SplineSurface
-from dsmc_v2_contracts import FEATURE_NAMES
+from dsmc_v2_contracts import FEATURE_NAMES, LEGACY_FEATURE_NAMES
 
 
 class MicroscopicClosure:
@@ -21,7 +21,7 @@ class MicroscopicClosure:
         if self.routing.get("schema_version") != "2.1.0" \
                 or self.routing.get("artifact_type") != "routing16_v2":
             raise ValueError("not a routing16_v2 artifact")
-        if self.routing.get("feature_order") != list(FEATURE_NAMES):
+        if self.routing.get("feature_order") != list(LEGACY_FEATURE_NAMES):
             raise ValueError("routing feature ordering differs from runtime contract")
         if self.vss.get("inputs") != ["alpha", "aspect_ratio"] \
                 or "p_eta" not in self.vss.get("forbidden_inputs", []):
@@ -61,7 +61,7 @@ class MicroscopicClosure:
         fc = self._routing_quantity("F_C", alpha, theta, aspect_ratio)
         beta = np.array([
             self._routing_quantity(f"beta_ctc_{name}", alpha, theta, aspect_ratio)
-            for name in FEATURE_NAMES
+            for name in LEGACY_FEATURE_NAMES
         ])
         # f_tr is a modal production ratio, not a probability.  The unchanged
         # v1 energy update permits values outside [0,1] to represent energy
@@ -99,3 +99,209 @@ class MicroscopicClosure:
             if np.all(np.linalg.norm(projected, axis=1) > 1.0e-10):
                 return projected / np.linalg.norm(projected, axis=1)[:, None]
         raise RuntimeError("rotational-direction donors were tangent-degenerate")
+
+
+class VariationalClosure:
+    """Runtime view of ``closure_v2.npz`` with strict no-extrapolation rules."""
+
+    def __init__(self, path: str | Path, corrections_enabled: bool = True):
+        data = np.load(path, allow_pickle=False)
+        if str(data["schema_version"]) != "2.2.0" \
+                or str(data["artifact_type"]) != "bl_variational_closure":
+            raise ValueError("not a schema-2.2 BL variational closure artifact")
+        if list(data["feature_names"].astype(str)) != list(FEATURE_NAMES):
+            raise ValueError("variational feature ordering differs from runtime contract")
+        self.coordinates = np.asarray(data["surface_coordinates"], dtype=float)
+        if self.coordinates.ndim != 2 or self.coordinates.shape[1] != 3 \
+                or len(np.unique(self.coordinates, axis=0)) != len(self.coordinates):
+            raise ValueError("artifact surface coordinates are invalid or duplicated")
+        self.p_exch = np.asarray(data["p_exch"], dtype=float)
+        self.energy_parameters = np.asarray(data["energy_parameters"], dtype=float)
+        self.angular_parameters = np.asarray(data["angular_parameters"], dtype=float)
+        self.probability = np.asarray(data["quantile_probability"], dtype=float)
+        self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
+        self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
+        self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
+        self.beta = np.asarray(data["beta"], dtype=float)
+        self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
+        self.feature_lower = np.asarray(data["feature_lower"], dtype=float)
+        self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
+        self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
+        self.joint_parameters = np.asarray(data["joint_parameters"], dtype=float)
+        if np.any((self.p_exch <= 0.0) | (self.p_exch > 1.0)):
+            raise ValueError("artifact contains an invalid direct exchange probability")
+        if not np.all(np.diff(self.probability) > 0.0) \
+                or self.probability[0] != 0.0 or self.probability[-1] != 1.0:
+            raise ValueError("artifact quantile axis must increase from zero to one")
+        for axis in range(3):
+            if not np.all(np.diff(np.unique(self.coordinates[:, axis])) > 0.0):
+                raise ValueError("artifact physical grid axes must be strictly monotone")
+        if corrections_enabled and (self.beta_deployed.size == 0 or not np.any(self.beta_deployed)):
+            raise ValueError("natural-parameter corrections requested but no beta is deployed")
+        self.corrections_enabled = bool(corrections_enabled)
+        self.out_of_domain_queries = 0
+        self.total_queries = 0
+        self._interpolators = {}
+        if len(self.coordinates) >= 4:
+            self._interpolators.update(
+                p_exch=LinearNDInterpolator(self.coordinates, self.p_exch),
+                energy_parameters=LinearNDInterpolator(self.coordinates, self.energy_parameters),
+                angular_parameters=LinearNDInterpolator(self.coordinates, self.angular_parameters),
+                energy_tables=LinearNDInterpolator(self.coordinates, self.energy_tables),
+                angular_tables=LinearNDInterpolator(self.coordinates, self.angular_tables),
+            )
+        if len(self.beta_coordinates) >= 4:
+            self._interpolators["beta"] = LinearNDInterpolator(
+                self.beta_coordinates, self.beta)
+        if len(self.beta_coordinates):
+            self._interpolators["beta_mask"] = NearestNDInterpolator(
+                self.beta_coordinates, self.beta_deployed.astype(float))
+        if len(self.coordinates):
+            self._interpolators["joint_mask"] = NearestNDInterpolator(
+                self.coordinates, self.joint_deployed.astype(float))
+        joint_coordinates = self.coordinates[self.joint_deployed]
+        if len(joint_coordinates) >= 4:
+            self._interpolators["joint_parameters"] = LinearNDInterpolator(
+                joint_coordinates, self.joint_parameters[self.joint_deployed])
+
+    @staticmethod
+    def _exact(points: np.ndarray, query: np.ndarray) -> np.ndarray:
+        return np.flatnonzero(np.all(np.isclose(points, query, atol=1.0e-12, rtol=0.0), axis=1))
+
+    def _interpolate(self, points: np.ndarray, values: np.ndarray, query: np.ndarray,
+                     label: str, interpolator=None):
+        exact = self._exact(points, query)
+        if len(exact):
+            return np.asarray(values[exact[0]])
+        if len(points) < 4:
+            raise ValueError(f"no exact {label} node and insufficient points to interpolate")
+        if interpolator is None:
+            interpolator = LinearNDInterpolator(points, values)
+        result = np.asarray(interpolator(query[None, :]))[0]
+        if np.any(~np.isfinite(result)):
+            raise ValueError(f"{label} query lies outside the calibrated physical hull")
+        return result
+
+    def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
+                     features: np.ndarray) -> dict:
+        features = np.asarray(features, dtype=float)
+        if features.shape != (len(FEATURE_NAMES),):
+            raise ValueError("variational closure requires fourteen cell features")
+        self.total_queries += 1
+        ood = bool(np.any(features < self.feature_lower) or np.any(features > self.feature_upper))
+        self.out_of_domain_queries += int(ood)
+        query = np.array([alpha, theta, aspect_ratio], dtype=float)
+        p_exch = float(self._interpolate(self.coordinates, self.p_exch, query, "p_exch",
+                                         self._interpolators.get("p_exch")))
+        eparams = self._interpolate(self.coordinates, self.energy_parameters, query,
+                                    "energy parameters",
+                                    self._interpolators.get("energy_parameters")).astype(float)
+        aparams = self._interpolate(self.coordinates, self.angular_parameters, query,
+                                    "angular parameters",
+                                    self._interpolators.get("angular_parameters")).astype(float)
+        etable = self._interpolate(self.coordinates, self.energy_tables, query,
+                                   "energy quantiles",
+                                   self._interpolators.get("energy_tables")).astype(float)
+        atable = self._interpolate(self.coordinates, self.angular_tables, query,
+                                   "angular quantiles",
+                                   self._interpolators.get("angular_tables")).astype(float)
+        beta = np.zeros(len(FEATURE_NAMES))
+        if self.corrections_enabled:
+            beta = self._interpolate(self.beta_coordinates, self.beta,
+                                     query, "lambda1 coefficients",
+                                     self._interpolators.get("beta")).astype(float)
+            exact_beta = self._exact(self.beta_coordinates, query)
+            if len(exact_beta):
+                deployed = self.beta_deployed[exact_beta[0]]
+            else:
+                deployed = np.asarray(
+                    self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
+            beta *= deployed
+            correction = float(beta @ features)
+            eparams[0] += correction
+        else:
+            correction = 0.0
+        exact = self._exact(self.coordinates, query)
+        joint = bool(len(exact) and self.joint_deployed[exact[0]])
+        joint_parameters = self.joint_parameters[exact[0]].copy() if joint else None
+        if not len(exact) and "joint_parameters" in self._interpolators:
+            masked = bool(np.asarray(
+                self._interpolators["joint_mask"](query[None, :]))[0] >= 0.5)
+            if masked:
+                candidate = np.asarray(
+                    self._interpolators["joint_parameters"](query[None, :]))[0]
+                if np.all(np.isfinite(candidate)):
+                    joint, joint_parameters = True, candidate.astype(float)
+        return {"p_exch": p_exch, "energy_parameters": eparams,
+                "angular_parameters": aparams, "energy_quantiles": etable,
+                "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
+                "energy_corrected": correction != 0.0,
+                "joint_deployed": joint, "joint_parameters": joint_parameters}
+
+    def sample_energy(self, state: dict, rng: np.random.Generator) -> float:
+        if not state["energy_corrected"]:
+            return float(np.interp(rng.random(), self.probability, state["energy_quantiles"]))
+        parameter = state["energy_parameters"]
+        candidates = [0.0, 1.0]
+        if parameter[1] < 0.0:
+            vertex = -parameter[0] / (2.0 * parameter[1])
+            if 0.0 < vertex < 1.0:
+                candidates.append(vertex)
+        maximum = max(parameter[0] * z + parameter[1] * z * z for z in candidates)
+        for _ in range(10000):
+            z = rng.beta(2.0, 2.0)
+            if rng.random() <= np.exp(parameter[0] * z + parameter[1] * z * z - maximum):
+                return float(z)
+        raise RuntimeError("tilted energy rejection sampler failed")
+
+    def sample_direction(self, ghat_pre: np.ndarray, state: dict, z: float,
+                         rng: np.random.Generator) -> np.ndarray:
+        ghat = np.asarray(ghat_pre, dtype=float)
+        ghat /= max(np.linalg.norm(ghat), 1.0e-30)
+        table = state["angular_quantiles"]
+        if state["joint_deployed"]:
+            parameter = state["joint_parameters"]
+            linear, quadratic = parameter[0] + parameter[2] * z, parameter[1]
+            candidates = [-1.0, 1.0]
+            if quadratic < 0.0:
+                vertex = -linear / (3.0 * quadratic)
+                if -1.0 < vertex < 1.0:
+                    candidates.append(vertex)
+            maximum = max(linear * c + quadratic * 0.5 * (3.0 * c * c - 1.0)
+                          for c in candidates)
+            for _ in range(10000):
+                cosine = 2.0 * rng.random() - 1.0
+                exponent = linear * cosine + quadratic * 0.5 * (3.0 * cosine**2 - 1.0)
+                if rng.random() <= np.exp(exponent - maximum):
+                    break
+            else:
+                raise RuntimeError("coupled angular rejection sampler failed")
+        else:
+            cosine = float(np.interp(rng.random(), self.probability, table))
+        trial = np.array([1.0, 0.0, 0.0]) if abs(ghat[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        e1 = trial - np.dot(trial, ghat) * ghat
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(ghat, e1)
+        phi = 2.0 * np.pi * rng.random()
+        result = cosine * ghat + np.sqrt(max(0.0, 1.0 - cosine * cosine)) * (
+            np.cos(phi) * e1 + np.sin(phi) * e2)
+        return result / np.linalg.norm(result)
+
+    @staticmethod
+    def tangent_spin_directions(axes: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        directions = []
+        for axis in np.asarray(axes):
+            for _ in range(16):
+                candidate = rng.normal(size=3)
+                candidate -= np.dot(candidate, axis) * axis
+                norm = np.linalg.norm(candidate)
+                if norm > 1.0e-12:
+                    directions.append(candidate / norm)
+                    break
+            else:
+                raise RuntimeError("failed to sample a tangent spin direction")
+        return np.asarray(directions)
+
+    @property
+    def out_of_domain_fraction(self) -> float:
+        return self.out_of_domain_queries / max(self.total_queries, 1)

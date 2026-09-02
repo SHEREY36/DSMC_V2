@@ -1,83 +1,162 @@
-"""Build the conservative microscopic_closure_v2 artifact bundle."""
+"""Build the versioned BL-compatible variational closure artifact."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from scipy.interpolate import PchipInterpolator
+from scipy.optimize import brentq
 
-from dsmc_v2_contracts import FEATURE_NAMES
+from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
-from .direction_library import build_direction_library_from_paths
 from .estimate import estimate_node
-from .legacy_bl import LegacyBL
-from .surfaces import fit_surface, transformed_coordinates
+from .fit_coefficients import fit_lambda1_coefficients
+from .projections import angular_quantiles, energy_moments, energy_quantiles
 
 
-def _node_key(run) -> tuple[float, float, float]:
-    values = run if isinstance(run, dict) else run.metadata
+SCHEMA_VERSION = "2.2.0"
+ARTIFACT_TYPE = "bl_variational_closure"
+
+
+def _node_key(values) -> tuple[float, float, float, int]:
+    values = values if isinstance(values, dict) else values.metadata
     return (float(values["alpha"]), float(values["theta"]),
-            float(values["aspect_ratio"]))
+            float(values["aspect_ratio"]), int(values.get("ensemble_id", 0)))
 
 
-def _fit_routing_surfaces(nodes: list[dict]) -> dict:
-    inelastic = [node for node in nodes if node["alpha"] < 1.0]
-    names = (["F0", "C_M", "F_C", "total_loss_compatibility_ratio"]
-             + [f"beta_{name}" for name in FEATURE_NAMES]
-             + [f"beta_ctc_{name}" for name in FEATURE_NAMES])
-    surfaces = {}
-    if (len(inelastic) >= 8 and len({n["alpha"] for n in inelastic}) >= 2
-            and len({n["theta"] for n in inelastic}) >= 2
-            and len({n["aspect_ratio"] for n in inelastic}) >= 2):
-        coordinates = transformed_coordinates(
-            np.array([n["alpha"] for n in inelastic]),
-            np.array([n["theta"] for n in inelastic]),
-            np.array([n["aspect_ratio"] for n in inelastic]))
-        for name in names:
-            values = np.array([n["quantities"][name]["estimate"] for n in inelastic])
-            errors = np.array([n["quantities"][name]["standard_error"] or np.nan
-                               for n in inelastic])
-            try:
-                surfaces[name] = fit_surface(
-                    coordinates, values,
-                    ["one_minus_alpha_squared", "log_theta", "log_AR"], errors).to_dict()
-            except ValueError:
-                pass
-    return surfaces
-
-
-def _path_key(path) -> tuple[float, float, float]:
-    metadata = json.loads((Path(path) / "metadata_v2.json").read_text())
-    return (float(metadata["alpha"]), float(metadata["theta"]),
-            float(metadata["aspect_ratio"]))
+def _path_key(path) -> tuple[float, float, float, int]:
+    payload = json.loads((Path(path) / "metadata_v2.json").read_text())
+    return _node_key(payload)
 
 
 def _load_node_estimates(directory, expected_groups) -> list[dict]:
+    expected_groups = {
+        (key if len(key) == 4 else (*key, 0)): value
+        for key, value in expected_groups.items()
+    }
     nodes = [json.loads(path.read_text()) for path in sorted(Path(directory).glob("alpha_*.json"))]
     keys = {_node_key(node) for node in nodes}
-    if len(nodes) != len(keys):
-        raise ValueError("precomputed node estimates contain duplicate keys")
-    if keys != set(expected_groups):
-        missing = sorted(set(expected_groups) - keys)
-        extra = sorted(keys - set(expected_groups))
+    if len(nodes) != len(keys) or keys != set(expected_groups):
+        missing, extra = sorted(set(expected_groups) - keys), sorted(keys - set(expected_groups))
         raise ValueError(f"precomputed node grid mismatch; missing={missing}, extra={extra}")
     for node in nodes:
-        key = _node_key(node)
-        expected = {Path(path).resolve() for path in expected_groups[key]}
+        expected = {Path(path).resolve() for path in expected_groups[_node_key(node)]}
         actual = {Path(path).resolve() for path in node.get("source_runs", [])}
         if actual != expected:
-            raise ValueError(f"stale node estimate for {key}; expected shards={sorted(expected)}, "
-                             f"estimated shards={sorted(actual)}")
-    failed = [node for node in nodes if not node.get("qa", {}).get("precision_pass", False)]
-    if failed:
-        raise ValueError(f"{len(failed)} precomputed nodes have not passed precision QA")
+            raise ValueError(f"stale node estimate for {_node_key(node)}")
+        if not node.get("qa", {}).get("precision_pass", node.get("qa", {}).get("sentinel_pass", False)):
+            raise ValueError(f"node {_node_key(node)} has not passed closure QA")
     return sorted(nodes, key=_node_key)
 
 
-def build_artifact(run_directories, output_directory, bl: LegacyBL,
-                   n_bootstrap: int = 2000, node_estimates=None) -> dict:
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _incoming_partition_mean(theta: float, order: int = 48) -> float:
+    """Collision-pool mean for two independent Gamma(2) modal energies."""
+    node, weight = np.polynomial.laguerre.laggauss(order)
+    # Gamma(2,1) density is x*exp(-x); Laguerre supplies exp(-x).
+    xx, yy = np.meshgrid(node, node, indexing="ij")
+    ww = weight[:, None] * weight[None, :] * xx * yy
+    return float(np.sum(ww * theta * xx / (theta * xx + yy)) / np.sum(ww))
+
+
+def _energy_weighted_partition(theta: float) -> float:
+    """Incoming collision-pool energy fraction relevant to temperature drift."""
+    return float(theta / (1.0 + theta))
+
+
+def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
+    grouped = defaultdict(list)
+    for node in baseline:
+        grouped[(node["alpha"], node["aspect_ratio"])].append(node)
+    rows = []
+    for (alpha, ar), nodes in sorted(grouped.items()):
+        nodes.sort(key=lambda row: row["theta"])
+        if len(nodes) < 3:
+            continue
+        theta = np.array([row["theta"] for row in nodes])
+        p = PchipInterpolator(theta, [row["energy"]["p_exch"] for row in nodes])
+        lambda1 = PchipInterpolator(theta, [row["energy"]["lambda1"] for row in nodes])
+        lambda2 = PchipInterpolator(theta, [row["energy"]["lambda2"] for row in nodes])
+        p_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
+            "p_exch", {}).get("standard_error", np.nan) for row in nodes])
+        mu_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
+            "reset_mean", {}).get("standard_error", np.nan) for row in nodes])
+
+        if alpha >= 1.0:
+            mean_loss = 0.0
+        elif bl is None:
+            raise ValueError("the complete stability gate requires the frozen BL loss model")
+        else:
+            mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
+
+        def drift(value):
+            incoming = _energy_weighted_partition(value)
+            reset = float(energy_moments(np.array([lambda1(value), lambda2(value)]))[0])
+            post_partition = (1.0 - p(value)) * incoming + p(value) * reset
+            delta_tr = (1.0 - mean_loss) * post_partition - incoming
+            delta_rot = ((1.0 - mean_loss) * (1.0 - post_partition)
+                         - (1.0 - incoming))
+            return float((2.0 / 3.0) * delta_tr - value * delta_rot)
+
+        dense = np.linspace(theta[0], theta[-1], 401)
+        roots = []
+        for left, right in zip(dense[:-1], dense[1:]):
+            if drift(left) == 0.0:
+                roots.append(float(left))
+            elif drift(left) * drift(right) < 0.0:
+                roots.append(float(brentq(drift, left, right)))
+        roots = sorted({round(root, 12) for root in roots})
+        derivative = None
+        root_standard_error = None
+        uncertainty_margin = None
+        stable = False
+        if len(roots) == 1:
+            root = roots[0]
+            step = max(1.0e-5, 1.0e-4 * root)
+            derivative = (drift(min(theta[-1], root + step))
+                          - drift(max(theta[0], root - step))) \
+                / (min(theta[-1], root + step) - max(theta[0], root - step))
+            stable = derivative < 0.0
+            if np.isfinite(p_se(root)) and np.isfinite(mu_se(root)) and derivative != 0.0:
+                reset = energy_moments(np.array([lambda1(root), lambda2(root)]))[0]
+                response = (1.0 - mean_loss) * (2.0 / 3.0 + root)
+                drift_se = response * np.hypot(
+                    p(root) * mu_se(root),
+                    (reset - _energy_weighted_partition(root)) * p_se(root))
+                root_standard_error = float(drift_se / abs(derivative))
+                uncertainty_margin = float(
+                    min(root - theta[0], theta[-1] - root) - 1.96 * root_standard_error)
+        rows.append({"alpha": alpha, "aspect_ratio": ar, "roots": roots,
+                     "unique_stable": bool(len(roots) == 1 and stable
+                                           and uncertainty_margin is not None
+                                           and uncertainty_margin > 0.0),
+                     "drift_derivative": derivative,
+                     "root_standard_error": root_standard_error,
+                     "uncertainty_margin_to_hull": uncertainty_margin,
+                     "mean_scalar_loss": mean_loss,
+                     "drift_model": "complete_variational_partition_plus_frozen_BL_loss",
+                     "includes_surface_derivatives": True})
+    return rows
+
+
+def build_artifact(run_directories, output_directory, bl=None,
+                   n_bootstrap: int = 200, node_estimates=None) -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -91,95 +170,134 @@ def build_artifact(run_directories, output_directory, bl: LegacyBL,
     else:
         nodes = [estimate_node(shards, bl, n_bootstrap=n_bootstrap)
                  for _, shards in sorted(grouped.items())]
-    surfaces = _fit_routing_surfaces(nodes)
-    routing_payload = {
-        "schema_version": "2.1.0", "artifact_type": "routing16_v2",
-        "feature_order": list(FEATURE_NAMES),
-        "coordinates": ["one_minus_alpha_squared", "log_theta", "log_AR"],
-        "runtime_equation": "F_tr=F_C*(1+sum(beta_ctc_a*X_a))",
-        "routing_range": "unbounded_modal_production_ratio_not_a_probability",
-        "cross_section_role": "reported_audit_only_frozen_v1_clock_is_authoritative",
-        "total_loss_kernel": "preserved_v1_BL_gamma_max_times_P1hit_times_Beta(1.21,3.67)",
-        "total_loss_compatibility_role": "reported_audit_not_a_routing_normalization",
-        "design_hull": {"alpha": [0.5, 0.99], "theta": [0.1, 1.2],
-                        "aspect_ratio": [1.1, 3.0]},
-        "nodes": nodes, "surfaces": surfaces,
+        failed = [node for node in nodes if not node["qa"]["sentinel_pass"]]
+        if failed:
+            raise ValueError(f"{len(failed)} node(s) failed variational closure gates")
+    baseline = [node for node in nodes if int(node["ensemble_id"]) == 0]
+    if not baseline:
+        raise ValueError("artifact requires baseline ensemble_id=0 nodes")
+    baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
+    coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
+                            for row in baseline], dtype=float)
+    probability = np.linspace(0.0, 1.0, 1025)
+    eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"]]
+                        for row in baseline])
+    aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]
+                        for row in baseline])
+    equant = np.array([energy_quantiles(parameter, probability) for parameter in eparams])
+    aquant = np.array([angular_quantiles(parameter, probability) for parameter in aparams])
+    energy_errors, angular_errors = [], []
+    for row, quantile in zip(baseline, equant):
+        energy_errors.extend((
+            abs(np.trapz(quantile, probability) - row["energy"]["reset_mean"]),
+            abs(np.trapz(quantile * quantile, probability)
+                - row["energy"]["reset_second_moment"]),
+        ))
+    for row, quantile in zip(baseline, aquant):
+        angular_errors.extend((
+            abs(np.trapz(quantile, probability) - row["angular"]["mean_cosine"]),
+            abs(np.trapz(0.5 * (3.0 * quantile * quantile - 1.0), probability)
+                - row["angular"]["mean_p2"]),
+        ))
+    sampler_error = max(energy_errors + angular_errors)
+    if sampler_error >= 1.0e-3:
+        raise ValueError(f"quantile sampler moment error {sampler_error:.3e} exceeds 1e-3")
+
+    coefficient_rows = []
+    by_physical_node = defaultdict(list)
+    for node in nodes:
+        by_physical_node[(node["alpha"], node["theta"], node["aspect_ratio"])].append(node)
+    for key, group in sorted(by_physical_node.items()):
+        if len(group) <= 1:
+            continue
+        fitted = fit_lambda1_coefficients(group)
+        if not fitted["identifiable"]:
+            raise ValueError(f"excitation design is rank deficient at {key}")
+        fitted["coordinates"] = list(key)
+        coefficient_rows.append(fitted)
+    expected_coefficient_nodes = {
+        (node["alpha"], node["theta"], node["aspect_ratio"])
+        for node in nodes if int(node["ensemble_id"]) != 0
     }
-    (output / "routing16_v2.json").write_text(
-        json.dumps(routing_payload, indent=2, sort_keys=True) + "\n")
+    if expected_coefficient_nodes and len(coefficient_rows) != len(expected_coefficient_nodes):
+        raise ValueError("not every excitation node produced an identifiable coefficient fit")
+    beta_coordinates = np.array([row["coordinates"] for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty((0, 3))
+    beta = np.array([row["beta"] for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
+    beta_se = np.array([row["beta_se"] for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty_like(beta)
+    beta_deployed = np.array([row["beta_deployed"] for row in coefficient_rows], dtype=bool) \
+        if coefficient_rows else np.empty_like(beta, dtype=bool)
+    feature_values = np.array([[node["proposal_features"][name] for name in FEATURE_NAMES]
+                               for node in nodes])
+    diagnostic_values = np.array([[node["proposal_diagnostics"][name]
+                                    for name in DIAGNOSTIC_NAMES] for node in nodes])
 
-    vss_rows = []
-    for node in nodes:
-        if not np.isclose(node["theta"], 1.0):
-            continue
-        if not node["qa"]["vss_representable"]:
-            raise ValueError(f"unrepresentable VSS target at alpha={node['alpha']}, "
-                             f"AR={node['aspect_ratio']}")
-        vss_rows.append({
-            "alpha": node["alpha"], "aspect_ratio": node["aspect_ratio"],
-            **{name: node["quantities"][name]
-               for name in ("B2", "alpha_eff", "mean_P1", "mean_P2", "mean_P3", "mean_P4")},
-        })
-    if not vss_rows:
-        raise ValueError("VSS export requires theta=1 CTC runs")
-    references = {(row["alpha"], row["aspect_ratio"]): row for row in nodes
-                  if np.isclose(row["theta"], 1.0)}
-    theta_diagnostics = []
-    theta_pass = True
-    for node in nodes:
-        if np.isclose(node["theta"], 1.0):
-            continue
-        reference = references.get((node["alpha"], node["aspect_ratio"]))
-        if reference is None:
-            continue
-        actual, baseline = node["quantities"]["B2"], reference["quantities"]["B2"]
-        combined_se = float(np.hypot(actual["standard_error"] or 0.0,
-                                     baseline["standard_error"] or 0.0))
-        difference = abs(actual["estimate"] - baseline["estimate"])
-        passed = difference <= 0.02 + 3.0 * combined_se
-        theta_pass &= passed
-        theta_diagnostics.append({
-            "alpha": node["alpha"], "theta": node["theta"],
-            "aspect_ratio": node["aspect_ratio"], "B2": actual["estimate"],
-            "theta1_B2": baseline["estimate"], "absolute_difference": difference,
-            "combined_standard_error": combined_se, "pass": bool(passed),
-        })
-    if not theta_pass:
-        raise ValueError("held-out theta runs reject temperature-independent VSS")
-    vss_points = np.array([[1.0 - row["alpha"]**2, np.log(row["aspect_ratio"])]
-                           for row in vss_rows])
-    vss_surfaces = {}
-    if len(vss_rows) >= 4 and len(np.unique(vss_points[:, 0])) >= 2 \
-            and len(np.unique(vss_points[:, 1])) >= 2:
-        for name in ("B2", "alpha_eff"):
-            values = np.array([row[name]["estimate"] for row in vss_rows])
-            errors = np.array([row[name]["standard_error"] or np.nan for row in vss_rows])
-            vss_surfaces[name] = fit_surface(
-                vss_points, values, ["one_minus_alpha_squared", "log_AR"], errors).to_dict()
-    (output / "vss_rank2_v2.json").write_text(json.dumps({
-        "schema_version": "2.1.0", "artifact_type": "vss_rank2_v2",
-        "inputs": ["alpha", "aspect_ratio"],
-        "forbidden_inputs": ["theta", "energy", "F_tr", "dissipation", "p_eta"],
-        "fit_target": "mean(1-P2(ghat_pre dot ghat_post))",
-        "rows": vss_rows, "surfaces": vss_surfaces,
-        "theta_independence_diagnostics": {"absolute_tolerance": 0.02,
-            "sigma_multiplier": 3.0, "pass": bool(theta_pass), "rows": theta_diagnostics},
-    }, indent=2, sort_keys=True) + "\n")
+    uncertainty_names = ("p_exch", "lambda1", "lambda2", "eta1", "eta2")
+    uncertainties = np.array([[node.get("uncertainty", {}).get(name, {}).get(
+        "standard_error", np.nan) for name in uncertainty_names] for node in baseline])
+    joint_deployed = np.array([row["angular"]["joint_deployed"] for row in baseline], dtype=bool)
+    joint_parameters = np.full((len(baseline), 3), np.nan)
+    for index, row in enumerate(baseline):
+        if row["angular"]["joint_parameters"] is not None:
+            joint_parameters[index] = row["angular"]["joint_parameters"]
 
-    inelastic_paths = [path for key, shards in grouped.items() if key[0] < 1.0
-                       for path in shards]
-    direction = build_direction_library_from_paths(inelastic_paths)
-    direction.save(str(output / "rotational_direction_v2.npz"))
+    loss_payload = {"gamma_max": getattr(bl, "gamma_max", {}),
+                    "one_hit": getattr(bl, "one_hit", {}),
+                    "beta_a": getattr(bl, "beta_a", 1.21),
+                    "beta_b": getattr(bl, "beta_b", 3.67)}
+    loss_hash = _sha256_bytes(json.dumps(loss_payload, sort_keys=True).encode())
+    runtime_root = Path(__file__).resolve().parents[3] / "DSMC_0D_v2/src/dsmc_v2"
+    clock_paths = [runtime_root / "ntc.py", runtime_root / "particle.py"]
+    clock_payload = b"".join(
+        path.name.encode() + b"\0" + path.read_bytes() for path in clock_paths
+        if path.is_file())
+    clock_hash = _sha256_bytes(clock_payload) if len(clock_payload) else "unavailable"
+    stability = _stability_rows(baseline, bl)
+    artifact_path = output / "closure_v2.npz"
+    np.savez_compressed(
+        artifact_path,
+        schema_version=np.array(SCHEMA_VERSION), artifact_type=np.array(ARTIFACT_TYPE),
+        feature_names=np.array(FEATURE_NAMES), diagnostic_names=np.array(DIAGNOSTIC_NAMES),
+        surface_coordinates=coordinates,
+        alpha_grid=np.unique(coordinates[:, 0]), theta_grid=np.unique(coordinates[:, 1]),
+        aspect_ratio_grid=np.unique(coordinates[:, 2]),
+        p_exch=np.array([row["energy"]["p_exch"] for row in baseline]),
+        energy_parameters=eparams, angular_parameters=aparams,
+        parameter_uncertainties=uncertainties,
+        uncertainty_names=np.array(uncertainty_names),
+        joint_deployed=joint_deployed, joint_parameters=joint_parameters,
+        quantile_probability=probability, energy_quantiles=equant, angular_quantiles=aquant,
+        beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
+        beta_deployed=beta_deployed,
+        feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
+        diagnostic_lower=np.min(diagnostic_values, axis=0),
+        diagnostic_upper=np.max(diagnostic_values, axis=0),
+        n_attempts=np.array([row["n_attempts"] for row in baseline], dtype=np.int64),
+        n_outcomes=np.array([row["n_outcomes"] for row in baseline], dtype=np.int64),
+        ess_fraction=np.array([row["measure"]["ess_fraction"] for row in baseline]),
+        loss_hash=np.array(loss_hash), clock_hash=np.array(clock_hash),
+        git_sha=np.array(_git_sha()),
+        loss_role=np.array("preserved_v1_BL_scalar_loss"),
+        clock_role=np.array("preserved_v1_NTC_and_cross_section_polynomial"),
+        ctc_target=np.array("surviving_energy_partition_not_absolute_modal_production"),
+    )
     manifest = {
-        "schema_version": "2.1.0", "artifact_type": "microscopic_closure_v2",
-        "production_changes": ["dissipation_routing", "angular_scattering"],
-        "preserved": ["v1_ntc", "frozen_sigma_c", "conditional_gmm", "BL_total_loss",
-                      "Zr", "reservoir_clipping", "time_integration", "outputs"],
-        "files": ["routing16_v2.json", "vss_rank2_v2.json",
-                  "rotational_direction_v2.npz"],
-        "n_runs": len(paths), "n_nodes": len(nodes),
-        "dem_calibration_used": False, "p_eta": None,
-        "pair_clock_exported": False, "energy_kernel_exported": False,
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": ARTIFACT_TYPE,
+        "file": artifact_path.name,
+        "feature_order": list(FEATURE_NAMES),
+        "diagnostics": list(DIAGNOSTIC_NAMES),
+        "n_runs": len(paths), "n_nodes": len(nodes), "n_baseline_nodes": len(baseline),
+        "n_coefficient_nodes": len(coefficient_rows),
+        "preserved": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_runtime_mode"],
+        "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
+        "loss_hash": loss_hash, "clock_hash": clock_hash,
+        "stability": stability,
+        "stability_pass": bool(stability and all(row["unique_stable"] for row in stability)),
+        "joint_energy_angle_nodes": int(np.sum(joint_deployed)),
+        "maximum_quantile_moment_error": float(sampler_error),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest

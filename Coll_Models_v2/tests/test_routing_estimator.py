@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from coll_models_v2.estimate import N_SCALARS, _evaluate
-from dsmc_v2_contracts import FEATURE_NAMES
+from dsmc_v2_contracts import LEGACY_FEATURE_NAMES
 
 
 class _KnownBL:
@@ -14,7 +14,7 @@ class _KnownBL:
 
 class RoutingEstimatorTests(unittest.TestCase):
     def test_recovers_known_dsmc_compatible_derivatives(self):
-        sums = np.zeros(N_SCALARS + 4 * len(FEATURE_NAMES))
+        sums = np.zeros(N_SCALARS + 4 * len(LEGACY_FEATURE_NAMES))
         sums[:10] = [100, 50, 20, 10, 100, 40, 1, 2, 3, 4]
         expected = np.linspace(-0.3, 0.3, 16)
         lbl = np.linspace(-0.1, 0.1, 16)
@@ -30,7 +30,7 @@ class RoutingEstimatorTests(unittest.TestCase):
         np.testing.assert_allclose(result[29:45], expected - 0.05, atol=1.0e-14)
 
     def test_modal_routing_above_one_is_valid(self):
-        sums = np.zeros(N_SCALARS + 4 * len(FEATURE_NAMES))
+        sums = np.zeros(N_SCALARS + 4 * len(LEGACY_FEATURE_NAMES))
         # F0 = 4*30/(2*(0.5*100)) = 1.2 and FC = 30/20 = 1.5.
         # Both express rotational gain accompanying translational loss.
         sums[:10] = [100, 50, 20, 30, 100, 40, 1, 2, 3, 4]

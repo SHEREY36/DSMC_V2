@@ -15,6 +15,20 @@ SUPPORTED_ASPECT_RATIOS = {
 }
 
 
+class FrozenLossModel:
+    """Load only the preserved scalar BL loss tables, never the legacy GMM."""
+
+    def __init__(self, model_root: str | Path,
+                 beta_a: float = 1.21, beta_b: float = 3.67):
+        root = Path(model_root)
+        self.bl = LegacyBL.load(root / "dissipation" / "gamma_max_table.json",
+                                root / "dissipation" / "one_hit_table.json",
+                                beta_a, beta_b)
+
+    def loss_parameters(self, alpha: float, aspect_ratio: float) -> dict[str, float]:
+        return self.bl.parameters(alpha, aspect_ratio)
+
+
 class LegacyModels:
     def __init__(self, model_root: str | Path, aspect_ratio: float,
                  beta_a: float = 1.21, beta_b: float = 3.67):

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import ATTEMPT_DTYPE, OUTCOME_DTYPE, cell_features, load_run, validate_run
+from dsmc_v2_contracts import (
+    ATTEMPT_DTYPE, OUTCOME_DTYPE, FEATURE_NAMES, cell_features, load_run, validate_run,
+)
 from dsmc_v2_contracts.io import OI
 
 
@@ -13,6 +15,9 @@ class ContractTests(unittest.TestCase):
     def test_record_sizes_are_frozen(self):
         self.assertEqual(ATTEMPT_DTYPE.itemsize, 200)
         self.assertEqual(OUTCOME_DTYPE.itemsize, 552)
+        self.assertIn("ensemble_id", ATTEMPT_DTYPE.names)
+        self.assertNotIn("reserved", ATTEMPT_DTYPE.names)
+        self.assertEqual(len(FEATURE_NAMES), 14)
 
     def test_synthetic_run_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,7 +47,10 @@ class ContractTests(unittest.TestCase):
             ov[OI["delta_tr"]], ov[OI["delta_total"]] = 0.2, 0.2
             ov[59:62], ov[62:65] = [1, 0, 0], [1, 0, 0]
             outcome.tofile(root / "outcomes_v2.bin")
-            qa = validate_run(load_run(root))
+            run = load_run(root)
+            self.assertEqual(run.metadata["schema_adapter"], "read_only_2.1_to_2.2")
+            self.assertEqual(int(run.attempts["ensemble_id"][0]), 0)
+            qa = validate_run(run)
             self.assertEqual(qa["status"], "pass", qa)
 
     def test_isotropic_features_are_small(self):
@@ -53,7 +61,7 @@ class ContractTests(unittest.TestCase):
         omega = rng.normal(size=(n, 3))
         omega -= np.einsum("ni,ni->n", omega, axis)[:, None] * axis
         values = cell_features(velocity, omega, axis)
-        self.assertLess(np.max(np.abs(values[:3])), 0.04)
+        self.assertLess(np.max(np.abs(values)), 0.04)
         self.assertTrue(np.isfinite(values).all())
 
 

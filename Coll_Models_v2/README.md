@@ -1,27 +1,30 @@
 # Coll_Models_v2
 
-This package reads finalized CTC attempt/outcome streams and exports only the
-three conservative microscopic closures:
+This package converts keyed CTC attempt/outcome streams into the schema-2.2
+BL-compatible variational closure.
 
-- `routing16_v2.json` for the BL-compatible translational loss split;
-- `vss_rank2_v2.json` for direction-only rank-2 scattering;
-- `rotational_direction_v2.npz` for paired post-spin directions.
+The estimator:
 
-It does not fit a collision clock, replace the conditional GMM, correct total
-loss, or read DEM ensemble results.
+- reconstructs `A_perp` and applies inverse-area outcome weights;
+- calibrates `A_perp/A0` against all attempt hit flags;
+- identifies direct `p_exch` by affine memory regression;
+- solves exact energy and angular I-projections;
+- measures and gates conditional `z cos(chi)` coupling;
+- computes all 14 production invariants from proposal states;
+- fits identifiable natural-parameter coefficients from direct ensembles;
+- exports `closure_v2.npz` with uncertainties, bounds, masks, quantile tables,
+  hashes, and provenance.
+
+It never fits a collision clock or total-loss law and never uses HCS/USF/DEM
+validation ensembles for parameter fitting.
 
 ```bash
+PYTHONPATH=../contracts/python:src \
 python3 scripts/estimate_grid.py \
-  --runs-root ../results/ctc --output ../coefficients --bootstrap 2000 \
-  --gamma-max-table models/legacy_bl/gamma_max_table.json \
-  --one-hit-table models/legacy_bl/one_hit_table.json
-
-python3 scripts/build_artifact.py \
-  --runs-root ../results/ctc --output ../models/microscopic_closure_v2 \
-  --gamma-max-table models/legacy_bl/gamma_max_table.json \
-  --one-hit-table models/legacy_bl/one_hit_table.json
+  --runs-root ../results/ctc_closure/sentinel \
+  --output ../results/closure_estimates/sentinel --bootstrap 500
 ```
 
-The copied JSON tables define the unchanged v1 BL denominator. They are
-read-only inputs, not refitted outputs.
-
+Artifact construction is intentionally blocked until all supplied node gates
+pass. Schema-2.1 baseline shards are accepted through the shared read-only
+adapter.

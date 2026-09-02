@@ -1,6 +1,7 @@
 	module output
 
 	use, intrinsic :: iso_fortran_env, only: int32, int64, real64
+	use run_param, only: ENSEMBLE_ID
 	implicit none
 
 	INTEGER :: NHIT
@@ -51,7 +52,8 @@
 	!$OMP& prerot_buffer, ftr_buffer, orient_buffer, uvec_buffer,             &
 	!$OMP& buffer_idx, buffer_ftr_idx, buffer_orient_idx, buffer_uvec_idx)
 
-	! Schema v2.1.0: typed little-endian headers followed by float64 payloads.
+	! Schema v2.2.0: the former reserved int32 is ensemble_id. Record sizes and
+	! all real payload fields remain binary-compatible with schema 2.1.
 	INTEGER, PARAMETER :: N_ATTEMPT_REAL = 21, N_OUTCOME_REAL = 65
 	INTEGER(INT64), DIMENSION(MAX_BUFFER) :: attempt_event, attempt_index, attempt_block
 	INTEGER(INT32), DIMENSION(MAX_BUFFER) :: attempt_hit
@@ -103,7 +105,7 @@
 !$OMP CRITICAL(v2_attempt_write)
 		DO i = 1, attempt_buffer_idx
 			WRITE(1010) attempt_event(i), attempt_index(i), attempt_block(i), &
-				attempt_hit(i), 0_INT32, attempt_real(i,:)
+				attempt_hit(i), INT(ENSEMBLE_ID, INT32), attempt_real(i,:)
 		END DO
 		FLUSH(1010)
 !$OMP END CRITICAL(v2_attempt_write)
@@ -116,7 +118,7 @@
 !$OMP CRITICAL(v2_outcome_write)
 		DO i = 1, outcome_buffer_idx
 			WRITE(1012) outcome_event(i), outcome_index(i), outcome_block(i), &
-				outcome_ncontact(i), 0_INT32, outcome_real(i,:)
+				outcome_ncontact(i), INT(ENSEMBLE_ID, INT32), outcome_real(i,:)
 		END DO
 		FLUSH(1012)
 !$OMP END CRITICAL(v2_outcome_write)

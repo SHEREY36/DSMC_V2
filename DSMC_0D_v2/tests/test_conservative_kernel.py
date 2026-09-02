@@ -39,6 +39,20 @@ class _RoutingClosure:
         return 0.25 if name == "beta_ctc_a2_tr" else 0.0
 
 
+class _VariationalClosure:
+    @staticmethod
+    def sample_energy(state, rng):
+        return 0.6
+
+    @staticmethod
+    def sample_direction(ghat, state, z, rng):
+        return np.asarray(ghat) / np.linalg.norm(ghat)
+
+    @staticmethod
+    def tangent_spin_directions(axes, rng):
+        return np.array([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
+
+
 def _state():
     velocity = np.array([[1.0, 0.2, 0.0], [-1.0, -0.2, 0.0]])
     energy = np.array([0.3, 0.4])
@@ -114,6 +128,24 @@ class ConservativeKernelTests(unittest.TestCase):
             _RoutingClosure(), 0.8, 1.0, 2.0, features)
         self.assertAlmostEqual(value, 1.2 * (1.0 + 0.25 * 0.4))
         self.assertGreater(value, 1.0)
+
+    def test_variational_kernel_is_positive_by_construction(self):
+        state = _state()
+        kernel = SpherocylinderKernel(
+            self.params, _Models(), 1.0, 1.21, 3.67, 1.0,
+            _VariationalClosure(), "variational_v2", "variational_v2",
+            np.random.default_rng(9), np.random.default_rng(10))
+        kernel.set_cell_variational({"p_exch": 1.0})
+        initial = self._energy(state)
+        v1, v2 = state.velocity.copy()
+        relative = v1 - v2
+        kernel.collide(state, 0, 1, self.normal, v1, v2, relative,
+                       np.linalg.norm(relative), 1.0, 1.0)
+        self.assertAlmostEqual(self._energy(state), initial, places=13)
+        self.assertGreater(np.min(state.rotational_energy), 0.0)
+        self.assertEqual(kernel.negative_energy_repairs, 0)
+        np.testing.assert_allclose(np.einsum("ni,ni->n", state.omega, state.axis),
+                                   0.0, atol=1.0e-13)
 
 
 if __name__ == "__main__":

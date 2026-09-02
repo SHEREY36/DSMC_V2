@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time as wallclock
+
 import numpy as np
 
 from .angular import sample_direction
@@ -61,9 +63,15 @@ class SpherocylinderKernel:
         self.loss = models.loss_parameters(alpha, params.aspect_ratio) if alpha < 1.0 else {
             "gamma_max": 0.0, "one_hit_probability": 1.0}
         self.cell_routing = None
+        self.cell_variational = None
+        self.negative_energy_repairs = 0
+        self.closure_seconds = 0.0
 
     def set_cell_routing(self, value: float | None) -> None:
         self.cell_routing = value
+
+    def set_cell_variational(self, value: dict | None) -> None:
+        self.cell_variational = value
 
     def collide(self, state, p1: int, p2: int, normal: np.ndarray,
                 v1: np.ndarray, v2: np.ndarray, vrel: np.ndarray,
@@ -78,6 +86,39 @@ class SpherocylinderKernel:
         eps_tr_i = etr_i / total_i
         eps_r1_i = state.rotational_energy[p1] / erot_i if erot_i > 0.0 else 0.5
         in_equilibration = time < self.equilibration_time
+        if self.routing_mode == "variational_v2":
+            closure_started = wallclock.perf_counter()
+            if self.cell_variational is None:
+                raise RuntimeError("variational closure was not evaluated for the current cell")
+            exchanged = self.vss_rng.random() < self.cell_variational["p_exch"]
+            if exchanged:
+                eps_tr_f = self.closure.sample_energy(self.cell_variational, self.vss_rng)
+                eps_r1_f = self.vss_rng.random()
+            else:
+                eps_tr_f, eps_r1_f = eps_tr_i, eps_r1_i
+            gamma = 0.0 if in_equilibration or self.alpha >= 1.0 else (
+                np.random.beta(self.beta_a, self.beta_b) * self.loss["gamma_max"]
+                * self.loss["one_hit_probability"])
+            available = total_i * (1.0 - gamma)
+            etr_f, erot_f = eps_tr_f * available, (1.0 - eps_tr_f) * available
+            if not (etr_f > 0.0 and erot_f > 0.0):
+                self.negative_energy_repairs += 1
+                raise RuntimeError("variational kernel produced a non-positive modal energy")
+            state.rotational_energy[p1] = eps_r1_f * erot_f
+            state.rotational_energy[p2] = (1.0 - eps_r1_f) * erot_f
+            ghat = vrel / max(relative_speed, 1.0e-30)
+            magnitude = 2.0 * np.sqrt(etr_f / self.params.mass)
+            direction = self.closure.sample_direction(
+                ghat, self.cell_variational, eps_tr_f, self.vss_rng)
+            gpost = magnitude * direction
+            state.velocity[p1] = vcom + 0.5 * gpost
+            state.velocity[p2] = vcom - 0.5 * gpost
+            directions = self.closure.tangent_spin_directions(
+                np.array([state.axis[p1], state.axis[p2]]), self.direction_rng)
+            state.set_spin_directions((p1, p2), directions)
+            self.closure_seconds += wallclock.perf_counter() - closure_started
+            return 2
+
         pr = min(1.0 / rotational_collision_number(theta, self.alpha), 0.5)
         draw = np.random.random()
         relax1, relax2 = draw < pr, draw >= pr and draw < 2.0 * pr

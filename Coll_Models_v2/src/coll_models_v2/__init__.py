@@ -1,4 +1,4 @@
-"""Standalone CTC estimation of routing and VSS microscopic closures."""
+"""BL-compatible variational closure estimation from CTC data."""
 
 from .estimate import estimate_node
 from .legacy_bl import LegacyBL
@@ -9,4 +9,4 @@ __all__ = [
     "sample_vss_cosine", "vss_rank2_moment",
 ]
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"

@@ -30,7 +30,10 @@
 	OMEGAI = OMEGA(I,2)*UX(I,:) + OMEGA(I,3)*UY(I,:)
 	OMEGAJ = OMEGA(J,2)*UX(J,:) + OMEGA(J,3)*UY(J,:)
 	V_ROT = CROSSPRDCT(OMEGAJ, RHO2) - CROSSPRDCT(OMEGAI, RHO1)
-	VREL_CONTACT = VR !+ V_ROT
+	! Frozen v1 mechanics: damping uses centre translational relative velocity
+	! only. V_ROT is evaluated above solely to make the deliberate restriction
+	! visible. A general rigid-body contact law would use VR + V_ROT here.
+	VREL_CONTACT = VR
 
 	! Normal approach speed at the contact point.
 	! Positive VRN means the surfaces approach along the contact normal E21.

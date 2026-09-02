@@ -1,4 +1,4 @@
-schema_version: "2.1.0"
+schema_version: "2.2.0"
 
 particle:
   AR: 2.0
@@ -38,8 +38,13 @@ preprocessing:
     beta_b: 3.67
 
 microscopic_closure:
-  routing: ctc_moment16       # or legacy_rank0
-  angular: ctc_vss_rank2      # or legacy
+  # Production candidate. Use legacy_rank0/legacy for the complete v1 path,
+  # or ctc_moment16/ctc_vss_rank2 for the prior schema-2.1 A/B path.
+  routing: variational_v2
+  angular: variational_v2
+  artifact: models/microscopic_closure_v2/closure_v2.npz
+  invariant_corrections: true
+  # Schema-2.1 A/B artifacts:
   routing_artifact: models/microscopic_closure_v2/routing16_v2.json
   vss_artifact: models/microscopic_closure_v2/vss_rank2_v2.json
   rotational_direction_artifact: models/microscopic_closure_v2/rotational_direction_v2.npz

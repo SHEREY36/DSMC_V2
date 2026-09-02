@@ -1,26 +1,39 @@
 # DSMC_0D_v2
 
-The runtime keeps the v1 NTC clock, cross-section, conditional GMM, BL total
-loss, reservoir handling, HCS output, and USF pressure accumulation. Its only
-new production switches are:
+The `variational_v2` runtime keeps the v1 NTC clock, fixed cross-section, and
+scalar BL loss while replacing the legacy conditional-GMM/routing composition
+and VSS angle.
 
 ```yaml
 microscopic_closure:
-  routing: ctc_moment16  # or legacy_rank0
-  angular: ctc_vss_rank2 # or legacy
+  routing: variational_v2
+  angular: variational_v2
+  artifact: models/microscopic_closure_v2/closure_v2.npz
+  invariant_corrections: true
 ```
 
-Routing changes only the translational/rotational split of an unchanged loss
-draw. VSS changes only the outgoing relative direction at an unchanged speed.
+The exchange gate stores and uses `p_exch` directly. A closed gate preserves
+the incoming translational and individual rotational partitions; an open gate
+draws the exact tilted reset law and uniform rotational sub-split. The angular
+draw matches two Legendre moments and uses uniform azimuth. All new modal
+energies are positive by construction, and no repair clipping exists in this
+branch.
 
-From the monorepo root:
+The frozen complete legacy mode remains:
+
+```yaml
+microscopic_closure:
+  routing: legacy_rank0
+  angular: legacy
+```
+
+Run from the monorepo root:
 
 ```bash
 PYTHONPATH=contracts/python:Coll_Models_v2/src:DSMC_0D_v2/src \
-python3 DSMC_0D_v2/scripts/run_simulation.py \
+hpc/python.sh DSMC_0D_v2/scripts/run_simulation.py \
   --config DSMC_0D_v2/config/default.yaml
 ```
 
-The unchanged GMM artifacts support `AR=1.1, 1.25, 1.5, 2.0, 2.5, 3.0`.
-`AR=1` uses the analytic sphere bypass. No AR extrapolation is permitted.
-
+Diagnostics report closure overhead, feature-domain frequency, and the number
+of negative-energy repairs (required to remain exactly zero).

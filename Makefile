@@ -12,9 +12,9 @@ build:
 test: test-python
 
 test-python:
-	$(PYTHON) -m unittest discover -s tests -v
-	$(PYTHON) -m unittest discover -s Coll_Models_v2/tests -v
-	$(PYTHON) -m unittest discover -s DSMC_0D_v2/tests -v
+	$(PYTHON) -m pytest -q tests/integration
+	$(PYTHON) -m pytest -q Coll_Models_v2/tests
+	$(PYTHON) -m pytest -q DSMC_0D_v2/tests
 
 smoke: build
 	mkdir -p results/local_smoke

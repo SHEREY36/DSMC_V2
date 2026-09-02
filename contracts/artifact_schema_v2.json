@@ -1,13 +1,13 @@
 {
-  "schema_version": "2.1.0",
-  "artifact_type": "microscopic_closure_v2",
-  "required_files": [
-    "manifest.json",
-    "routing16_v2.json",
-    "vss_rank2_v2.json",
-    "rotational_direction_v2.npz"
+  "schema_version": "2.2.0",
+  "artifact_type": "bl_variational_closure",
+  "required_files": ["manifest.json", "closure_v2.npz"],
+  "feature_order": [
+    "a2_tr", "a2_rot", "a11", "A_cu", "PiPi", "QQ", "RtRt",
+    "PiQ", "PiRt", "QRt", "qtr2", "qrot2", "qtr_qrot", "W2"
   ],
-  "production_changes": ["dissipation_routing", "angular_scattering"],
-  "forbidden_files": ["pair_clock_v2.json", "energy_library_v2.npz"],
-  "preserved_runtime": ["v1_ntc", "frozen_sigma_c", "conditional_gmm", "BL_total_loss"]
+  "diagnostics": ["Acw2", "vx2"],
+  "production_changes": ["energy_partition_kernel", "angular_scattering"],
+  "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
+  "preserved_runtime": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_mode"]
 }
