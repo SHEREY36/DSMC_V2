@@ -10,6 +10,13 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ClosureCampaignTests(unittest.TestCase):
+    def test_sentinel_slurm_job_uses_submit_directory_not_spool_path(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "job_closure_sentinel.slurm").read_text()
+        self.assertIn("#SBATCH --array=0-35%12", script)
+        self.assertIn("ROOT=${SLURM_SUBMIT_DIR:-$PWD}", script)
+        self.assertNotIn('dirname "$0"', script)
+
     def test_sentinel_has_36_baseline_nodes(self):
         rows = MODULE.grid_rows("sentinel", 5000, 0, "results/ctc_closure")
         self.assertEqual(len(rows), 36)

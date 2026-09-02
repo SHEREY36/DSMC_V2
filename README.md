@@ -166,10 +166,13 @@ leaves every completed run in place and moves each incomplete directory intact
 under `results/quarantine/ctc_cancel_<timestamp>` so a fresh run cannot
 overwrite it. Nothing is deleted.
 
-Then build and submit the 36-node, 5,000-hit sentinel:
+Then build, generate the manifest on the login node, and use the conventional
+Negishi submission for the 36-node, 5,000-hit sentinel:
 
 ```bash
 make -C HS_CTC_v2/build clean all
+hpc/python.sh hpc/make_closure_manifest.py \
+  --stage sentinel --samples 5000 --output manifests/closure_sentinel.csv
 sbatch job_closure_sentinel.slurm
 ```
 

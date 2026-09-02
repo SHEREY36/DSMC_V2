@@ -12,7 +12,12 @@
 
 set -euo pipefail
 MANIFEST=${1:?manifest path is required}
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=${SLURM_SUBMIT_DIR:-$PWD}
+if [[ ! -d "$ROOT/HS_CTC_v2" ]]; then
+    printf 'ERROR: submit this file from the DSMC_V2 repository root.\n' >&2
+    exit 2
+fi
+cd "$ROOT"
 ROW=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "$MANIFEST")
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
-bash "$ROOT/hpc/run_ctc_row.sh" "$ROW"
+exec bash hpc/run_ctc_row.sh "$ROW" "$SLURM_ARRAY_TASK_ID"

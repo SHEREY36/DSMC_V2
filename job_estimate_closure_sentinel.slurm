@@ -12,7 +12,11 @@
 #SBATCH -e logs/closure_fit_sentinel_%A_%a.err
 
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")" && pwd)
+ROOT=${SLURM_SUBMIT_DIR:-$PWD}
+if [[ ! -d "$ROOT/Coll_Models_v2" ]]; then
+    printf 'ERROR: submit this file from the DSMC_V2 repository root.\n' >&2
+    exit 2
+fi
 cd "$ROOT"
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1

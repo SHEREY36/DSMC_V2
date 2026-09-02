@@ -11,7 +11,11 @@
 #SBATCH -e logs/closure_summary_sentinel_%j.err
 
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")" && pwd)
+ROOT=${SLURM_SUBMIT_DIR:-$PWD}
+if [[ ! -d "$ROOT/Coll_Models_v2" ]]; then
+    printf 'ERROR: submit this file from the DSMC_V2 repository root.\n' >&2
+    exit 2
+fi
 cd "$ROOT"
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/summarize_sentinel.py \
