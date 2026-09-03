@@ -16,7 +16,13 @@ from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
 from .estimate import estimate_node
 from .fit_coefficients import fit_lambda1_coefficients
-from .projections import angular_quantiles, energy_moments, energy_quantiles
+from .projections import (
+    _legendre_nodes,
+    angular_quantiles,
+    conditional_energy_mean_map,
+    energy_quantiles,
+    incoming_partition_density,
+)
 
 
 SCHEMA_VERSION = "2.2.0"
@@ -90,13 +96,17 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         if len(nodes) < 3:
             continue
         theta = np.array([row["theta"] for row in nodes])
-        p = PchipInterpolator(theta, [row["energy"]["p_exch"] for row in nodes])
         lambda1 = PchipInterpolator(theta, [row["energy"]["lambda1"] for row in nodes])
         lambda2 = PchipInterpolator(theta, [row["energy"]["lambda2"] for row in nodes])
-        p_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
-            "p_exch", {}).get("standard_error", np.nan) for row in nodes])
-        mu_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
-            "reset_mean", {}).get("standard_error", np.nan) for row in nodes])
+        lambda3 = PchipInterpolator(theta, [row["energy"]["lambda3"] for row in nodes])
+        lambda4 = PchipInterpolator(theta, [row["energy"].get("lambda4", 0.0)
+                                            for row in nodes])
+        partition_se = [row.get("uncertainty", {}).get(
+            "mean_partition_out", {}).get("standard_error", np.nan) for row in nodes]
+        mu_se = (PchipInterpolator(theta, partition_se)
+                 if np.all(np.isfinite(partition_se))
+                 else (lambda value: np.nan))
+        grid, quad = _legendre_nodes(192, 0.0, 1.0)
 
         if alpha >= 1.0:
             mean_loss = 0.0
@@ -105,10 +115,24 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         else:
             mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
 
+        def post_collision_partition(value):
+            """E[z_out] of the fitted kernel at the DSMC's own fractional loss.
+
+            The incoming partition is averaged over its exact collision-weighted
+            law, not evaluated at the energy-weighted fraction: those are two
+            different objects and only the second belongs in the balance below.
+            """
+            mass = incoming_partition_density(value, grid) * quad
+            mass = mass / np.sum(mass)
+            parameters = np.array([float(lambda1(value)), float(lambda2(value)),
+                                   float(lambda3(value))])
+            mean_map = conditional_energy_mean_map(
+                parameters, grid, offset=float(lambda4(value)) * mean_loss)
+            return float(mass @ mean_map)
+
         def drift(value):
             incoming = _energy_weighted_partition(value)
-            reset = float(energy_moments(np.array([lambda1(value), lambda2(value)]))[0])
-            post_partition = (1.0 - p(value)) * incoming + p(value) * reset
+            post_partition = post_collision_partition(value)
             delta_tr = (1.0 - mean_loss) * post_partition - incoming
             delta_rot = ((1.0 - mean_loss) * (1.0 - post_partition)
                          - (1.0 - incoming))
@@ -133,12 +157,12 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
                           - drift(max(theta[0], root - step))) \
                 / (min(theta[-1], root + step) - max(theta[0], root - step))
             stable = derivative < 0.0
-            if np.isfinite(p_se(root)) and np.isfinite(mu_se(root)) and derivative != 0.0:
-                reset = energy_moments(np.array([lambda1(root), lambda2(root)]))[0]
+            if np.isfinite(mu_se(root)) and derivative != 0.0:
+                # First-order propagation through the post-collision partition,
+                # whose bootstrap standard error stands in for the joint
+                # uncertainty of the natural parameters.
                 response = (1.0 - mean_loss) * (2.0 / 3.0 + root)
-                drift_se = response * np.hypot(
-                    p(root) * mu_se(root),
-                    (reset - _energy_weighted_partition(root)) * p_se(root))
+                drift_se = float(response * mu_se(root))
                 root_standard_error = float(drift_se / abs(derivative))
                 uncertainty_margin = float(
                     min(root - theta[0], theta[-1] - root) - 1.96 * root_standard_error)
@@ -180,6 +204,16 @@ def build_artifact(run_directories, output_directory, bl=None,
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
     probability = np.linspace(0.0, 1.0, 1025)
+    memory = np.array([abs(float(row["energy"].get("lambda3", 0.0))) for row in baseline])
+    if np.any(memory > 1.0e-9):
+        # The conditional kernel depends on the event through
+        # a = lambda3 * z_in + lambda4 * eps, so a single one-dimensional
+        # quantile table cannot represent it. Refuse rather than export a
+        # sampler that silently drops the memory term.
+        raise NotImplementedError(
+            "energy sampler export requires the two-dimensional (a, u) quantile "
+            f"table for kernel_form={baseline[0]['energy'].get('kernel_form')!r}; "
+            f"max |lambda3| = {float(np.max(memory)):.4g}")
     eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"]]
                         for row in baseline])
     aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]

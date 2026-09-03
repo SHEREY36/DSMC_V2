@@ -89,6 +89,260 @@ def energy_moments(parameters: np.ndarray, quadrature: int = 256) -> np.ndarray:
     return np.array([probability @ z, probability @ (z * z)])
 
 
+@dataclass(frozen=True)
+class ConditionalEnergyKernel:
+    """Beta(2,2) tilted by z, z**2 and per-event covariates multiplying z.
+
+    ``parameters`` is ``(lambda1, lambda2, lambda_k...)`` where the trailing
+    entries multiply ``covariate_k * z``.  The first covariate is always the
+    incoming partition, so ``lambda3`` is the memory parameter that replaces
+    the Bernoulli gate.
+    """
+
+    parameters: np.ndarray
+    moments: np.ndarray
+    targets: np.ndarray
+    residual: float
+    converged: bool
+    covariate_names: tuple[str, ...]
+    quadrature: int
+
+
+CONDITIONAL_ENERGY_CHUNK = 16384
+
+
+def _conditional_energy_chunk(parameters, shift, z, log_base, order):
+    """Log-normaliser and moments of z for one block of events."""
+    exponent = (log_base + parameters[0] * z + parameters[1] * z * z)[None, :] \
+        + shift[:, None] * z[None, :]
+    maximum = np.max(exponent, axis=1)
+    scaled = np.exp(exponent - maximum[:, None])
+    total = np.sum(scaled, axis=1)
+    probability = scaled / total[:, None]
+    return maximum + np.log(total), [probability @ (z ** power)
+                                     for power in range(1, order + 1)]
+
+
+def _conditional_energy_terms(parameters: np.ndarray, covariates: np.ndarray,
+                              quadrature: int, order: int = 2,
+                              chunk: int = CONDITIONAL_ENERGY_CHUNK):
+    """Per-event log-normaliser and the first ``order`` moments of z.
+
+    The kernel depends on an event only through the scalar
+    ``a = sum_k lambda_{k+2} * covariate_k``, so the exponent is built once per
+    block.  Blocking keeps the working set at ``chunk x quadrature`` rather than
+    ``n x quadrature``, which for a production node is the difference between a
+    few megabytes and several gigabytes.
+    """
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    log_base = np.log(weight * 6.0 * z * (1.0 - z))
+    shift = np.asarray(covariates, dtype=float) @ np.asarray(parameters, dtype=float)[2:]
+    count = len(shift)
+    log_norm = np.empty(count)
+    moments = [np.empty(count) for _ in range(order)]
+    for start in range(0, count, chunk):
+        stop = min(start + chunk, count)
+        block_norm, block_moments = _conditional_energy_chunk(
+            parameters, shift[start:stop], z, log_base, order)
+        log_norm[start:stop] = block_norm
+        for target, value in zip(moments, block_moments):
+            target[start:stop] = value
+    return log_norm, moments, z
+
+
+def conditional_energy_logpdf(parameters: np.ndarray, covariates: np.ndarray,
+                              z_out: np.ndarray, quadrature: int = 256) -> np.ndarray:
+    """log p(z_out | covariates) for the tilted conditional kernel."""
+    parameters = np.asarray(parameters, dtype=float)
+    covariates = np.atleast_2d(np.asarray(covariates, dtype=float))
+    z_out = np.asarray(z_out, dtype=float)
+    if covariates.shape[0] != z_out.shape[0]:
+        covariates = covariates.T
+    log_norm, _, _ = _conditional_energy_terms(parameters, covariates, quadrature, order=1)
+    shift = covariates @ parameters[2:]
+    return (np.log(6.0 * z_out * (1.0 - z_out)) + parameters[0] * z_out
+            + parameters[1] * z_out * z_out + shift * z_out - log_norm)
+
+
+def _gaussian_warm_start(z_out: np.ndarray, covariates: np.ndarray,
+                         weight: np.ndarray) -> np.ndarray:
+    """Closed-form starting point from the affine conditional mean and spread.
+
+    Ignoring the Beta(2,2) factor, the tilt is Gaussian in z with variance
+    ``-1/(2 lambda2)`` and mean ``-(lambda1 + sum_k lambda_{k+2} c_k)/(2 lambda2)``.
+    Matching that to the weighted affine regression of z_out on the covariates
+    lands within a couple of Newton steps of the solution even when the
+    conditional law is very sharp, where a cold start needs hundreds of damped
+    steps and can exhaust the line search.
+    """
+    design = np.column_stack((np.ones(len(z_out)), covariates))
+    normal = (design * weight[:, None]).T @ design
+    coefficients = np.linalg.solve(
+        normal + 1.0e-12 * np.eye(design.shape[1]),
+        (design * weight[:, None]).T @ z_out)
+    residual = z_out - design @ coefficients
+    variance = float(weight @ (residual * residual) / np.sum(weight))
+    variance = min(max(variance, 1.0e-6), 1.0)
+    lambda2 = -0.5 / variance
+    return np.concatenate(([coefficients[0] / variance, lambda2],
+                           coefficients[1:] / variance))
+
+
+def fit_conditional_energy_projection(z_out: np.ndarray, covariates: np.ndarray,
+                                      weight: np.ndarray,
+                                      covariate_names: tuple[str, ...] = (),
+                                      quadrature: int = 256,
+                                      tolerance: float = 1.0e-11,
+                                      max_iterations: int = 80,
+                                      initial: np.ndarray | None = None) -> ConditionalEnergyKernel:
+    """I-projection of Beta(2,2) onto E[z], E[z**2] and E[covariate_k * z].
+
+    The dual is strictly convex, so unlike the gated-Beta inversion this has a
+    unique solution whenever the targets are moments of an actual distribution
+    on (0,1) -- which sample moments always are.  Solved by damped Newton with
+    the exact Hessian, which is the model covariance of the statistics.
+    """
+    z_out = np.asarray(z_out, dtype=float)
+    covariates = np.atleast_2d(np.asarray(covariates, dtype=float))
+    if covariates.shape[0] != z_out.shape[0]:
+        covariates = covariates.T
+    if covariates.shape[0] != z_out.shape[0]:
+        raise ValueError("covariates must have one row per event")
+    weight = np.asarray(weight, dtype=float)
+    weight = weight / np.sum(weight)
+    count = 2 + covariates.shape[1]
+
+    statistics = np.column_stack(
+        (z_out, z_out * z_out, covariates * z_out[:, None]))
+    target = weight @ statistics
+
+    nodes, quad_weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    log_base = np.log(quad_weight * 6.0 * nodes * (1.0 - nodes))
+    chunk = CONDITIONAL_ENERGY_CHUNK
+
+    def dual(parameter):
+        shift = covariates @ parameter[2:]
+        total = 0.0
+        for start in range(0, len(z_out), chunk):
+            stop = min(start + chunk, len(z_out))
+            block_norm, _ = _conditional_energy_chunk(
+                parameter, shift[start:stop], nodes, log_base, 1)
+            total += float(weight[start:stop] @ block_norm)
+        return total - float(parameter @ target)
+
+    def gradient_and_hessian(parameter):
+        shift = covariates @ parameter[2:]
+        model = np.zeros(count)
+        variance = np.zeros((count, count))
+        for start in range(0, len(z_out), chunk):
+            stop = min(start + chunk, len(z_out))
+            _, moments = _conditional_energy_chunk(
+                parameter, shift[start:stop], nodes, log_base, 4)
+            m1, m2, m3, m4 = moments
+            block_weight = weight[start:stop]
+            block_covariates = covariates[start:stop]
+            model[0] += block_weight @ m1
+            model[1] += block_weight @ m2
+            for k in range(covariates.shape[1]):
+                model[2 + k] += block_weight @ (block_covariates[:, k] * m1)
+            v11, v12, v22 = m2 - m1 * m1, m3 - m1 * m2, m4 - m2 * m2
+            # basis is (1, 1) for the two z-powers then one column per covariate
+            scale = np.column_stack((np.ones_like(m1), np.ones_like(m1),
+                                     block_covariates))
+            for i in range(count):
+                for j in range(i, count):
+                    block = v22 if (i == 1 and j == 1) else (
+                        v12 if (i == 1) != (j == 1) else v11)
+                    value = block_weight @ (scale[:, i] * scale[:, j] * block)
+                    variance[i, j] += value
+                    if i != j:
+                        variance[j, i] += value
+        return model - target, variance
+
+    if initial is None:
+        initial = _gaussian_warm_start(z_out, covariates, weight)
+    parameter = np.asarray(initial, dtype=float)
+    if parameter.shape != (count,):
+        parameter = np.zeros(count)
+    value = dual(parameter)
+    if not np.isfinite(value):
+        parameter = np.zeros(count)
+        value = dual(parameter)
+    residual = np.inf
+    budget = 12 * max_iterations
+    for _ in range(max_iterations):
+        grad, hessian = gradient_and_hessian(parameter)
+        residual = float(np.max(np.abs(grad)))
+        if residual < tolerance:
+            break
+        ridge = 1.0e-12 * max(1.0, float(np.max(np.abs(np.diag(hessian)))))
+        step = np.linalg.solve(hessian + ridge * np.eye(count), grad)
+        scaling = 1.0
+        for _ in range(30):
+            budget -= 1
+            candidate = parameter - scaling * step
+            trial = dual(candidate)
+            if np.isfinite(trial) and trial <= value - 1.0e-4 * scaling * float(grad @ step):
+                break
+            scaling *= 0.5
+        else:
+            break
+        parameter, value = candidate, trial
+        if budget <= 0:
+            break
+    grad, _ = gradient_and_hessian(parameter)
+    residual = float(np.max(np.abs(grad)))
+    return ConditionalEnergyKernel(
+        parameters=parameter, moments=target + grad, targets=target,
+        residual=residual,
+        converged=bool(residual < 1.0e-8 and np.all(np.isfinite(parameter))),
+        covariate_names=tuple(covariate_names), quadrature=int(quadrature))
+
+
+def conditional_energy_mean_map(parameters: np.ndarray, z_in: np.ndarray,
+                                offset: float = 0.0, quadrature: int = 256) -> np.ndarray:
+    """E[z_out | z_in] with the non-memory covariates folded into ``offset``."""
+    parameters = np.asarray(parameters, dtype=float)
+    z_in = np.atleast_1d(np.asarray(z_in, dtype=float))
+    effective = np.array([parameters[0] + offset, parameters[1], parameters[2]])
+    _, moments, _ = _conditional_energy_terms(effective, z_in[:, None], quadrature, 1)
+    return moments[0]
+
+
+def conditional_energy_stationary(parameters: np.ndarray, offset: float = 0.0,
+                                  quadrature: int = 256) -> tuple[np.ndarray, np.ndarray]:
+    """Invariant law of the z-chain, returned as (nodes, probability mass).
+
+    This is the object the discarded "reset law" was a proxy for: the partition
+    the kernel drives towards.  It is Beta(2,2) exactly for an elastic kernel
+    that respects equipartition, so its first two moments are the elastic gate.
+    """
+    parameters = np.asarray(parameters, dtype=float)
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    log_base = np.log(weight * 6.0 * z * (1.0 - z))
+    exponent = (log_base + (parameters[0] + offset) * z + parameters[1] * z * z)[None, :] \
+        + parameters[2] * np.outer(z, z)
+    scaled = np.exp(exponent - np.max(exponent, axis=1)[:, None])
+    transition = scaled / np.sum(scaled, axis=1)[:, None]
+    system = np.vstack((transition.T - np.eye(len(z)), np.ones(len(z))))
+    rhs = np.zeros(len(z) + 1)
+    rhs[-1] = 1.0
+    mass, *_ = np.linalg.lstsq(system, rhs, rcond=None)
+    mass = np.maximum(mass, 0.0)
+    return z, mass / np.sum(mass)
+
+
+def incoming_partition_density(theta: float, z: np.ndarray) -> np.ndarray:
+    """Collision-weighted law of z_in for two independent Gamma(2) modal energies.
+
+    For X ~ Gamma(2, theta) and Y ~ Gamma(2, 1) the ratio X/(X+Y) has density
+    proportional to z(1-z)(z/theta + 1 - z)^-4.
+    """
+    z = np.asarray(z, dtype=float)
+    density = z * (1.0 - z) / (z / float(theta) + 1.0 - z) ** 4
+    return density
+
+
 def fit_joint_projection(target: np.ndarray, quadrature: int = 96) -> Projection:
     """Fit the optional z*cos(chi) coupled I-projection.
 

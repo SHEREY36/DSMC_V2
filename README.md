@@ -15,7 +15,11 @@ The following are deliberate model choices and are not refitted:
 - the v1 no-time-counter candidate clock;
 - the v1 polynomial collision cross-section;
 - the v1 scalar Borgnakke–Larsen loss draw;
-- the v1 CTC normal damping based on centre translational relative velocity.
+- the v1 CTC normal damping based on centre translational relative velocity;
+- the v1 contact integration at 50 steps per Hertzian contact time. Refining it
+  is now cheap (`CTC_DT_DIVISOR`), and it carries a measured 1.7% per-event and
+  0.5% ensemble-mean discretisation error in the dissipated energy, so this is
+  a frozen choice rather than a converged one.
 
 The last restriction is explicitly visible in
 `HS_CTC_v2/model/calc_force_dem.f90`. General rigid-body restitution normally
@@ -39,24 +43,58 @@ A_perp = pi D^2
 L = (AR - 1) D.
 ```
 
-All proposals estimate the DSMC incoming-state measure. Accepted outcomes use
-weights proportional to `1/A_perp`; the common normalization is immaterial.
-The observed hit flag is calibrated against `A_perp/A0`. The frozen DSMC
-cross-section polynomial is reported separately as a clock audit and is never
-required to equal a geometric area.
+`A_perp` is the shadow of a *frozen* pair, and it is not the generator's
+acceptance probability. The rods turn while they close, so the acceptance is
+the dynamic excluded area, which exceeds `A_perp` by 9 to 33 percent at aspect
+ratios 2 and 3 and grows as theta falls. That is physics rather than a staging
+artefact: contact needs a centre separation below `L + D`, the generator starts
+beyond that, and free rotation preserves an isotropic director law, so the
+result cannot depend on the staging distance -- and measurably does not.
 
-The energy kernel is
+The acceptance is nevertheless pure kinematics, since no force acts before
+contact. `kinematic_propensity` integrates the force-free encounter over the
+impact-parameter plane directly from the stored pre-collision state, and
+accepted outcomes are weighted by `1/propensity`, the exact Radon-Nikodym
+derivative onto the DSMC's orientation-blind collision measure. Measured
+against the generator, the predicted acceptance is within 0.5 percent where
+`A_perp` is out by 5 to 25 percent, and with zero spin the integrator
+reproduces the analytic `A_perp` to 0.03 percent.
+
+The static weight is retained for A/B runs as `propensity_offsets=None`. The
+frozen DSMC cross-section polynomial is reported separately as a clock audit
+and is never required to equal a geometric area; note that the true dynamic
+cross-section varies by 5 percent at AR = 2 and 23 percent at AR = 3 across
+theta in [0.2, 2], which a theta-blind polynomial cannot carry.
+
+The energy kernel is the I-projection of the memoryless Borgnakke-Larsen draw
+onto the measured transfer moments:
 
 ```text
-K(z | z_in) = (1 - p_exch) delta(z - z_in) + p_exch R(z),
-R(z) proportional to Beta(2,2)(z) exp(lambda1 z + lambda2 z^2).
+p(z' | z, eps) proportional to Beta(2,2)(z')
+    * exp(lambda1 z' + lambda2 z'^2 + lambda3 z z' + lambda4 eps z').
 ```
 
-`p_exch` is identified directly from the weighted affine memory regression;
-there is no `2/Z` multiplier and no probability clipping. `lambda1` and
-`lambda2` solve the exact convex I-projection for the reset mean and ordinary
-second moment. State corrections act in the natural parameter,
-`lambda1 = lambda1_0 + beta dot X`.
+The earlier gated form, `(1 - p_exch) delta(z' - z) + p_exch R(z')`, is
+retired. The stored events have no atom at `z' = z`: only 3 to 13 percent of
+collisions leave the partition unchanged to 0.01, where the gate needs 25 to 95
+percent. Forcing one imposes a floor `p(1-p)(z - mu)^2` on the conditional
+variance that the data fall below, which is what produced the negative reset
+variances and the `reset_mean = intercept / p_exch` blow-up at AR = 1.1.
+
+Adding `z z'` and `eps z'` to the sufficient statistics keeps the same
+I-projection theorem, removes the atom, and makes the dual strictly convex on
+sample moments, so the infeasible-moment branch cannot occur. The rotational
+collision number survives as the derived lag-one slope of the mean map, and
+`lambda4` lets the runtime evaluate the kernel at its own frozen BL loss
+instead of inheriting the CTC's. State corrections still act in the natural
+parameter, `lambda1 = lambda1_0 + beta dot X`.
+
+`reset_mean` and `reset_second_moment` keep their names in the node estimates
+and the artifact, but now report the first two moments of the kernel's
+*invariant* law: the partition the kernel drives towards. That is what the
+reset law was a proxy for, it coincides with it exactly when the data really
+are gated-Beta, and it makes the elastic gate a direct test that an elastic
+kernel reaches equipartition.
 
 The angular kernel is
 
@@ -118,12 +156,15 @@ microscopic_closure:
   invariant_corrections: true
 ```
 
-It preserves the NTC clock and scalar loss. If the exchange gate stays closed,
-both the translational partition and individual rotational split are
-preserved. If it opens, the tilted reset law and a uniform `Beta(1,1)`
-rotational sub-split are drawn. Positive post-collision modal energies follow
-by construction; a non-positive energy raises an error rather than triggering
-a repair.
+It preserves the NTC clock and scalar loss. Positive post-collision modal
+energies follow by construction; a non-positive energy raises an error rather
+than triggering a repair.
+
+The runtime still samples the retired gated kernel. Wiring the conditional
+kernel in requires the two-dimensional `(a, u)` quantile table, where
+`a = lambda3 z_in + lambda4 eps` is the scalar the conditional law depends on;
+until that lands, `build_artifact` refuses to export an energy sampler for any
+node with a non-zero `lambda3` rather than silently dropping the memory term.
 
 The complete v1 path is still:
 
@@ -145,6 +186,23 @@ bash hpc/setup_negishi_env.sh
 make -C HS_CTC_v2/build clean all
 make test
 ```
+
+### Generator cost
+
+No force acts before first contact, so the approach is integrated by
+conservative advancement: the axis-to-axis gap cannot close faster than
+`g + (|w1| + |w2|) L/2`, so stepping by `(gap - D)` over that bound provably
+cannot skip a contact, and the step is exact rather than approximate because
+translation is linear and each director precesses about a fixed axis. The
+frozen fixed-step scheme still runs from just before contact through the
+contact itself.
+
+This removes 99.996% of the integration steps. At AR = 3 the generator does
+about 714 hits per second per core against 0.12 before, so the planned
+5.1e8-event campaign moves from roughly 325,000 core-hours to about 200. The
+accepted/rejected set is bit-identical; outcomes differ only by the contact
+discretisation both schemes share, verified against a reference at 64 times the
+contact resolution. Set `CTC_FAST_APPROACH=0` for the old behaviour.
 
 The test suite includes all 28 reference numerical checks under the corrected
 projection/rate semantics. It also covers binary compatibility, projected
@@ -229,12 +287,22 @@ per ensemble and is driven by the 95% half-width of `beta_n X_n`.
 
 Artifact or production release requires:
 
-- propensity agreement within three standard errors and inverse-area
-  `ESS/N >= 0.5`;
-- raw `0 < p_exch <= 1`, feasible reset moments, and both projection residuals
-  below `1e-6`;
-- less than 2% held-out improvement from a nonlinear memory regression;
-- equilibrium `Beta(2,2)` reset at `alpha=1, theta=1`;
+- predicted acceptance matching the observed hit fraction within three standard
+  errors or 2 percent, whichever is looser, since the z-test necessarily
+  tightens as the event count grows;
+- inverse-propensity `ESS/N >= 0.5` and proposal balance within three standard
+  errors on all 14 invariants;
+- raw `0 < p_exch <= 1` for the affine memory diagnostic and both projection
+  residuals below `1e-6`;
+- less than `0.02` nats of held-out log-density gained by adding the quadratic
+  memory statistic `z^2 z'`;
+- equilibrium `Beta(2,2)` invariant law at `alpha=1`, at every theta and
+  aspect ratio, within the looser of three bootstrap standard errors and 2%,
+  so a weakly identified node cannot buy a pass with a wide error bar and a
+  well resolved one is not failed for a negligible offset;
+- sampled `<z_in>` matching its exact law `p(z) ~ z(1-z)(z/theta + 1 - z)^-4`,
+  which is *not* `theta/(theta+1)`: that is the ratio of the means and is low
+  by 22% at `theta=0.2`;
 - numerical sampler moment error below `1e-3`;
 - one fixed point in the calibrated theta domain with negative numerical
   drift derivative, including fitted-surface derivatives;

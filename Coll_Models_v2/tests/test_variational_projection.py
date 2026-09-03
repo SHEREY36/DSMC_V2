@@ -58,15 +58,22 @@ class VariationalProjectionTests(unittest.TestCase):
         opened = rng.random(n) < 0.37
         zout = zin.copy()
         zout[opened] = rng.beta(3.0, 4.0, np.count_nonzero(opened))
-        fit = fit_exchange_kernel(zin, zout, np.ones(n))
+        fit = fit_exchange_kernel(zin, zout, np.ones(n), model_form=False)
         self.assertAlmostEqual(fit["p_exch"], 0.37, delta=0.008)
         self.assertAlmostEqual(fit["reset_mean"], 3.0 / 7.0, delta=0.006)
 
-    def test_exchange_fit_does_not_clip_invalid_rate(self):
-        zin = np.linspace(0.1, 0.9, 100)
-        zout = 1.1 * zin - 0.05
-        with self.assertRaisesRegex(ValueError, "exchange probability"):
-            fit_exchange_kernel(zin, zout, np.ones_like(zin))
+    def test_invalid_memory_rate_is_reported_and_never_clipped(self):
+        # The affine rate is a diagnostic of the old gated form, not a kernel
+        # parameter, so it is surfaced unclipped and flagged rather than
+        # blocking a projection that is perfectly well posed.
+        rng = np.random.default_rng(84)
+        zin = rng.beta(2.0, 2.0, 20000)
+        zout = np.clip(1.1 * zin - 0.05 + 0.02 * rng.standard_normal(20000),
+                       1.0e-6, 1.0 - 1.0e-6)
+        fit = fit_exchange_kernel(zin, zout, np.ones_like(zin), model_form=False)
+        self.assertLess(fit["p_exch"], 0.0)
+        self.assertFalse(fit["memory_diagnostic_pass"])
+        self.assertTrue(fit["projection_converged"])
 
     def test_unequal_scale_gamma_ratio_is_not_ratio_of_means(self):
         self.assertAlmostEqual(_incoming_partition_mean(1.0), 0.5, places=12)
