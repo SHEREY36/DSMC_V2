@@ -58,7 +58,11 @@ class VariationalProjectionTests(unittest.TestCase):
         opened = rng.random(n) < 0.37
         zout = zin.copy()
         zout[opened] = rng.beta(3.0, 4.0, np.count_nonzero(opened))
-        fit = fit_exchange_kernel(zin, zout, np.ones(n), model_form=False)
+        # Conditional form: recovering a reset law that is not Beta(2,2) is
+        # precisely what the bridge gives up in exchange for an exact elastic
+        # limit.  See test_bridge_kernel.py.
+        fit = fit_exchange_kernel(zin, zout, np.ones(n), model_form=False,
+                                  kernel_form="conditional_iprojection_v2")
         self.assertAlmostEqual(fit["p_exch"], 0.37, delta=0.008)
         self.assertAlmostEqual(fit["reset_mean"], 3.0 / 7.0, delta=0.006)
 

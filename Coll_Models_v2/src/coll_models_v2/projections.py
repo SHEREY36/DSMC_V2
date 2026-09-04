@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
+from scipy.interpolate import CubicSpline
 from scipy.optimize import minimize
 
 
@@ -384,6 +385,137 @@ def conditional_energy_stationary(parameters: np.ndarray, offset: float = 0.0,
     log_base = np.log(weight * 6.0 * z * (1.0 - z))
     exponent = (log_base + (parameters[0] + offset) * z + parameters[1] * z * z)[None, :] \
         + parameters[2] * np.outer(z, z)
+    scaled = np.exp(exponent - np.max(exponent, axis=1)[:, None])
+    transition = scaled / np.sum(scaled, axis=1)[:, None]
+    system = np.vstack((transition.T - np.eye(len(z)), np.ones(len(z))))
+    rhs = np.zeros(len(z) + 1)
+    rhs[-1] = 1.0
+    mass, *_ = np.linalg.lstsq(system, rhs, rcond=None)
+    mass = np.maximum(mass, 0.0)
+    return z, mass / np.sum(mass)
+
+
+BRIDGE_SINKHORN_ITERATIONS = 4000
+BRIDGE_SINKHORN_TOLERANCE = 1.0e-13
+
+
+@lru_cache(maxsize=256)
+def _bridge_potential(memory: float, quadrature: int) -> tuple:
+    """Symmetric Sinkhorn potential of the Beta(2,2) entropic bridge.
+
+    Find h with
+
+        p(z' | z) = 6 z'(1-z') h(z) h(z') exp(memory * z z')
+
+    a proper Markov kernel. Because the joint density pi(z) p(z'|z) is then
+    symmetric in (z, z'), row normalisation and stationarity of Beta(2,2) are
+    the *same* condition: the kernel is reversible with respect to Beta(2,2)
+    for every memory, so equipartition is exact by construction rather than
+    inferred from a kernel that is nearly the identity.
+    """
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    log_mass = np.log(weight * 6.0 * z * (1.0 - z))
+    coupling = float(memory) * np.outer(z, z)
+    potential = np.zeros_like(z)
+    for _ in range(BRIDGE_SINKHORN_ITERATIONS):
+        exponent = coupling + (log_mass + potential)[None, :]
+        maximum = np.max(exponent, axis=1)
+        marginal = maximum + np.log(np.sum(np.exp(exponent - maximum[:, None]), axis=1))
+        updated = 0.5 * (potential - marginal)          # damped symmetric update
+        shift = float(np.max(np.abs(updated - potential)))
+        potential = updated
+        if shift < BRIDGE_SINKHORN_TOLERANCE:
+            break
+    return tuple(potential.tolist())
+
+
+def bridge_potential(memory: float, quadrature: int = 256) -> np.ndarray:
+    return np.asarray(_bridge_potential(round(float(memory), 12), int(quadrature)))
+
+
+@lru_cache(maxsize=256)
+def _bridge_spline(memory: float, quadrature: int):
+    """Cubic interpolant of the potential.
+
+    The potential is smooth but steep at large memory, where linear
+    interpolation leaves the conditional density normalised only to 1e-3 and
+    biases the likelihood; cubic brings that to 1e-9.
+    """
+    grid = _legendre_nodes(quadrature, 0.0, 1.0)[0]
+    return CubicSpline(grid, bridge_potential(memory, quadrature))
+
+
+def _bridge_terms(parameters: np.ndarray, z_in: np.ndarray, loss: np.ndarray | None,
+                  quadrature: int, order: int = 2, chunk: int = 8192):
+    """Per-event log-normaliser and moments of z for the tilted bridge kernel.
+
+    ``parameters`` is ``(memory, t1, t2, t_loss)``, truncated at whatever length
+    the caller supplies. The event enters only through
+    ``memory * z_in + t_loss * loss``, so the exponent is built once per block.
+    """
+    parameters = np.asarray(parameters, dtype=float)
+    memory, tilt = float(parameters[0]), parameters[1:]
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    log_base = np.log(weight * 6.0 * z * (1.0 - z)) + bridge_potential(memory, quadrature)
+    if len(tilt) >= 1:
+        log_base = log_base + tilt[0] * z
+    if len(tilt) >= 2:
+        log_base = log_base + tilt[1] * z * z
+    shift = memory * np.asarray(z_in, dtype=float)
+    if len(tilt) >= 3 and loss is not None:
+        shift = shift + tilt[2] * np.asarray(loss, dtype=float)
+
+    count = len(shift)
+    log_norm = np.empty(count)
+    moments = [np.empty(count) for _ in range(order)]
+    for start in range(0, count, chunk):
+        stop = min(start + chunk, count)
+        exponent = log_base[None, :] + shift[start:stop, None] * z[None, :]
+        maximum = np.max(exponent, axis=1)
+        scaled = np.exp(exponent - maximum[:, None])
+        total = np.sum(scaled, axis=1)
+        probability = scaled / total[:, None]
+        log_norm[start:stop] = maximum + np.log(total)
+        for power in range(1, order + 1):
+            moments[power - 1][start:stop] = probability @ (z ** power)
+    return log_norm, moments
+
+
+def bridge_logpdf(parameters: np.ndarray, z_in: np.ndarray, z_out: np.ndarray,
+                  loss: np.ndarray | None = None, quadrature: int = 256) -> np.ndarray:
+    parameters = np.asarray(parameters, dtype=float)
+    memory, tilt = float(parameters[0]), np.asarray(parameters[1:], dtype=float)
+    spline = _bridge_spline(round(memory, 12), int(quadrature))
+    log_norm, _ = _bridge_terms(parameters, z_in, loss, quadrature, order=1)
+    # log_norm already carries the incoming potential h(z_in): with a zero tilt
+    # Sinkhorn makes it exactly -log h(z_in), so adding the interpolated value
+    # as well would count it twice.
+    value = (np.log(6.0 * z_out * (1.0 - z_out)) + spline(z_out)
+             + memory * z_in * z_out - log_norm)
+    if len(tilt):
+        value = value + tilt[0] * z_out
+    if len(tilt) > 1:
+        value = value + tilt[1] * z_out * z_out
+    if len(tilt) > 2 and loss is not None:
+        value = value + tilt[2] * loss * z_out
+    return value
+
+
+def bridge_stationary(parameters: np.ndarray, mean_loss: float = 0.0,
+                      quadrature: int = 256) -> tuple[np.ndarray, np.ndarray]:
+    """Invariant law of the bridge kernel; exactly Beta(2,2) when the tilt is zero."""
+    parameters = np.asarray(parameters, dtype=float)
+    memory, tilt = float(parameters[0]), np.asarray(parameters[1:], dtype=float)
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    potential = bridge_potential(memory, quadrature)
+    log_row = np.log(weight * 6.0 * z * (1.0 - z)) + potential
+    if len(tilt):
+        log_row = log_row + tilt[0] * z
+    if len(tilt) > 1:
+        log_row = log_row + tilt[1] * z * z
+    if len(tilt) > 2:
+        log_row = log_row + tilt[2] * float(mean_loss) * z
+    exponent = log_row[None, :] + potential[:, None] + memory * np.outer(z, z)
     scaled = np.exp(exponent - np.max(exponent, axis=1)[:, None])
     transition = scaled / np.sum(scaled, axis=1)[:, None]
     system = np.vstack((transition.T - np.eye(len(z)), np.ones(len(z))))

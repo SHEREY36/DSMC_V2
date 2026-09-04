@@ -176,7 +176,15 @@ def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
 
 
 def _energy_parameters(energy: dict) -> np.ndarray:
-    """Natural parameters in the order the projection expects."""
+    """Natural parameters in the order the fitted kernel expects."""
+    if energy.get("kernel_form") == "sinkhorn_bridge_v2":
+        # (memory, tilt...); the tilt is empty in the elastic block.
+        values = [energy["lambda3"]]
+        if not energy.get("elastic_block"):
+            values += [energy["lambda1"], energy["lambda2"]]
+            if energy.get("loss_covariate_deployed"):
+                values.append(energy["lambda4"])
+        return np.asarray(values, dtype=float)
     values = [energy["lambda1"], energy["lambda2"], energy["lambda3"]]
     if energy.get("loss_covariate_deployed"):
         values.append(energy["lambda4"])

@@ -65,7 +65,12 @@ def test_t4_direct_exchange_probability_and_reset_moments(mean, second, p_exchan
     opened = rng.random(count) < p_exchange
     z_out = z_in.copy()
     z_out[opened] = np.interp(rng.random(np.count_nonzero(opened)), probability, quantile)
-    fitted = fit_exchange_kernel(z_in, z_out, np.ones(count), model_form=False)
+    # Pinned to the conditional form: this test is about *recovering* an
+    # arbitrary invariant law from data.  The bridge cannot do that by
+    # construction -- it imposes Beta(2,2) -- which is the subject of
+    # test_bridge_kernel.py::test_bridge_imposes_its_reference_law.
+    fitted = fit_exchange_kernel(z_in, z_out, np.ones(count), model_form=False,
+                                 kernel_form="conditional_iprojection_v2")
     assert fitted["p_exch"] == pytest.approx(p_exchange, abs=0.015)
     # The invariant law of a gated generator is recovered, but only
     # approximately: the atom the generator has is not a member of the fitted
