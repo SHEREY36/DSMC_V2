@@ -34,3 +34,5 @@ models/collision_operator_v2/
 *.bin
 _SUCCESS
 _RAW_SUCCESS
+*.zip
+*.tar.gz
