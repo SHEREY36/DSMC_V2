@@ -13,7 +13,9 @@ MAX_ARRAY=${MAX_ARRAY:-1000}
 # MaxArraySize is the exclusive upper bound on the index, so the largest usable
 # array is 0..MAX_ARRAY-1.
 (( MAX_ARRAY > 1 )) && MAX_ARRAY=$(( MAX_ARRAY - 1 ))
-MAX_CONCURRENT=${CLOSURE_MAX_CONCURRENT:-40}
+# One core per task, so this is the number of CPUs the array will hold.
+# Size it to the account's CPU allocation (slist) rather than a round number.
+MAX_CONCURRENT=${CLOSURE_MAX_CONCURRENT:-256}
 mapfile -t PARTS < <(hpc/python.sh hpc/split_manifest.py "$MANIFEST" \
     --max-rows "$MAX_ARRAY" --output-dir manifests/split)
 for PART in "${PARTS[@]}"; do

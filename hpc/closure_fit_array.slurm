@@ -6,8 +6,12 @@
 #SBATCH --job-name=closure_fit
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+# The fit is single threaded and peaks near 0.7 GB on a 200,000-hit shard, 1.4
+# on the heaviest. Requesting more does not make it faster: Negishi allocates
+# about 2 GB per core, so an oversized --mem silently reserves cores the task
+# never uses and throttles the array to a fraction of the account's CPUs.
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/closure_fit_%A_%a.out
 #SBATCH --error=logs/closure_fit_%A_%a.err

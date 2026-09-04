@@ -108,7 +108,7 @@ class ConditionalEnergyKernel:
     quadrature: int
 
 
-CONDITIONAL_ENERGY_CHUNK = 16384
+CONDITIONAL_ENERGY_CHUNK = 8192
 
 
 def _conditional_energy_chunk(parameters, shift, z, log_base, order):
