@@ -35,6 +35,7 @@ from __future__ import annotations
 import numpy as np
 
 from .projections import (
+    PROJECTION_TOLERANCE,
     conditional_energy_logpdf,
     conditional_energy_stationary,
     fit_conditional_energy_projection,
@@ -100,7 +101,7 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
     design = np.column_stack(covariates)
     projection = fit_conditional_energy_projection(
         z_out, design, weight, tuple(names), quadrature=quadrature, initial=initial)
-    if not projection.converged:
+    if projection.residual > PROJECTION_TOLERANCE:
         raise ValueError(f"energy I-projection residual {projection.residual:.3e}")
     parameters = projection.parameters
     lambda3 = float(parameters[2])
