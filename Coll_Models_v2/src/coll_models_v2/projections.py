@@ -399,8 +399,27 @@ BRIDGE_SINKHORN_ITERATIONS = 4000
 BRIDGE_SINKHORN_TOLERANCE = 1.0e-13
 
 
-@lru_cache(maxsize=256)
-def _bridge_potential(memory: float, quadrature: int) -> tuple:
+def _anchor_log_base(z: np.ndarray, weight: np.ndarray,
+                     anchor: tuple) -> np.ndarray:
+    """log of the reference measure the bridge is reversible with respect to.
+
+    Beta(2,2) is the law of the *proposal* ensemble. The physical collision
+    ensemble is additionally weighted by the orientation-dependent cross
+    section, which favours fast rotators, so its partition sits below one half
+    and increasingly so with aspect ratio: 0.4803 at AR 3 against 0.4990 at
+    AR 1.1. Anchoring on Beta(2,2) therefore imposes an equilibrium the data
+    does not have, and the dissipative tilt absorbs the difference. The anchor
+    is the two-moment I-projection of the measured incoming law.
+    """
+    log_base = np.log(weight * 6.0 * z * (1.0 - z))
+    if anchor and (anchor[0] or anchor[1]):
+        log_base = log_base + anchor[0] * z + anchor[1] * z * z
+    return log_base
+
+
+@lru_cache(maxsize=1024)
+def _bridge_potential(memory: float, quadrature: int,
+                      anchor: tuple = (0.0, 0.0)) -> tuple:
     """Symmetric Sinkhorn potential of the Beta(2,2) entropic bridge.
 
     Find h with
@@ -414,7 +433,7 @@ def _bridge_potential(memory: float, quadrature: int) -> tuple:
     inferred from a kernel that is nearly the identity.
     """
     z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
-    log_mass = np.log(weight * 6.0 * z * (1.0 - z))
+    log_mass = _anchor_log_base(z, weight, anchor)
     coupling = float(memory) * np.outer(z, z)
     potential = np.zeros_like(z)
     for _ in range(BRIDGE_SINKHORN_ITERATIONS):
@@ -429,12 +448,20 @@ def _bridge_potential(memory: float, quadrature: int) -> tuple:
     return tuple(potential.tolist())
 
 
-def bridge_potential(memory: float, quadrature: int = 256) -> np.ndarray:
-    return np.asarray(_bridge_potential(round(float(memory), 12), int(quadrature)))
+def bridge_potential(memory: float, quadrature: int = 256,
+                     anchor: tuple = (0.0, 0.0)) -> np.ndarray:
+    return np.asarray(_bridge_potential(round(float(memory), 12), int(quadrature),
+                                        _round_anchor(anchor)))
 
 
-@lru_cache(maxsize=256)
-def _bridge_spline(memory: float, quadrature: int):
+def _round_anchor(anchor) -> tuple:
+    if anchor is None:
+        return (0.0, 0.0)
+    return (round(float(anchor[0]), 10), round(float(anchor[1]), 10))
+
+
+@lru_cache(maxsize=1024)
+def _bridge_spline(memory: float, quadrature: int, anchor: tuple = (0.0, 0.0)):
     """Cubic interpolant of the potential.
 
     The potential is smooth but steep at large memory, where linear
@@ -442,11 +469,12 @@ def _bridge_spline(memory: float, quadrature: int):
     biases the likelihood; cubic brings that to 1e-9.
     """
     grid = _legendre_nodes(quadrature, 0.0, 1.0)[0]
-    return CubicSpline(grid, bridge_potential(memory, quadrature))
+    return CubicSpline(grid, bridge_potential(memory, quadrature, anchor))
 
 
 def _bridge_terms(parameters: np.ndarray, z_in: np.ndarray, loss: np.ndarray | None,
-                  quadrature: int, order: int = 2, chunk: int = 8192):
+                  quadrature: int, order: int = 2, chunk: int = 8192,
+                  anchor: tuple = (0.0, 0.0)):
     """Per-event log-normaliser and moments of z for the tilted bridge kernel.
 
     ``parameters`` is ``(memory, t1, t2, t_loss)``, truncated at whatever length
@@ -456,7 +484,8 @@ def _bridge_terms(parameters: np.ndarray, z_in: np.ndarray, loss: np.ndarray | N
     parameters = np.asarray(parameters, dtype=float)
     memory, tilt = float(parameters[0]), parameters[1:]
     z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
-    log_base = np.log(weight * 6.0 * z * (1.0 - z)) + bridge_potential(memory, quadrature)
+    log_base = (_anchor_log_base(z, weight, anchor)
+                + bridge_potential(memory, quadrature, anchor))
     if len(tilt) >= 1:
         log_base = log_base + tilt[0] * z
     if len(tilt) >= 2:
@@ -482,15 +511,19 @@ def _bridge_terms(parameters: np.ndarray, z_in: np.ndarray, loss: np.ndarray | N
 
 
 def bridge_logpdf(parameters: np.ndarray, z_in: np.ndarray, z_out: np.ndarray,
-                  loss: np.ndarray | None = None, quadrature: int = 256) -> np.ndarray:
+                  loss: np.ndarray | None = None, quadrature: int = 256,
+                  anchor: tuple = (0.0, 0.0)) -> np.ndarray:
     parameters = np.asarray(parameters, dtype=float)
     memory, tilt = float(parameters[0]), np.asarray(parameters[1:], dtype=float)
-    spline = _bridge_spline(round(memory, 12), int(quadrature))
-    log_norm, _ = _bridge_terms(parameters, z_in, loss, quadrature, order=1)
+    anchor = _round_anchor(anchor)
+    spline = _bridge_spline(round(memory, 12), int(quadrature), anchor)
+    log_norm, _ = _bridge_terms(parameters, z_in, loss, quadrature, order=1,
+                                anchor=anchor)
     # log_norm already carries the incoming potential h(z_in): with a zero tilt
     # Sinkhorn makes it exactly -log h(z_in), so adding the interpolated value
     # as well would count it twice.
     value = (np.log(6.0 * z_out * (1.0 - z_out)) + spline(z_out)
+             + anchor[0] * z_out + anchor[1] * z_out * z_out
              + memory * z_in * z_out - log_norm)
     if len(tilt):
         value = value + tilt[0] * z_out
@@ -502,13 +535,15 @@ def bridge_logpdf(parameters: np.ndarray, z_in: np.ndarray, z_out: np.ndarray,
 
 
 def bridge_stationary(parameters: np.ndarray, mean_loss: float = 0.0,
-                      quadrature: int = 256) -> tuple[np.ndarray, np.ndarray]:
-    """Invariant law of the bridge kernel; exactly Beta(2,2) when the tilt is zero."""
+                      quadrature: int = 256,
+                      anchor: tuple = (0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
+    """Invariant law of the bridge kernel; exactly the anchor when the tilt is zero."""
     parameters = np.asarray(parameters, dtype=float)
+    anchor = _round_anchor(anchor)
     memory, tilt = float(parameters[0]), np.asarray(parameters[1:], dtype=float)
     z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
-    potential = bridge_potential(memory, quadrature)
-    log_row = np.log(weight * 6.0 * z * (1.0 - z)) + potential
+    potential = bridge_potential(memory, quadrature, anchor)
+    log_row = _anchor_log_base(z, weight, anchor) + potential
     if len(tilt):
         log_row = log_row + tilt[0] * z
     if len(tilt) > 1:
@@ -646,7 +681,8 @@ def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
                           probabilities: np.ndarray,
                           kernel_form: str = "sinkhorn_bridge_v2",
                           quadrature: int = 256,
-                          grid_size: int = 4097) -> np.ndarray:
+                          grid_size: int = 4097,
+                          anchor: tuple = (0.0, 0.0)) -> np.ndarray:
     """Two-dimensional quantile table ``z'(a, u)`` for the deployed kernel.
 
     Both kernel forms normalise to the same shape, because everything that
@@ -678,8 +714,10 @@ def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
     # (phi reaches -300 by lambda3 = 600), and the tilt can be large too.
     with np.errstate(divide="ignore"):
         log_base = np.log(interior)
+    anchor = _round_anchor(anchor)
     if kernel_form == "sinkhorn_bridge_v2":
-        log_base = log_base + _bridge_spline(float(memory), quadrature)(z)
+        log_base = (log_base + anchor[0] * z + anchor[1] * z * z
+                    + _bridge_spline(float(memory), quadrature, anchor)(z))
     elif kernel_form != "conditional_iprojection_v2":
         raise ValueError(f"unknown kernel_form {kernel_form!r}")
 

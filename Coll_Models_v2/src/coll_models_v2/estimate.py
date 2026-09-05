@@ -12,6 +12,7 @@ from dsmc_v2_contracts.io import AI, OI, _vec
 
 from .fit_angular import fit_angular_kernel
 from .fit_exchange import fit_exchange_kernel
+from .projections import bridge_stationary
 from .weights import (
     DEFAULT_OFFSETS,
     RELATIVE_BIAS_TOLERANCE,
@@ -117,7 +118,18 @@ def _run_propensity(run, offsets: int | None,
     return value
 
 
-def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS) -> dict[str, np.ndarray]:
+MEASURE = "collision"
+# "collision": fit on the raw accepted hits. These ARE the physical collision
+#   ensemble -- pairs enter in proportion to how often they actually collide --
+#   and they satisfy the elastic invariant to 4e-4.
+# "proposal": divide out the acceptance to recover the orientation-isotropic
+#   proposal ensemble. Retained for A/B only: it breaks the elastic invariant by
+#   -0.0117 at AR 3 because the weight correlates with the outgoing partition
+#   through the same geometry that sets the acceptance.
+
+
+def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
+                measure: str = MEASURE) -> dict[str, np.ndarray]:
     outcome = np.asarray(run.outcomes)
     values = outcome["values"]
     indices = outcome_attempt_indices(run)
@@ -143,7 +155,8 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS) -> dict[st
         "z_out": z_out,
         "loss": values[:, OI["delta_total"]] / total_in,
         "cosine": cosine,
-        "weight": outcome_weights(run, normalise=False,
+        "weight": np.ones(len(values)) if measure == "collision"
+                  else outcome_weights(run, normalise=False,
                                   propensity=propensity, offsets=offsets),
         "block": (outcome["block_id"].astype(int)
                   + (int(run.metadata["seed"]) * 31) % N_BLOCKS) % N_BLOCKS,
@@ -161,6 +174,13 @@ def _proposal_invariants(runs) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         np.concatenate(velocity), np.concatenate(omega), np.concatenate(axis),
         float(runs[0].metadata["mass"]), float(runs[0].metadata["moi_perpendicular"]))
     return features, diagnostics, np.concatenate(velocity)
+
+
+def energy_anchor_moments(energy: dict) -> tuple[float, float]:
+    """First two moments of the law the fitted kernel is anchored on."""
+    anchor = (float(energy.get("anchor_c1", 0.0)), float(energy.get("anchor_c2", 0.0)))
+    nodes, mass = bridge_stationary(np.array([0.0]), 0.0, 128, anchor)
+    return float(mass @ nodes), float(mass @ (nodes * nodes))
 
 
 def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
@@ -230,7 +250,8 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
 
 def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   bootstrap_seed: int = 20260902,
-                  propensity_offsets: int | None = DEFAULT_OFFSETS) -> dict:
+                  propensity_offsets: int | None = DEFAULT_OFFSETS,
+                  measure: str = MEASURE) -> dict:
     """Estimate one (alpha, theta, AR, ensemble) node.
 
     ``bl`` remains an accepted argument for command-line compatibility.  It
@@ -241,7 +262,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     _check_compatible(runs)
     propensities = [_run_propensity(run, propensity_offsets) for run in runs]
     offsets = int(propensity_offsets or DEFAULT_OFFSETS)
-    parts = [_run_events(run, propensity, offsets)
+    parts = [_run_events(run, propensity, offsets, measure)
              for run, propensity in zip(runs, propensities)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
     fitted = _fit(events)
@@ -275,7 +296,12 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     elastic_pass, elastic_detail = True, None
     if np.isclose(alpha, 1.0):
         elastic_detail = []
-        for name, target in (("reset_mean", 0.5), ("reset_second_moment", 0.3)):
+        # The elastic kernel must leave the *measured* incoming law alone. On
+        # the proposal ensemble that law is Beta(2,2); on the physical collision
+        # ensemble it is not, so the target is the anchor the fit measured.
+        anchor_first, anchor_second = energy_anchor_moments(energy)
+        for name, target in (("reset_mean", anchor_first),
+                             ("reset_second_moment", anchor_second)):
             value = energy["stationary_mean" if name == "reset_mean"
                           else "stationary_second_moment"]
             error = uncertainty.get(name, {}).get("standard_error")
@@ -326,6 +352,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                                   if propensity_offsets is not None
                                   else "inverse_projected_excluded_area"),
             "propensity_offsets": propensity_offsets,
+            "measure_ensemble": measure,
             "ess": ess,
             "ess_fraction": ess / len(weight),
             "propensity": propensity_rows,

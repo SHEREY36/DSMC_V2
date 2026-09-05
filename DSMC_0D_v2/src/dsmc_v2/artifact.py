@@ -125,12 +125,24 @@ class VariationalClosure:
         self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
         self.energy_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
         self.kernel_form = str(data["kernel_form"])
+        # Mean fractional loss of the CTC ensemble each node was fitted on.
+        # lambda4 multiplies the loss, so the tilt it produces is only right if
+        # the loss handed to it is on the same scale it was fitted against.
+        self.energy_mean_loss = np.asarray(data["energy_mean_loss"], dtype=float)
         if self.energy_tables.ndim != 3 \
                 or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
             raise ValueError("energy quantile table must be (node, a, u)")
         if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
             raise ValueError("energy a-grid must be strictly increasing per node")
         self.energy_axis_clamps = 0
+        # Interpolating the (a, u) table costs ~10 ms because it moves a
+        # million numbers. In a 0-D run alpha and the aspect ratio are fixed
+        # and theta drifts slowly, so the identical state is rebuilt thousands
+        # of times. Cache it on a rounded key: the closure varies over a theta
+        # grid spaced by ~0.8, so quantising theta at 1e-3 perturbs the
+        # interpolation weights by about a part in a thousand.
+        self._state_cache: dict[tuple, dict] = {}
+        self._state_cache_hits = 0
         self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
         self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
         self.beta = np.asarray(data["beta"], dtype=float)
@@ -159,6 +171,7 @@ class VariationalClosure:
                 energy_parameters=LinearNDInterpolator(self.coordinates, self.energy_parameters),
                 angular_parameters=LinearNDInterpolator(self.coordinates, self.angular_parameters),
                 energy_tables=LinearNDInterpolator(self.coordinates, self.energy_tables),
+                energy_a_grid=LinearNDInterpolator(self.coordinates, self.energy_a_grid),
                 angular_tables=LinearNDInterpolator(self.coordinates, self.angular_tables),
             )
         if len(self.beta_coordinates) >= 4:
@@ -193,12 +206,27 @@ class VariationalClosure:
             raise ValueError(f"{label} query lies outside the calibrated physical hull")
         return result
 
+    STATE_CACHE_LIMIT = 4096
+
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
                      features: np.ndarray) -> dict:
         features = np.asarray(features, dtype=float)
         if features.shape != (len(FEATURE_NAMES),):
             raise ValueError("variational closure requires fourteen cell features")
         self.total_queries += 1
+        key = None
+        if not self.corrections_enabled:
+            # With corrections off the state depends only on (alpha, theta, AR).
+            # The features still gate the domain but do not enter the state.
+            key = (round(float(alpha), 9), round(float(theta), 3),
+                   round(float(aspect_ratio), 9))
+            hit = self._state_cache.get(key)
+            if hit is not None:
+                self._state_cache_hits += 1
+                self.out_of_domain_queries += int(
+                    bool(np.any(features < self.feature_lower)
+                         or np.any(features > self.feature_upper)))
+                return hit
         ood = bool(np.any(features < self.feature_lower) or np.any(features > self.feature_upper))
         self.out_of_domain_queries += int(ood)
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
@@ -218,6 +246,9 @@ class VariationalClosure:
         agrid = self._interpolate(self.coordinates, self.energy_a_grid, query,
                                   "energy a-grid",
                                   self._interpolators.get("energy_a_grid")).astype(float)
+        fitted_loss = float(self._interpolate(
+            self.coordinates, self.energy_mean_loss, query, "energy mean loss",
+            self._interpolators.get("energy_mean_loss")))
         atable = self._interpolate(self.coordinates, self.angular_tables, query,
                                    "angular quantiles",
                                    self._interpolators.get("angular_tables")).astype(float)
@@ -248,15 +279,20 @@ class VariationalClosure:
                     self._interpolators["joint_parameters"](query[None, :]))[0]
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
-        return {"p_exch": p_exch, "energy_parameters": eparams,
-                "energy_a_grid": agrid,
+        state = {"p_exch": p_exch, "energy_parameters": eparams,
+                "energy_a_grid": agrid, "fitted_mean_loss": fitted_loss,
                 "angular_parameters": aparams, "energy_quantiles": etable,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "energy_corrected": correction != 0.0,
                 "joint_deployed": joint, "joint_parameters": joint_parameters}
+        if key is not None:
+            if len(self._state_cache) >= self.STATE_CACHE_LIMIT:
+                self._state_cache.clear()
+            self._state_cache[key] = state
+        return state
 
     def sample_energy(self, state: dict, z_in: float, loss: float,
-                      rng: np.random.Generator) -> float:
+                      rng: np.random.Generator, loss_mean: float = 0.0) -> float:
         """Draw the outgoing partition from the memory kernel.
 
         ``z_in`` is the pair's incoming translational share and ``loss`` the
@@ -267,7 +303,18 @@ class VariationalClosure:
         """
         lambda1, _, lambda3, lambda4 = state["energy_parameters"]
         grid = state["energy_a_grid"]
-        a = float(lambda1 + lambda3 * float(z_in) + lambda4 * float(loss))
+        covariate = float(loss)
+        if loss_mean > 0.0 and state["fitted_mean_loss"] > 0.0:
+            # The loss has two jobs and they must not be confused. How much
+            # energy the collision destroys is set by the runtime draw and is
+            # validated against DEM by the cooling curve -- that is left alone.
+            # How the survivors are routed is set by lambda4 times the loss,
+            # and lambda4 was fitted against the CTC ensemble whose mean loss
+            # differs from the runtime's by 13 to 28 per cent. Putting the
+            # covariate back on the scale it was fitted against restores the
+            # intended tilt without touching a single joule of the budget.
+            covariate *= state["fitted_mean_loss"] / float(loss_mean)
+        a = float(lambda1 + lambda3 * float(z_in) + lambda4 * covariate)
         if a < grid[0] or a > grid[-1]:
             # The natural-parameter correction shifts lambda1 after the table
             # was tabulated, so a can leave the exported span. Clamping is the

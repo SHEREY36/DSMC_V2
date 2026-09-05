@@ -41,7 +41,7 @@ class _RoutingClosure:
 
 class _VariationalClosure:
     @staticmethod
-    def sample_energy(state, z_in, loss, rng):
+    def sample_energy(state, z_in, loss, rng, loss_mean=0.0):
         # Signature mirrors the real closure: the memory kernel is conditioned
         # on the incoming partition and the fractional loss.
         return 0.6

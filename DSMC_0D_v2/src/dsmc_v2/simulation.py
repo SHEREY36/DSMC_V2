@@ -172,7 +172,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     closure.kernel_state(closure_alpha, theta, params.aspect_ratio, features))
                 closure_seconds += wallclock.perf_counter() - closure_started
 
-            n_candidates = candidate_count(count, params.sigma_c, vrmax, volume, dt)
+            inflation = (kernel.candidate_inflation
+                         if (kernel is not None and routing == "variational_v2")
+                         else 1.0)
+            n_candidates = candidate_count(count, params.sigma_c * inflation,
+                                           vrmax, volume, dt)
             vrmax_temp = 0.0
             if n_candidates > 0:
                 vrmax_temp, accepted = workspace.screen_candidates(
@@ -188,6 +192,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     speed = float(np.linalg.norm(vrel))
                     if sphere:
                         collisions += _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha)
+                    elif routing == "variational_v2" and not kernel.accept_orientation(
+                            state.axis[p1], state.axis[p2],
+                            vrel / max(speed, 1.0e-30), vss_rng):
+                        pass          # rejected by the orientation-dependent area
                     else:
                         collisions += kernel.collide(
                             state, p1, p2, normal, v1, v2, vrel, speed, time, theta)

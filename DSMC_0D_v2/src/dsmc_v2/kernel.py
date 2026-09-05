@@ -62,6 +62,16 @@ class SpherocylinderKernel:
         self.isotropic_epsilon = bool(isotropic_epsilon)
         self.loss = models.loss_parameters(alpha, params.aspect_ratio) if alpha < 1.0 else {
             "gamma_max": 0.0, "one_hit_probability": 1.0}
+        # Mean of the loss actually drawn here, used only to put the kernel's
+        # loss covariate on the scale it was fitted against. The draw itself is
+        # untouched, so the cooling rate and the collision clock do not move.
+        self.area_mean, self.area_supremum = self._area_constants()
+        # candidates must be inflated by this so the rate is unchanged
+        self.candidate_inflation = self.area_supremum / max(self.area_mean, 1e-30)
+        self.mean_loss_fraction = float(self.loss.get(
+            "mean_loss_fraction",
+            beta_a / (beta_a + beta_b) * self.loss["gamma_max"]
+            * self.loss["one_hit_probability"]))
         self.cell_routing = None
         self.cell_variational = None
         self.negative_energy_repairs = 0
@@ -72,6 +82,54 @@ class SpherocylinderKernel:
 
     def set_cell_variational(self, value: dict | None) -> None:
         self.cell_variational = value
+
+    def _area_constants(self):
+        """Isotropic mean and supremum of the cross section, computed once.
+
+        The mean is what the frozen sigma_c stands in for, so dividing by it and
+        inflating the candidate count by max/mean leaves the collision rate
+        exactly where it was while making the *selection* orientation-correct.
+        """
+        d = self.params.diameter
+        length = (float(self.params.aspect_ratio) - 1.0) * d
+        rng = np.random.default_rng(0x5EED)
+        u1 = rng.normal(size=(200000, 3)); u1 /= np.linalg.norm(u1, axis=1, keepdims=True)
+        u2 = rng.normal(size=(200000, 3)); u2 /= np.linalg.norm(u2, axis=1, keepdims=True)
+        g = rng.normal(size=(200000, 3)); g /= np.linalg.norm(g, axis=1, keepdims=True)
+        s1 = np.linalg.norm(np.cross(u1, g), axis=1)
+        s2 = np.linalg.norm(np.cross(u2, g), axis=1)
+        triple = np.abs(np.einsum("ni,ni->n", g, np.cross(u1, u2)))
+        area = (np.pi * d * d + 2.0 * d * length * (s1 + s2)
+                + length * length * triple)
+        supremum = np.pi * d * d + 4.0 * d * length + length * length
+        return float(area.mean()), float(supremum)
+
+    def accept_orientation(self, u1: np.ndarray, u2: np.ndarray,
+                           ghat: np.ndarray, rng) -> bool:
+        """Second-stage acceptance carrying the orientation dependence."""
+        if self.area_supremum <= 0.0:
+            return True
+        return bool(rng.random() < self.projected_excluded_area(u1, u2, ghat)
+                    / self.area_supremum)
+
+    def projected_excluded_area(self, u1: np.ndarray, u2: np.ndarray,
+                                ghat: np.ndarray) -> float:
+        """Orientation-dependent collision cross section of a spherocylinder pair.
+
+        The NTC clock accepts on sigma_c |g| with sigma_c constant, which selects
+        pairs isotropically in orientation. Real collisions do not: a rod broadside
+        to the approach presents far more area than one end-on. Fitting the closure
+        on the physical collision ensemble and then feeding it an isotropically
+        selected pair breaks the elastic invariant by 4 per cent at AR 3, so the
+        acceptance has to carry the same weighting the fit was made under.
+        """
+        d = self.params.diameter
+        length = (float(self.params.aspect_ratio) - 1.0) * d
+        s1 = float(np.linalg.norm(np.cross(u1, ghat)))
+        s2 = float(np.linalg.norm(np.cross(u2, ghat)))
+        triple = abs(float(np.dot(ghat, np.cross(u1, u2))))
+        return (np.pi * d * d + 2.0 * d * length * (s1 + s2)
+                + length * length * triple)
 
     def collide(self, state, p1: int, p2: int, normal: np.ndarray,
                 v1: np.ndarray, v2: np.ndarray, vrel: np.ndarray,
@@ -98,7 +156,8 @@ class SpherocylinderKernel:
                 np.random.beta(self.beta_a, self.beta_b) * self.loss["gamma_max"]
                 * self.loss["one_hit_probability"])
             eps_tr_f = self.closure.sample_energy(
-                self.cell_variational, eps_tr_i, gamma, self.vss_rng)
+                self.cell_variational, eps_tr_i, gamma, self.vss_rng,
+                loss_mean=self.mean_loss_fraction)
             eps_r1_f = self.vss_rng.random()
             available = total_i * (1.0 - gamma)
             etr_f, erot_f = eps_tr_f * available, (1.0 - eps_tr_f) * available

@@ -34,6 +34,8 @@ class VariationalArtifactTests(unittest.TestCase):
             p_exch=np.full(len(coordinates), 0.4), energy_parameters=ep,
             angular_parameters=ap, quantile_probability=probability,
             energy_a_grid=a_grid, kernel_form=np.array("sinkhorn_bridge_v2"),
+            energy_mean_loss=np.zeros(len(coordinates)),
+            energy_anchor=np.zeros((len(coordinates), 2)),
             energy_quantiles=np.array([
                 energy_quantile_table(row[2], row[1], grid, probability)
                 for row, grid in zip(ep, a_grid)]),

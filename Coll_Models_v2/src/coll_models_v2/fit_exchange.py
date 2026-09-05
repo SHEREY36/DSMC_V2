@@ -68,6 +68,7 @@ from scipy.optimize import minimize_scalar
 
 from .projections import (
     PROJECTION_TOLERANCE,
+    fit_energy_projection,
     _bridge_terms,
     bridge_logpdf,
     bridge_stationary,
@@ -90,8 +91,24 @@ BRIDGE_BACKTRACKS = 20
 BRIDGE_DAMPING_ESCALATIONS = 6
 
 
+def measure_anchor(z_in: np.ndarray, weight: np.ndarray) -> tuple[float, float]:
+    """Two-moment I-projection of the measured incoming partition.
+
+    This is the law the elastic kernel must leave alone. It is Beta(2,2) only
+    for the proposal ensemble; the physical collision ensemble is weighted by
+    the orientation-dependent cross section, so it sits below one half by an
+    amount that grows with aspect ratio.
+    """
+    weight = np.asarray(weight, dtype=float)
+    weight = weight / np.sum(weight)
+    first = float(weight @ z_in)
+    second = float(weight @ (z_in * z_in))
+    projection = fit_energy_projection(first, second)
+    return (float(projection.parameters[0]), float(projection.parameters[1]))
+
+
 def _bridge_tilt(memory, z_out, z_in, weight, loss, width, quadrature,
-                 initial=None, tolerance=1.0e-11, max_iterations=60):
+                 initial=None, tolerance=1.0e-11, max_iterations=60, anchor=(0.0, 0.0)):
     """Newton on the dissipative tilt at fixed memory.
 
     At fixed memory the tilt is an ordinary exponential family in
@@ -100,7 +117,7 @@ def _bridge_tilt(memory, z_out, z_in, weight, loss, width, quadrature,
     """
     if width == 0:
         score = float(weight @ bridge_logpdf(np.array([memory]), z_in, z_out,
-                                             loss, quadrature))
+                                             loss, quadrature, anchor))
         return np.zeros(0), score, 0.0
 
     columns = [z_out, z_out * z_out]
@@ -114,12 +131,12 @@ def _bridge_tilt(memory, z_out, z_in, weight, loss, width, quadrature,
 
     def dual(value):
         log_norm, _ = _bridge_terms(np.append(memory, value), z_in, loss,
-                                    quadrature, order=1)
+                                    quadrature, order=1, anchor=anchor)
         return float(weight @ log_norm) - float(value @ target)
 
     def gradient_and_hessian(value):
         _, moments = _bridge_terms(np.append(memory, value), z_in, loss,
-                                   quadrature, order=4)
+                                   quadrature, order=4, anchor=anchor)
         m1, m2, m3, m4 = moments
         scale = [np.ones_like(m1), np.ones_like(m1)]
         if width > 2:
@@ -176,7 +193,7 @@ def _bridge_tilt(memory, z_out, z_in, weight, loss, width, quadrature,
         tilt, current = candidate, trial
     grad, _ = gradient_and_hessian(tilt)
     score = float(weight @ bridge_logpdf(np.append(memory, tilt), z_in, z_out,
-                                         loss, quadrature))
+                                         loss, quadrature, anchor))
     return tilt, score, float(np.max(np.abs(grad)))
 
 
@@ -195,7 +212,8 @@ def _affine_memory(z_in: np.ndarray, z_out: np.ndarray,
 
 def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
                       elastic: bool | None = None,
-                      initial: np.ndarray | None = None) -> dict:
+                      initial: np.ndarray | None = None,
+                      anchor: tuple | None = None) -> dict:
     """Fit the Sinkhorn-bridge exchange kernel by profile likelihood.
 
         p(z' | z, eps) proportional to 6 z'(1-z') h(z) h(z')
@@ -211,6 +229,8 @@ def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
     kernel that is nearly the identity.
     """
     weight = weight / np.sum(weight)
+    if anchor is None:
+        anchor = measure_anchor(z_in, weight)
     mean_loss = 0.0 if loss is None else float(weight @ loss)
     if elastic is None:
         elastic = bool(loss is None or mean_loss <= ELASTIC_LOSS_THRESHOLD)
@@ -223,10 +243,10 @@ def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
     warm = None
     if initial is not None and len(np.atleast_1d(initial)) == width + 1:
         initial = np.asarray(initial, dtype=float)
-        anchor = float(initial[0])
+        centre = float(initial[0])
         warm = initial[1:]
-        low = max(MEMORY_BOUNDS[0], anchor * WARM_BRACKET[0])
-        high = min(MEMORY_BOUNDS[1], anchor * WARM_BRACKET[1])
+        low = max(MEMORY_BOUNDS[0], centre * WARM_BRACKET[0])
+        high = min(MEMORY_BOUNDS[1], centre * WARM_BRACKET[1])
         if low < high:
             bounds = (low, high)
 
@@ -237,7 +257,7 @@ def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
         if key not in cache:
             previous = cache[min(cache, key=lambda k: abs(k - key))][0] if cache else warm
             cache[key] = _bridge_tilt(key, z_out, z_in, weight, loss, width,
-                                      quadrature, initial=previous)
+                                      quadrature, initial=previous, anchor=anchor)
         return cache[key]
 
     search = minimize_scalar(lambda m: -profile(m)[1], bounds=bounds,
@@ -245,9 +265,11 @@ def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
     memory = float(search.x)
     tilt, score, residual = profile(memory)
     parameters = np.append(memory, tilt)
-    nodes, mass = bridge_stationary(parameters, mean_loss, quadrature)
+    nodes, mass = bridge_stationary(parameters, mean_loss, quadrature, anchor)
     return {
         "kernel_form": "sinkhorn_bridge_v2",
+        "anchor_c1": float(anchor[0]),
+        "anchor_c2": float(anchor[1]),
         "elastic_block": bool(elastic),
         "lambda3": memory,
         "lambda1": float(tilt[0]) if width >= 1 else 0.0,
@@ -270,8 +292,9 @@ def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
     """``fit_exchange_kernel`` contract, served by the Sinkhorn bridge."""
     intercept, coefficient = _affine_memory(z_in, z_out, weight)
     p_exch = 1.0 - coefficient
+    anchor = measure_anchor(z_in, weight)
     fit = fit_bridge_kernel(z_in, z_out, weight, loss=loss, quadrature=quadrature,
-                            initial=initial)
+                            initial=initial, anchor=anchor)
     point = [fit["lambda3"]]
     if not fit["elastic_block"]:
         point += [fit["lambda1"], fit["lambda2"]]
@@ -293,7 +316,7 @@ def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
         held = fit_bridge_kernel(z_in[train], z_out[train], weight[train],
                                  loss=None if loss is None else loss[train],
                                  quadrature=quadrature, elastic=elastic,
-                                 initial=point)
+                                 initial=point, anchor=anchor)
         block = [held["lambda3"]]
         if not elastic:
             block += [held["lambda1"], held["lambda2"]]
@@ -301,7 +324,7 @@ def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
                 block += [held["lambda4"]]
         base_score = _weighted_mean(bridge_logpdf(
             np.array(block), z_in[test], z_out[test],
-            None if elastic else loss[test], quadrature), weight[test])
+            None if elastic else loss[test], quadrature, anchor), weight[test])
         design = np.column_stack([z_in] + ([] if elastic else [loss]))
         free = fit_conditional_energy_projection(
             z_out[train], design[train], weight[train], quadrature=quadrature)
@@ -332,6 +355,7 @@ def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
         "nonlinear_improvement": gain,
         "model_form_pass": bool(not model_form or gain < MODEL_FORM_TOLERANCE_NATS),
         "elastic_block": fit["elastic_block"],
+        "anchor_c1": fit["anchor_c1"], "anchor_c2": fit["anchor_c2"],
         "kernel_form": "sinkhorn_bridge_v2",
     }
 

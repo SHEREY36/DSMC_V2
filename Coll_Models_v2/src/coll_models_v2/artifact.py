@@ -27,10 +27,13 @@ from .projections import (
 
 
 SCHEMA_VERSION = "2.3.0"
-# Nodes on the a-axis of the energy sampler. a enters the kernel only
-# linearly inside a smooth exponential tilt, so the quantile surface is
-# gentle in a and 65 nodes interpolate it to ~1e-5 on the moments.
-ENERGY_A_NODES = 65
+# Resolution of the a-axis of the energy sampler. The tilt varies on a scale
+# of order one in a, so the grid is sized by span rather than fixed: at the low
+# aspect ratios lambda3 reaches ~350 and a fixed 65 nodes would leave gaps of
+# five units on a kernel that turns over in one.
+ENERGY_A_STEP = 0.15
+ENERGY_A_MIN_NODES = 65
+ENERGY_A_MAX_NODES = 2049
 ARTIFACT_TYPE = "bl_variational_closure"
 
 
@@ -232,10 +235,14 @@ def build_artifact(run_directories, output_directory, bl=None,
                  lambda1 + lambda3 + lambda4 * loss_ceiling]
         low, high = min(reach), max(reach)
         pad = max(0.05 * (high - low), 1.0e-6)
-        grid = np.linspace(low - pad, high + pad, ENERGY_A_NODES)
+        count = int(np.clip(np.ceil((high - low + 2.0 * pad) / ENERGY_A_STEP) + 1,
+                            ENERGY_A_MIN_NODES, ENERGY_A_MAX_NODES))
+        grid = np.linspace(low - pad, high + pad, count)
         a_grids.append(grid)
         equant.append(energy_quantile_table(
-            lambda3, lambda2, grid, probability, kernel_form=kernel_form))
+            lambda3, lambda2, grid, probability, kernel_form=kernel_form,
+            anchor=(row["energy"].get("anchor_c1", 0.0),
+                    row["energy"].get("anchor_c2", 0.0))))
     a_grids = np.array(a_grids)
     equant = np.array(equant)
 
@@ -253,8 +260,11 @@ def build_artifact(run_directories, output_directory, bl=None,
         for a in (grid[0], grid[len(grid) // 2], grid[-1]):
             with np.errstate(divide="ignore"):
                 logbase = np.log(6.0 * quad * (1.0 - quad))
+            anchor = (baseline[index]["energy"].get("anchor_c1", 0.0),
+                      baseline[index]["energy"].get("anchor_c2", 0.0))
             if kernel_form == "sinkhorn_bridge_v2":
-                logbase = logbase + _bridge_spline(float(lambda3), 256)(quad)
+                logbase = (logbase + anchor[0] * quad + anchor[1] * quad * quad
+                           + _bridge_spline(float(lambda3), 256, anchor)(quad))
             weight = np.exp(np.clip(logbase + a * quad + lambda2 * quad * quad
                                     - np.max(logbase + a * quad + lambda2 * quad * quad),
                                     -700.0, 700.0))
@@ -343,6 +353,11 @@ def build_artifact(run_directories, output_directory, bl=None,
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
         quantile_probability=probability, energy_quantiles=equant,
         energy_a_grid=a_grids,
+        energy_anchor=np.array([[row["energy"].get("anchor_c1", 0.0),
+                                 row["energy"].get("anchor_c2", 0.0)]
+                                for row in baseline], dtype=float),
+        energy_mean_loss=np.array([row["energy"]["mean_fractional_loss"]
+                                   for row in baseline], dtype=float),
         kernel_form=np.array(kernel_form), angular_quantiles=aquant,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed,
