@@ -10,6 +10,7 @@ from pathlib import Path
 from dsmc_v2_contracts import FEATURE_NAMES, load_run
 
 from .estimate import estimate_node
+from .weights import DEFAULT_OFFSETS
 
 
 def discover_runs(root: str | Path) -> list[Path]:
@@ -47,11 +48,14 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
         return not reasons, reasons
     reasons = []
     qa = result["qa"]
-    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass", "energy_projection_pass",
-                "angular_projection_pass", "model_form_pass", "elastic_pass"):
+    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass",
+                "energy_projection_pass", "angular_projection_pass",
+                "model_form_pass", "memory_diagnostic_pass",
+                "incoming_partition_pass", "elastic_pass"):
         if not qa.get(key, False):
             reasons.append(key.removesuffix("_pass"))
-    for name in ("p_exch", "reset_mean", "lambda1", "lambda2", "eta1", "eta2"):
+    for name in ("p_exch", "reset_mean", "lambda1", "lambda2", "lambda3",
+                 "eta1", "eta2"):
         interval = result.get("uncertainty", {}).get(name)
         if interval is None:
             reasons.append(f"{name}_precision_missing")
@@ -66,13 +70,15 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
 
 
 def estimate_grid(runs_root: str | Path, output_directory: str | Path,
-                  bl=None, n_bootstrap: int = 200) -> list[dict]:
+                  bl=None, n_bootstrap: int = 200,
+                  propensity_offsets: int | None = DEFAULT_OFFSETS) -> list[dict]:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     grouped = group_runs(discover_runs(runs_root))
     results = []
     for key, paths in sorted(grouped.items()):
-        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap)
+        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap,
+                               propensity_offsets=propensity_offsets)
         passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
         results.append(result)

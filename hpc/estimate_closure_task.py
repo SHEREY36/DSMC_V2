@@ -61,6 +61,10 @@ def main() -> None:
     parser.add_argument("--index", type=int, required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--bootstrap", type=int, default=500)
+    parser.add_argument("--propensity-offsets", type=int, default=128,
+                        help="impact-plane samples for the kinematic acceptance "
+                             "propensity; 0 falls back to the static 1/A_perp "
+                             "weight, which is retained only for A/B runs")
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -81,7 +85,8 @@ def main() -> None:
         )
     try:
         result = estimate_node([run], n_bootstrap=args.bootstrap,
-                               bootstrap_seed=20260902 + args.index)
+                               bootstrap_seed=20260902 + args.index,
+                               propensity_offsets=args.propensity_offsets or None)
     except SCIENTIFIC_FIT_EXCEPTIONS as exc:
         result = _failed_fit_result(row, run, exc)
         passed = False

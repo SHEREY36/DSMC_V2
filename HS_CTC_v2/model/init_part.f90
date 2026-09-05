@@ -131,7 +131,7 @@
         Et_00 = MASS*(DOT_PRODUCT(V1COM,V1COM) + DOT_PRODUCT(V2COM,V2COM))
 	
 	
-	dt = TCOLL/50.D0
+	dt = TCOLL/DT_DIVISOR
 	! For calls to outputs
 	VREL0 = VEL(2,:) - VEL(1,:)
 	WREL0 = OMEGA(2,:) - OMEGA(1,:)

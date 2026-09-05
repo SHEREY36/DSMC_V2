@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -12,7 +13,11 @@ from dsmc_v2_contracts.io import AI, OI, _vec
 from .fit_angular import fit_angular_kernel
 from .fit_exchange import fit_exchange_kernel
 from .weights import (
+    DEFAULT_OFFSETS,
+    RELATIVE_BIAS_TOLERANCE,
     effective_sample_size,
+    incoming_partition_diagnostics,
+    kinematic_propensity,
     outcome_attempt_indices,
     outcome_weights,
     propensity_diagnostics,
@@ -83,7 +88,36 @@ def _check_compatible(runs) -> None:
             raise ValueError(json.dumps(qa, indent=2))
 
 
-def _run_events(run) -> dict[str, np.ndarray]:
+PROPENSITY_CACHE = Path("results/closure_estimates/.propensity_cache")
+
+
+def _run_propensity(run, offsets: int | None,
+                    cache: Path | None = PROPENSITY_CACHE) -> np.ndarray | None:
+    """Acceptance probability per proposal, or None to keep the static weight.
+
+    The integral is deterministic given the shard and the offset count, and it
+    dominates the cost of a node, so it is cached on disk. The key carries the
+    shard identity and its byte size, so a regenerated shard misses the cache.
+    """
+    if offsets is None:
+        return None
+    key = None
+    if cache is not None:
+        directory = Path(run.directory).resolve()
+        size = (directory / "attempts_v2.bin").stat().st_size
+        key = cache / f"{directory.name}_{size}_{int(offsets)}.npy"
+        if key.is_file():
+            stored = np.load(key)
+            if len(stored) == len(run.attempts):
+                return stored
+    value = kinematic_propensity(run, offsets=int(offsets))
+    if key is not None:
+        key.parent.mkdir(parents=True, exist_ok=True)
+        np.save(key, value)
+    return value
+
+
+def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS) -> dict[str, np.ndarray]:
     outcome = np.asarray(run.outcomes)
     values = outcome["values"]
     indices = outcome_attempt_indices(run)
@@ -107,8 +141,10 @@ def _run_events(run) -> dict[str, np.ndarray]:
         "z_in": z_in,
         "z_el": z_el,
         "z_out": z_out,
+        "loss": values[:, OI["delta_total"]] / total_in,
         "cosine": cosine,
-        "weight": outcome_weights(run, normalise=False),
+        "weight": outcome_weights(run, normalise=False,
+                                  propensity=propensity, offsets=offsets),
         "block": (outcome["block_id"].astype(int)
                   + (int(run.metadata["seed"]) * 31) % N_BLOCKS) % N_BLOCKS,
     }
@@ -127,21 +163,42 @@ def _proposal_invariants(runs) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return features, diagnostics, np.concatenate(velocity)
 
 
-def _fit(events: dict[str, np.ndarray], allow_joint: bool = True) -> dict:
+def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
+         model_form: bool = True, initial: np.ndarray | None = None) -> dict:
     weight = events["weight"]
     weight = weight * len(weight) / np.sum(weight)
-    energy = fit_exchange_kernel(events["z_in"], events["z_out"], weight)
+    energy = fit_exchange_kernel(events["z_in"], events["z_out"], weight,
+                                 loss=events.get("loss"), model_form=model_form,
+                                 initial=initial)
     angular = fit_angular_kernel(events["cosine"], events["z_out"], weight,
                                  allow_joint=allow_joint)
     return {"energy": energy, "angular": angular}
 
 
-def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int) -> dict:
+def _energy_parameters(energy: dict) -> np.ndarray:
+    """Natural parameters in the order the fitted kernel expects."""
+    if energy.get("kernel_form") == "sinkhorn_bridge_v2":
+        # (memory, tilt...); the tilt is empty in the elastic block.
+        values = [energy["lambda3"]]
+        if not energy.get("elastic_block"):
+            values += [energy["lambda1"], energy["lambda2"]]
+            if energy.get("loss_covariate_deployed"):
+                values.append(energy["lambda4"])
+        return np.asarray(values, dtype=float)
+    values = [energy["lambda1"], energy["lambda2"], energy["lambda3"]]
+    if energy.get("loss_covariate_deployed"):
+        values.append(energy["lambda4"])
+    return np.asarray(values, dtype=float)
+
+
+def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
+               initial: np.ndarray | None = None) -> dict:
     if count <= 0:
         return {}
     rng = np.random.default_rng(seed)
     values: dict[str, list[float]] = {name: [] for name in
-        ("p_exch", "reset_mean", "reset_second_moment", "lambda1", "lambda2",
+        ("p_exch", "reset_mean", "reset_second_moment", "mean_partition_out",
+         "lambda1", "lambda2", "lambda3", "lambda4",
          "eta1", "eta2", "rho_z_cosine")}
     for _ in range(count):
         chosen = rng.integers(0, N_BLOCKS, N_BLOCKS)
@@ -151,7 +208,7 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int) -> dict:
         sample = {key: value[mask] for key, value in events.items() if key != "block"}
         sample["weight"] = selected_weight[mask]
         try:
-            fit = _fit(sample, allow_joint=False)
+            fit = _fit(sample, allow_joint=False, model_form=False, initial=initial)
         except (ValueError, np.linalg.LinAlgError):
             continue
         for name in values:
@@ -172,7 +229,8 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int) -> dict:
 
 
 def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
-                  bootstrap_seed: int = 20260902) -> dict:
+                  bootstrap_seed: int = 20260902,
+                  propensity_offsets: int | None = DEFAULT_OFFSETS) -> dict:
     """Estimate one (alpha, theta, AR, ensemble) node.
 
     ``bl`` remains an accepted argument for command-line compatibility.  It
@@ -181,24 +239,56 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     """
     runs = [load_run(path) for path in run_directories]
     _check_compatible(runs)
-    parts = [_run_events(run) for run in runs]
+    propensities = [_run_propensity(run, propensity_offsets) for run in runs]
+    offsets = int(propensity_offsets or DEFAULT_OFFSETS)
+    parts = [_run_events(run, propensity, offsets)
+             for run, propensity in zip(runs, propensities)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
     fitted = _fit(events)
-    uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed))
+    uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed),
+                             initial=_energy_parameters(fitted["energy"]))
     features, diagnostics, velocity = _proposal_invariants(runs)
     weight = events["weight"]
     ess = effective_sample_size(weight)
-    propensity_rows = [propensity_diagnostics(run) for run in runs]
+    propensity_rows = [propensity_diagnostics(run, propensity)
+                       for run, propensity in zip(runs, propensities)]
     propensity_pass = all(row["pass"] for row in propensity_rows)
-    balance_rows = [proposal_balance_diagnostics(run) for run in runs]
+    balance_rows = [proposal_balance_diagnostics(run, propensity, offsets)
+                    for run, propensity in zip(runs, propensities)]
     balance_pass = all(row["pass"] for row in balance_rows)
+    partition_rows = [incoming_partition_diagnostics(run, propensity, offsets)
+                      for run, propensity in zip(runs, propensities)]
+    partition_pass = all(row["pass"] for row in partition_rows)
     energy = fitted["energy"]
     angular = fitted["angular"]
     alpha = float(runs[0].metadata["alpha"])
-    elastic_pass = True
+    # Elastic gate: an elastic exchange kernel must drive the partition to
+    # equipartition, so its invariant law has to be Beta(2,2) -- mean 1/2,
+    # second moment 3/10 -- at every theta and aspect ratio.
+    #
+    # The tolerance is the looser of three bootstrap standard errors and a flat
+    # 2 percent, for the same reason the propensity gate is: a pure
+    # significance test necessarily tightens as the event count grows, and a
+    # pure absolute test ignores how well the node is actually resolved. A node
+    # whose kernel is nearly the identity has a weakly identified invariant law
+    # and should be judged on its own error bar.
+    elastic_pass, elastic_detail = True, None
     if np.isclose(alpha, 1.0):
-        elastic_pass = (abs(energy["reset_mean"] - 0.5) <= 0.02
-                        and abs(energy["reset_second_moment"] - 0.3) <= 0.02)
+        elastic_detail = []
+        for name, target in (("reset_mean", 0.5), ("reset_second_moment", 0.3)):
+            value = energy["stationary_mean" if name == "reset_mean"
+                          else "stationary_second_moment"]
+            error = uncertainty.get(name, {}).get("standard_error")
+            deviation = abs(value - target)
+            allowed = max(3.0 * error, RELATIVE_BIAS_TOLERANCE) if error is not None \
+                else RELATIVE_BIAS_TOLERANCE
+            elastic_detail.append({
+                "quantity": name, "value": float(value), "target": target,
+                "deviation": float(deviation), "standard_error": error,
+                "sigma": float(deviation / error) if error else None,
+                "allowed": float(allowed), "pass": bool(deviation <= allowed),
+            })
+        elastic_pass = all(row["pass"] for row in elastic_detail)
     qa = {
         "propensity_pass": propensity_pass,
         "proposal_balance_pass": balance_pass,
@@ -207,11 +297,14 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         "energy_projection_pass": bool(energy["projection_residual"] < 1.0e-6),
         "angular_projection_pass": bool(angular["projection_residual"] < 1.0e-6),
         "model_form_pass": bool(energy["model_form_pass"]),
+        "memory_diagnostic_pass": bool(energy["memory_diagnostic_pass"]),
+        "incoming_partition_pass": bool(partition_pass),
         "elastic_pass": bool(elastic_pass),
     }
     qa["sentinel_pass"] = bool(all(qa[name] for name in (
         "propensity_pass", "proposal_balance_pass", "ess_pass", "energy_projection_pass",
-        "angular_projection_pass", "model_form_pass", "elastic_pass")))
+        "angular_projection_pass", "model_form_pass", "memory_diagnostic_pass",
+        "incoming_partition_pass", "elastic_pass")))
     metadata = runs[0].metadata
     return {
         "schema_version": "2.2.0",
@@ -229,11 +322,16 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         "angular": angular,
         "uncertainty": uncertainty,
         "measure": {
-            "weight_definition": "inverse_projected_excluded_area",
+            "weight_definition": ("inverse_kinematic_propensity"
+                                  if propensity_offsets is not None
+                                  else "inverse_projected_excluded_area"),
+            "propensity_offsets": propensity_offsets,
             "ess": ess,
             "ess_fraction": ess / len(weight),
             "propensity": propensity_rows,
             "proposal_balance": balance_rows,
+            "incoming_partition": partition_rows,
+            "elastic_limit": elastic_detail,
             "frozen_cross_section_audit": frozen_cross_section(float(metadata["aspect_ratio"])),
             "mean_center_of_mass_velocity": np.mean(velocity, axis=0).tolist(),
         },

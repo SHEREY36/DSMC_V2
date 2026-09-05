@@ -90,15 +90,16 @@ class SpherocylinderKernel:
             closure_started = wallclock.perf_counter()
             if self.cell_variational is None:
                 raise RuntimeError("variational closure was not evaluated for the current cell")
-            exchanged = self.vss_rng.random() < self.cell_variational["p_exch"]
-            if exchanged:
-                eps_tr_f = self.closure.sample_energy(self.cell_variational, self.vss_rng)
-                eps_r1_f = self.vss_rng.random()
-            else:
-                eps_tr_f, eps_r1_f = eps_tr_i, eps_r1_i
+            # No Bernoulli gate: the fitted kernel is a conditional law for
+            # z' given (z, eps), and the memory that the gate used to stand in
+            # for is carried by lambda3 inside it. The loss is drawn first
+            # because it enters the kernel through lambda4.
             gamma = 0.0 if in_equilibration or self.alpha >= 1.0 else (
                 np.random.beta(self.beta_a, self.beta_b) * self.loss["gamma_max"]
                 * self.loss["one_hit_probability"])
+            eps_tr_f = self.closure.sample_energy(
+                self.cell_variational, eps_tr_i, gamma, self.vss_rng)
+            eps_r1_f = self.vss_rng.random()
             available = total_i * (1.0 - gamma)
             etr_f, erot_f = eps_tr_f * available, (1.0 - eps_tr_f) * available
             if not (etr_f > 0.0 and erot_f > 0.0):

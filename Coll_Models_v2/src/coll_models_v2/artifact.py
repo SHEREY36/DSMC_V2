@@ -16,10 +16,21 @@ from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
 from .estimate import estimate_node
 from .fit_coefficients import fit_lambda1_coefficients
-from .projections import angular_quantiles, energy_moments, energy_quantiles
+from .projections import (
+    _legendre_nodes,
+    _bridge_spline,
+    angular_quantiles,
+    conditional_energy_mean_map,
+    energy_quantile_table,
+    incoming_partition_density,
+)
 
 
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.3.0"
+# Nodes on the a-axis of the energy sampler. a enters the kernel only
+# linearly inside a smooth exponential tilt, so the quantile surface is
+# gentle in a and 65 nodes interpolate it to ~1e-5 on the moments.
+ENERGY_A_NODES = 65
 ARTIFACT_TYPE = "bl_variational_closure"
 
 
@@ -90,13 +101,17 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         if len(nodes) < 3:
             continue
         theta = np.array([row["theta"] for row in nodes])
-        p = PchipInterpolator(theta, [row["energy"]["p_exch"] for row in nodes])
         lambda1 = PchipInterpolator(theta, [row["energy"]["lambda1"] for row in nodes])
         lambda2 = PchipInterpolator(theta, [row["energy"]["lambda2"] for row in nodes])
-        p_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
-            "p_exch", {}).get("standard_error", np.nan) for row in nodes])
-        mu_se = PchipInterpolator(theta, [row.get("uncertainty", {}).get(
-            "reset_mean", {}).get("standard_error", np.nan) for row in nodes])
+        lambda3 = PchipInterpolator(theta, [row["energy"]["lambda3"] for row in nodes])
+        lambda4 = PchipInterpolator(theta, [row["energy"].get("lambda4", 0.0)
+                                            for row in nodes])
+        partition_se = [row.get("uncertainty", {}).get(
+            "mean_partition_out", {}).get("standard_error", np.nan) for row in nodes]
+        mu_se = (PchipInterpolator(theta, partition_se)
+                 if np.all(np.isfinite(partition_se))
+                 else (lambda value: np.nan))
+        grid, quad = _legendre_nodes(192, 0.0, 1.0)
 
         if alpha >= 1.0:
             mean_loss = 0.0
@@ -105,10 +120,24 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         else:
             mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
 
+        def post_collision_partition(value):
+            """E[z_out] of the fitted kernel at the DSMC's own fractional loss.
+
+            The incoming partition is averaged over its exact collision-weighted
+            law, not evaluated at the energy-weighted fraction: those are two
+            different objects and only the second belongs in the balance below.
+            """
+            mass = incoming_partition_density(value, grid) * quad
+            mass = mass / np.sum(mass)
+            parameters = np.array([float(lambda1(value)), float(lambda2(value)),
+                                   float(lambda3(value))])
+            mean_map = conditional_energy_mean_map(
+                parameters, grid, offset=float(lambda4(value)) * mean_loss)
+            return float(mass @ mean_map)
+
         def drift(value):
             incoming = _energy_weighted_partition(value)
-            reset = float(energy_moments(np.array([lambda1(value), lambda2(value)]))[0])
-            post_partition = (1.0 - p(value)) * incoming + p(value) * reset
+            post_partition = post_collision_partition(value)
             delta_tr = (1.0 - mean_loss) * post_partition - incoming
             delta_rot = ((1.0 - mean_loss) * (1.0 - post_partition)
                          - (1.0 - incoming))
@@ -133,12 +162,12 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
                           - drift(max(theta[0], root - step))) \
                 / (min(theta[-1], root + step) - max(theta[0], root - step))
             stable = derivative < 0.0
-            if np.isfinite(p_se(root)) and np.isfinite(mu_se(root)) and derivative != 0.0:
-                reset = energy_moments(np.array([lambda1(root), lambda2(root)]))[0]
+            if np.isfinite(mu_se(root)) and derivative != 0.0:
+                # First-order propagation through the post-collision partition,
+                # whose bootstrap standard error stands in for the joint
+                # uncertainty of the natural parameters.
                 response = (1.0 - mean_loss) * (2.0 / 3.0 + root)
-                drift_se = response * np.hypot(
-                    p(root) * mu_se(root),
-                    (reset - _energy_weighted_partition(root)) * p_se(root))
+                drift_se = float(response * mu_se(root))
                 root_standard_error = float(drift_se / abs(derivative))
                 uncertainty_margin = float(
                     min(root - theta[0], theta[-1] - root) - 1.96 * root_standard_error)
@@ -180,19 +209,63 @@ def build_artifact(run_directories, output_directory, bl=None,
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
     probability = np.linspace(0.0, 1.0, 1025)
-    eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"]]
-                        for row in baseline])
+    # Two-dimensional (a, u) energy sampler.  Everything the kernel needs from
+    # the incoming pair enters through the single scalar
+    #     a = lambda1 + lambda3 * z_in + lambda4 * eps,
+    # so one table per node over (a, u) represents the memory exactly.  The old
+    # one-dimensional table silently dropped lambda3.
+    kernel_forms = {row["energy"].get("kernel_form", "conditional_iprojection_v2")
+                    for row in baseline}
+    if len(kernel_forms) != 1:
+        raise ValueError(f"baseline mixes kernel forms: {sorted(kernel_forms)}")
+    kernel_form = kernel_forms.pop()
+    loss_ceiling = float(max(getattr(bl, "gamma_max", {}).values() or [0.0])) \
+        if isinstance(getattr(bl, "gamma_max", {}), dict) else float(getattr(bl, "gamma_max", 0.0))
+
+    eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"],
+                         row["energy"]["lambda3"], row["energy"]["lambda4"]]
+                        for row in baseline], dtype=float)
+    a_grids, equant = [], []
+    for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
+        reach = [lambda1, lambda1 + lambda3,
+                 lambda1 + lambda4 * loss_ceiling,
+                 lambda1 + lambda3 + lambda4 * loss_ceiling]
+        low, high = min(reach), max(reach)
+        pad = max(0.05 * (high - low), 1.0e-6)
+        grid = np.linspace(low - pad, high + pad, ENERGY_A_NODES)
+        a_grids.append(grid)
+        equant.append(energy_quantile_table(
+            lambda3, lambda2, grid, probability, kernel_form=kernel_form))
+    a_grids = np.array(a_grids)
+    equant = np.array(equant)
+
     aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]
                         for row in baseline])
-    equant = np.array([energy_quantiles(parameter, probability) for parameter in eparams])
     aquant = np.array([angular_quantiles(parameter, probability) for parameter in aparams])
     energy_errors, angular_errors = [], []
-    for row, quantile in zip(baseline, equant):
-        energy_errors.extend((
-            abs(np.trapz(quantile, probability) - row["energy"]["reset_mean"]),
-            abs(np.trapz(quantile * quantile, probability)
-                - row["energy"]["reset_second_moment"]),
-        ))
+    # Validate the table against the kernel it is meant to represent, at the
+    # extremes and centre of each node's own a-range.  Comparing it with the
+    # invariant law would be wrong: with memory the conditional mean depends on
+    # a, and only the a-averaged law is the invariant one.
+    quad = np.linspace(0.0, 1.0, 4097)
+    for index, (lambda1, lambda2, lambda3, lambda4) in enumerate(eparams):
+        grid = a_grids[index]
+        for a in (grid[0], grid[len(grid) // 2], grid[-1]):
+            with np.errstate(divide="ignore"):
+                logbase = np.log(6.0 * quad * (1.0 - quad))
+            if kernel_form == "sinkhorn_bridge_v2":
+                logbase = logbase + _bridge_spline(float(lambda3), 256)(quad)
+            weight = np.exp(np.clip(logbase + a * quad + lambda2 * quad * quad
+                                    - np.max(logbase + a * quad + lambda2 * quad * quad),
+                                    -700.0, 700.0))
+            weight[0] = weight[-1] = 0.0
+            mass = np.trapz(weight, quad)
+            exact = (np.trapz(weight * quad, quad) / mass,
+                     np.trapz(weight * quad * quad, quad) / mass)
+            table = np.array([np.interp(a, grid, equant[index, :, j])
+                              for j in range(equant.shape[2])])
+            energy_errors.extend((abs(np.trapz(table, probability) - exact[0]),
+                                  abs(np.trapz(table * table, probability) - exact[1])))
     for row, quantile in zip(baseline, aquant):
         angular_errors.extend((
             abs(np.trapz(quantile, probability) - row["angular"]["mean_cosine"]),
@@ -268,7 +341,9 @@ def build_artifact(run_directories, output_directory, bl=None,
         parameter_uncertainties=uncertainties,
         uncertainty_names=np.array(uncertainty_names),
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
-        quantile_probability=probability, energy_quantiles=equant, angular_quantiles=aquant,
+        quantile_probability=probability, energy_quantiles=equant,
+        energy_a_grid=a_grids,
+        kernel_form=np.array(kernel_form), angular_quantiles=aquant,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
