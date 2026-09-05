@@ -36,3 +36,9 @@ _SUCCESS
 _RAW_SUCCESS
 *.zip
 *.tar.gz
+
+# Build products: artifacts are regenerated from node estimates
+models/microscopic_closure_v2/
+results/hcs_demo/
+results/hcs_one/
+results/hcs_shape/
