@@ -642,6 +642,61 @@ def energy_quantiles(parameters: np.ndarray, probabilities: np.ndarray,
     return np.interp(probabilities, cdf, z)
 
 
+def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
+                          probabilities: np.ndarray,
+                          kernel_form: str = "sinkhorn_bridge_v2",
+                          quadrature: int = 256,
+                          grid_size: int = 4097) -> np.ndarray:
+    """Two-dimensional quantile table ``z'(a, u)`` for the deployed kernel.
+
+    Both kernel forms normalise to the same shape, because everything that
+    depends on the incoming state enters through one scalar:
+
+        p(z' | z, eps)  ∝  base(z') exp(a z' + lambda2 z'^2),
+        a = lambda1 + lambda3 z + lambda4 eps.
+
+    ``base`` is Beta(2,2) for ``conditional_iprojection_v2`` and
+    Beta(2,2) times the Sinkhorn potential ``h`` for ``sinkhorn_bridge_v2``.
+    ``h(z)`` -- the incoming half -- cancels against the normalisation, which
+    is why the bridge needs no more runtime machinery than the form it
+    replaces: only the base measure changes.
+
+    Returns an array of shape ``(len(a_grid), len(probabilities))``.  The DSMC
+    samples by forming ``a`` for the pair, then interpolating bilinearly in
+    ``(a, u)`` with ``u`` uniform.
+    """
+    a_grid = np.atleast_1d(np.asarray(a_grid, dtype=float))
+    probabilities = np.asarray(probabilities, dtype=float)
+    if a_grid.ndim != 1 or probabilities.ndim != 1:
+        raise ValueError("a_grid and probabilities must be one-dimensional")
+    if np.any(np.diff(a_grid) <= 0.0):
+        raise ValueError("a_grid must be strictly increasing")
+
+    z = np.linspace(0.0, 1.0, int(grid_size))
+    interior = 6.0 * z * (1.0 - z)
+    # Work in logs throughout: h underflows badly at the memories we fit
+    # (phi reaches -300 by lambda3 = 600), and the tilt can be large too.
+    with np.errstate(divide="ignore"):
+        log_base = np.log(interior)
+    if kernel_form == "sinkhorn_bridge_v2":
+        log_base = log_base + _bridge_spline(float(memory), quadrature)(z)
+    elif kernel_form != "conditional_iprojection_v2":
+        raise ValueError(f"unknown kernel_form {kernel_form!r}")
+
+    exponent = (log_base[None, :] + a_grid[:, None] * z[None, :]
+                + float(lambda2) * (z * z)[None, :])
+    exponent -= np.max(exponent, axis=1, keepdims=True)
+    density = np.exp(exponent)
+    density[:, 0] = 0.0
+    density[:, -1] = 0.0
+
+    cdf = np.zeros_like(density)
+    np.cumsum(0.5 * (density[:, 1:] + density[:, :-1]) * np.diff(z)[None, :],
+              axis=1, out=cdf[:, 1:])
+    cdf /= cdf[:, -1:]
+    return np.array([np.interp(probabilities, row, z) for row in cdf])
+
+
 def angular_quantiles(parameters: np.ndarray, probabilities: np.ndarray,
                       grid_size: int = 16385) -> np.ndarray:
     probabilities = np.asarray(probabilities, dtype=float)

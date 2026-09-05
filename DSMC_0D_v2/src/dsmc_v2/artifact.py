@@ -106,9 +106,9 @@ class VariationalClosure:
 
     def __init__(self, path: str | Path, corrections_enabled: bool = True):
         data = np.load(path, allow_pickle=False)
-        if str(data["schema_version"]) != "2.2.0" \
+        if str(data["schema_version"]) != "2.3.0" \
                 or str(data["artifact_type"]) != "bl_variational_closure":
-            raise ValueError("not a schema-2.2 BL variational closure artifact")
+            raise ValueError("not a schema-2.3 BL variational closure artifact")
         if list(data["feature_names"].astype(str)) != list(FEATURE_NAMES):
             raise ValueError("variational feature ordering differs from runtime contract")
         self.coordinates = np.asarray(data["surface_coordinates"], dtype=float)
@@ -119,7 +119,18 @@ class VariationalClosure:
         self.energy_parameters = np.asarray(data["energy_parameters"], dtype=float)
         self.angular_parameters = np.asarray(data["angular_parameters"], dtype=float)
         self.probability = np.asarray(data["quantile_probability"], dtype=float)
+        # (node, a, u).  The energy kernel has memory: everything it needs from
+        # the incoming pair arrives as a = lambda1 + lambda3 z_in + lambda4 eps,
+        # so the sampler interpolates in a as well as in the uniform draw.
         self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
+        self.energy_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
+        self.kernel_form = str(data["kernel_form"])
+        if self.energy_tables.ndim != 3 \
+                or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
+            raise ValueError("energy quantile table must be (node, a, u)")
+        if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
+            raise ValueError("energy a-grid must be strictly increasing per node")
+        self.energy_axis_clamps = 0
         self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
         self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
         self.beta = np.asarray(data["beta"], dtype=float)
@@ -199,9 +210,14 @@ class VariationalClosure:
         aparams = self._interpolate(self.coordinates, self.angular_parameters, query,
                                     "angular parameters",
                                     self._interpolators.get("angular_parameters")).astype(float)
-        etable = self._interpolate(self.coordinates, self.energy_tables, query,
-                                   "energy quantiles",
-                                   self._interpolators.get("energy_tables")).astype(float)
+        shape = self.energy_tables.shape[1:]
+        etable = self._interpolate(
+            self.coordinates, self.energy_tables.reshape(len(self.energy_tables), -1),
+            query, "energy quantiles",
+            self._interpolators.get("energy_tables")).astype(float).reshape(shape)
+        agrid = self._interpolate(self.coordinates, self.energy_a_grid, query,
+                                  "energy a-grid",
+                                  self._interpolators.get("energy_a_grid")).astype(float)
         atable = self._interpolate(self.coordinates, self.angular_tables, query,
                                    "angular quantiles",
                                    self._interpolators.get("angular_tables")).astype(float)
@@ -233,26 +249,38 @@ class VariationalClosure:
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
         return {"p_exch": p_exch, "energy_parameters": eparams,
+                "energy_a_grid": agrid,
                 "angular_parameters": aparams, "energy_quantiles": etable,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "energy_corrected": correction != 0.0,
                 "joint_deployed": joint, "joint_parameters": joint_parameters}
 
-    def sample_energy(self, state: dict, rng: np.random.Generator) -> float:
-        if not state["energy_corrected"]:
-            return float(np.interp(rng.random(), self.probability, state["energy_quantiles"]))
-        parameter = state["energy_parameters"]
-        candidates = [0.0, 1.0]
-        if parameter[1] < 0.0:
-            vertex = -parameter[0] / (2.0 * parameter[1])
-            if 0.0 < vertex < 1.0:
-                candidates.append(vertex)
-        maximum = max(parameter[0] * z + parameter[1] * z * z for z in candidates)
-        for _ in range(10000):
-            z = rng.beta(2.0, 2.0)
-            if rng.random() <= np.exp(parameter[0] * z + parameter[1] * z * z - maximum):
-                return float(z)
-        raise RuntimeError("tilted energy rejection sampler failed")
+    def sample_energy(self, state: dict, z_in: float, loss: float,
+                      rng: np.random.Generator) -> float:
+        """Draw the outgoing partition from the memory kernel.
+
+        ``z_in`` is the pair's incoming translational share and ``loss`` the
+        fractional energy the collision removes.  They enter only through
+        ``a = lambda1 + lambda3 z_in + lambda4 loss``; the table is indexed by
+        that scalar, so the draw is a bilinear interpolation and costs the same
+        as the memoryless one it replaces.
+        """
+        lambda1, _, lambda3, lambda4 = state["energy_parameters"]
+        grid = state["energy_a_grid"]
+        a = float(lambda1 + lambda3 * float(z_in) + lambda4 * float(loss))
+        if a < grid[0] or a > grid[-1]:
+            # The natural-parameter correction shifts lambda1 after the table
+            # was tabulated, so a can leave the exported span. Clamping is the
+            # conservative choice; the count is reported so it cannot hide.
+            self.energy_axis_clamps += 1
+            a = min(max(a, grid[0]), grid[-1])
+        upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
+        lower = upper - 1
+        span = grid[upper] - grid[lower]
+        blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
+        table = state["energy_quantiles"]
+        row = (1.0 - blend) * table[lower] + blend * table[upper]
+        return float(np.interp(rng.random(), self.probability, row))
 
     def sample_direction(self, ghat_pre: np.ndarray, state: dict, z: float,
                          rng: np.random.Generator) -> np.ndarray:

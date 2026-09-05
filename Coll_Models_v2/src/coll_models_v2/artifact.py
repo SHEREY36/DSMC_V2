@@ -18,14 +18,19 @@ from .estimate import estimate_node
 from .fit_coefficients import fit_lambda1_coefficients
 from .projections import (
     _legendre_nodes,
+    _bridge_spline,
     angular_quantiles,
     conditional_energy_mean_map,
-    energy_quantiles,
+    energy_quantile_table,
     incoming_partition_density,
 )
 
 
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.3.0"
+# Nodes on the a-axis of the energy sampler. a enters the kernel only
+# linearly inside a smooth exponential tilt, so the quantile surface is
+# gentle in a and 65 nodes interpolate it to ~1e-5 on the moments.
+ENERGY_A_NODES = 65
 ARTIFACT_TYPE = "bl_variational_closure"
 
 
@@ -204,29 +209,63 @@ def build_artifact(run_directories, output_directory, bl=None,
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
     probability = np.linspace(0.0, 1.0, 1025)
-    memory = np.array([abs(float(row["energy"].get("lambda3", 0.0))) for row in baseline])
-    if np.any(memory > 1.0e-9):
-        # The conditional kernel depends on the event through
-        # a = lambda3 * z_in + lambda4 * eps, so a single one-dimensional
-        # quantile table cannot represent it. Refuse rather than export a
-        # sampler that silently drops the memory term.
-        raise NotImplementedError(
-            "energy sampler export requires the two-dimensional (a, u) quantile "
-            f"table for kernel_form={baseline[0]['energy'].get('kernel_form')!r}; "
-            f"max |lambda3| = {float(np.max(memory)):.4g}")
-    eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"]]
-                        for row in baseline])
+    # Two-dimensional (a, u) energy sampler.  Everything the kernel needs from
+    # the incoming pair enters through the single scalar
+    #     a = lambda1 + lambda3 * z_in + lambda4 * eps,
+    # so one table per node over (a, u) represents the memory exactly.  The old
+    # one-dimensional table silently dropped lambda3.
+    kernel_forms = {row["energy"].get("kernel_form", "conditional_iprojection_v2")
+                    for row in baseline}
+    if len(kernel_forms) != 1:
+        raise ValueError(f"baseline mixes kernel forms: {sorted(kernel_forms)}")
+    kernel_form = kernel_forms.pop()
+    loss_ceiling = float(max(getattr(bl, "gamma_max", {}).values() or [0.0])) \
+        if isinstance(getattr(bl, "gamma_max", {}), dict) else float(getattr(bl, "gamma_max", 0.0))
+
+    eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"],
+                         row["energy"]["lambda3"], row["energy"]["lambda4"]]
+                        for row in baseline], dtype=float)
+    a_grids, equant = [], []
+    for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
+        reach = [lambda1, lambda1 + lambda3,
+                 lambda1 + lambda4 * loss_ceiling,
+                 lambda1 + lambda3 + lambda4 * loss_ceiling]
+        low, high = min(reach), max(reach)
+        pad = max(0.05 * (high - low), 1.0e-6)
+        grid = np.linspace(low - pad, high + pad, ENERGY_A_NODES)
+        a_grids.append(grid)
+        equant.append(energy_quantile_table(
+            lambda3, lambda2, grid, probability, kernel_form=kernel_form))
+    a_grids = np.array(a_grids)
+    equant = np.array(equant)
+
     aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]
                         for row in baseline])
-    equant = np.array([energy_quantiles(parameter, probability) for parameter in eparams])
     aquant = np.array([angular_quantiles(parameter, probability) for parameter in aparams])
     energy_errors, angular_errors = [], []
-    for row, quantile in zip(baseline, equant):
-        energy_errors.extend((
-            abs(np.trapz(quantile, probability) - row["energy"]["reset_mean"]),
-            abs(np.trapz(quantile * quantile, probability)
-                - row["energy"]["reset_second_moment"]),
-        ))
+    # Validate the table against the kernel it is meant to represent, at the
+    # extremes and centre of each node's own a-range.  Comparing it with the
+    # invariant law would be wrong: with memory the conditional mean depends on
+    # a, and only the a-averaged law is the invariant one.
+    quad = np.linspace(0.0, 1.0, 4097)
+    for index, (lambda1, lambda2, lambda3, lambda4) in enumerate(eparams):
+        grid = a_grids[index]
+        for a in (grid[0], grid[len(grid) // 2], grid[-1]):
+            with np.errstate(divide="ignore"):
+                logbase = np.log(6.0 * quad * (1.0 - quad))
+            if kernel_form == "sinkhorn_bridge_v2":
+                logbase = logbase + _bridge_spline(float(lambda3), 256)(quad)
+            weight = np.exp(np.clip(logbase + a * quad + lambda2 * quad * quad
+                                    - np.max(logbase + a * quad + lambda2 * quad * quad),
+                                    -700.0, 700.0))
+            weight[0] = weight[-1] = 0.0
+            mass = np.trapz(weight, quad)
+            exact = (np.trapz(weight * quad, quad) / mass,
+                     np.trapz(weight * quad * quad, quad) / mass)
+            table = np.array([np.interp(a, grid, equant[index, :, j])
+                              for j in range(equant.shape[2])])
+            energy_errors.extend((abs(np.trapz(table, probability) - exact[0]),
+                                  abs(np.trapz(table * table, probability) - exact[1])))
     for row, quantile in zip(baseline, aquant):
         angular_errors.extend((
             abs(np.trapz(quantile, probability) - row["angular"]["mean_cosine"]),
@@ -302,7 +341,9 @@ def build_artifact(run_directories, output_directory, bl=None,
         parameter_uncertainties=uncertainties,
         uncertainty_names=np.array(uncertainty_names),
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
-        quantile_probability=probability, energy_quantiles=equant, angular_quantiles=aquant,
+        quantile_probability=probability, energy_quantiles=equant,
+        energy_a_grid=a_grids,
+        kernel_form=np.array(kernel_form), angular_quantiles=aquant,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),

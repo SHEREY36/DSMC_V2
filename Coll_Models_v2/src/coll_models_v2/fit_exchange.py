@@ -193,7 +193,7 @@ def _affine_memory(z_in: np.ndarray, z_out: np.ndarray,
     return float(intercept), float(coefficient)
 
 
-def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 256,
+def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
                       elastic: bool | None = None,
                       initial: np.ndarray | None = None) -> dict:
     """Fit the Sinkhorn-bridge exchange kernel by profile likelihood.
@@ -338,7 +338,7 @@ def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
 
 def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
                         weight: np.ndarray, loss: np.ndarray | None = None,
-                        quadrature: int = 256,
+                        quadrature: int = 128,
                         loss_spread_threshold: float = 1.0e-4,
                         model_form: bool = True,
                         initial: np.ndarray | None = None,

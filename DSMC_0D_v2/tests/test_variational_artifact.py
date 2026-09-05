@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from coll_models_v2.projections import angular_quantiles, energy_quantiles
+from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2.legacy_models import FrozenLossModel
 from dsmc_v2.simulation import run_simulation, runtime_gate_status
@@ -18,17 +18,25 @@ class VariationalArtifactTests(unittest.TestCase):
         coordinates = np.array([[a, t, r] for a in (0.8, 1.0)
                                  for t in (0.1, 3.0) for r in (1.5, 2.0)])
         probability = np.linspace(0.0, 1.0, 513)
-        ep = np.zeros((len(coordinates), 2))
+        # (lambda1, lambda2, lambda3, lambda4); a real memory so the sampler's
+        # a-axis is exercised rather than collapsing to a point.
+        ep = np.zeros((len(coordinates), 4))
+        ep[:, 2] = 5.0
+        a_grid = np.array([np.linspace(row[0] - 1.0, row[0] + row[2] + 1.0, 65)
+                           for row in ep])
         ap = np.zeros((len(coordinates), 2))
         beta = np.zeros((len(coordinates), len(FEATURE_NAMES)))
         beta[:, 0] = 0.2
         np.savez_compressed(
-            path, schema_version=np.array("2.2.0"),
+            path, schema_version=np.array("2.3.0"),
             artifact_type=np.array("bl_variational_closure"),
             feature_names=np.array(FEATURE_NAMES), surface_coordinates=coordinates,
             p_exch=np.full(len(coordinates), 0.4), energy_parameters=ep,
             angular_parameters=ap, quantile_probability=probability,
-            energy_quantiles=np.array([energy_quantiles(row, probability) for row in ep]),
+            energy_a_grid=a_grid, kernel_form=np.array("sinkhorn_bridge_v2"),
+            energy_quantiles=np.array([
+                energy_quantile_table(row[2], row[1], grid, probability)
+                for row, grid in zip(ep, a_grid)]),
             angular_quantiles=np.array([angular_quantiles(row, probability) for row in ap]),
             beta_coordinates=coordinates, beta=beta, beta_se=np.zeros_like(beta),
             beta_deployed=beta != 0.0, feature_lower=np.full(len(FEATURE_NAMES), -0.5),
@@ -48,8 +56,16 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertAlmostEqual(state["p_exch"], 0.4)
             self.assertAlmostEqual(state["energy_parameters"][0], 0.02)
             rng = np.random.default_rng(123)
-            values = np.array([closure.sample_energy(state, rng) for _ in range(100000)])
+            values = np.array([closure.sample_energy(state, 0.5, 0.0, rng)
+                               for _ in range(100000)])
             self.assertTrue(np.all((values > 0.0) & (values < 1.0)))
+            # Memory must actually bite: a larger incoming share must push the
+            # outgoing share up, or lambda3 is being dropped again.
+            low = np.mean([closure.sample_energy(state, 0.1, 0.0, rng)
+                           for _ in range(20000)])
+            high = np.mean([closure.sample_energy(state, 0.9, 0.0, rng)
+                            for _ in range(20000)])
+            self.assertGreater(high - low, 0.05)
 
     def test_refuses_enabled_but_undeployed_corrections(self):
         with tempfile.TemporaryDirectory() as temporary:
