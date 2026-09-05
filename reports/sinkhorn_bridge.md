@@ -23,37 +23,46 @@ exactly 1.
 
 ## 2. Why inference was the wrong tool
 
-Two measurements make the diagnosis concrete. For each sentinel node, the
-weighted mean of the *incoming* partition and of the *outgoing* partition:
+Under the production kinematic weighting, the weighted mean of the *incoming*
+partition recovers `Beta(2,2)` at `theta = 1`:
 
-| node | mean `z_in` | mean `z_out` | var `z_in` |
-|---|---|---|---|
-| `alpha=1, theta=1, AR=1.1` | 0.4990 | 0.4990 | 0.0502 |
-| `alpha=1, theta=1, AR=3.0` | 0.4807 | 0.4810 | 0.0512 |
-| `alpha=1, theta=0.2, AR=1.1` | 0.2120 | 0.2281 | 0.0281 |
+| node | `<z_in>` static shadow weight | `<z_in>` kinematic propensity |
+|---|---|---|
+| `alpha=1, theta=1, AR=1.1` | 0.4990 | **0.5000** |
+| `alpha=1, theta=1, AR=3.0` | 0.4807 | **0.4996** |
 
-`Beta(2,2)` has mean 0.5000 and variance 0.0500. The first row matches it to
-three decimals, which confirms that `Beta(2,2)` is the right reference for this
-system — as it must be, since the generator draws incoming states from
-`incoming_partition_density(theta, z) = z(1-z) (z/theta + 1 - z)^-4`, whose
-`-4` exponent encodes the four-versus-four degree-of-freedom structure.
+The right-hand column is the production weight, `1 / P(accept | state)` from the
+force-free encounter integral at 128 offsets. It confirms `Beta(2,2)` is the
+correct reference for this system, as it must be: the generator draws
+`E_t ~ Gamma(2, T_tr)` and `E_r ~ Gamma(2, T_rot)` independently.
 
-The second row is the diagnosis. `mean z_out` tracks `mean z_in` to four
-decimals (0.4810 vs 0.4807). The fitted kernel was *correctly* stationary with
-respect to the sample it was shown — and that sample was itself 4 percent off
-`Beta(2,2)`. The 0.4817 invariant mean was never a defect in the kernel. It
-was the estimator faithfully reporting the invariant law of a kernel fitted to
-a biased incoming sample.
+**Correction.** An earlier draft of this report quoted the left-hand column and
+concluded there was a 4 percent incoming-partition bias at `AR = 3`. That was
+wrong. Those numbers came from `outcome_weights` called with no propensity,
+which returns the deprecated static-shadow weight `1 / A_perp` — retained only
+for A/B runs, and documented as missing the rotational enhancement and biasing
+the accepted ensemble towards fast-spinning pairs. **There is no
+incoming-partition bias.** Any diagnosis built on that 0.4807 — including the
+hypothesis that the generator's one-quadrant impact sampling mismatches the
+propensity's full-disc integral — is chasing an artifact of the wrong weight.
 
-The third row is the extreme case. The incoming partition is concentrated near
-0.21 with variance 0.0281. Asking where *that* kernel would drive the system
-after infinitely many collisions is an extrapolation far outside the support of
-the data, and the answer (0.7936) is meaningless — not wrong arithmetic, just a
-question the data cannot answer.
+For the record, that quadrant/disc mismatch is real as a matter of code
+(`init_part.f90` draws `b_y, b_z` uniform on `[0, BMAX]` while
+`encounter_propensity` integrates the full disc), but it does not bias the
+estimator. The rods' azimuth about `ghat` is uniform, so averaging over it
+gives `A_++ = A_total / 4` exactly; and `z_in` depends only on
+rotation-invariant scalars, so the ratio-estimator's error factor has
+conditional mean 1 given everything `z_in` depends on. The measurement above
+confirms it.
 
-So the invariant law was a **derived** quantity, sensitive to sampling bias in
-a covariate, standing in for a law we already knew exactly. That is the wrong
-division of labour.
+So the real reason inference was the wrong tool is not a biased sample. It is
+that at weak coupling the kernel is close to the identity, so very few
+collisions carry information about the law it would reach after infinitely
+many — and the invariant law is then an extrapolation far outside the support
+of the data. At `(alpha=1, theta=0.2, AR=1.1)` the incoming partition sits near
+0.21 with variance 0.028, and the unconstrained fit put the invariant mean at
+0.79. That is not arithmetic error; it is a question the data cannot answer,
+being asked anyway.
 
 ## 3. What the bridge does
 
@@ -81,31 +90,36 @@ Two exact structural identities fall out, and both are pinned by tests:
 
 ## 4. Verification on the real 200k sentinel
 
-Held-out 4:1 split on the actual shards, bridge versus the unconstrained
-conditional tilt. Log-density is per-event, in nats; higher is better.
+Held-out 4:1 split on the actual shards under the **production kinematic
+weight** (128 offsets), bridge versus the unconstrained conditional tilt.
+Log-density is per event, in nats; higher is better. All nodes elastic.
 
-| node | bridge | free tilt | gap | bridge invariant mean | free invariant mean |
+| node | bridge ll | free ll | gap | bridge inv. mean | free inv. mean |
 |---|---|---|---|---|---|
-| `a=1, th=1, AR=1.1` | **1.2064** | 1.2053 | −0.0011 | **0.500000** | 0.498166 |
-| `a=1, th=0.2, AR=1.1` | **1.4010** | 1.3958 | −0.0053 | **0.500000** | 0.793584 |
-| `a=1, th=1, AR=3.0` | 0.1499 | 0.1527 | +0.0029 | **0.500000** | 0.481709 |
-| `a=1, th=2, AR=2.0` | 0.1559 | 0.1569 | +0.0010 | **0.500000** | 0.488266 |
-| `a=0.5, th=1, AR=3.0` | 0.2038 | 0.2038 | −0.0001 | 0.366373 | 0.366463 |
-| `a=0.8, th=1, AR=2.0` | 0.2055 | 0.2055 | −0.0000 | 0.462104 | 0.462158 |
+| `AR=1.1, th=2` | **1.2445** | 1.2421 | −0.0024 | **0.500000** | 0.487564 |
+| `AR=2, th=0.2` | 0.1568 | 0.1700 | +0.0132 | **0.500000** | 0.504315 |
+| `AR=2, th=1` | 0.1679 | 0.1683 | +0.0004 | **0.500000** | 0.489089 |
+| `AR=2, th=2` | 0.1581 | 0.1587 | +0.0006 | **0.500000** | 0.490972 |
+| `AR=3, th=0.2` | 0.1324 | 0.1451 | +0.0127 | **0.500000** | 0.492681 |
+| `AR=3, th=1` | 0.1523 | 0.1542 | +0.0019 | **0.500000** | 0.484952 |
+| `AR=3, th=2` | 0.1376 | 0.1400 | +0.0024 | **0.500000** | 0.484027 |
 
 Three readings:
 
-1. **Elastically the invariant law is exactly 0.500000** at every node — by
-   construction, not by fit.
-2. **The constraint is free.** At `AR=1.1` the bridge is *better* held-out,
-   with one parameter instead of three. At `AR=2` and `3` the free fit wins by
-   at most 0.003 nats, negligible against removing a 3 percent systematic. At
-   the 48-sigma node the bridge both fixes the invariant law *and* fits better,
-   which is the signature of a badly identified parameter in the free form.
-3. **It is inert where it should be.** Inelastically the two agree to 0.0001
-   nats and their invariant means agree to four decimals. The bridge does not
-   drag dissipative fixed points toward 1/2. Had it done so, the idea would
-   have been wrong.
+1. **The free fit still misses equipartition by 1 to 3 percent** under the
+   correct weighting — 0.4840 to 0.5043. Fixing the incoming-weight artifact
+   did not fix this, so the case for the bridge stands on its own.
+2. **The constraint is close to free.** The largest held-out cost is 0.0132
+   nats, well inside the 0.02 model-form tolerance, and it occurs at the two
+   `theta = 0.2` nodes where the incoming partition is far from equilibrium.
+   At `AR = 1.1` the bridge is *better*, with one parameter instead of three.
+3. **Elastically the invariant law is exactly 0.500000** at every node, by
+   construction.
+
+An earlier draft of this table was computed with the static shadow weight and
+reported different free-fit invariant means (0.4982, 0.7936, 0.4817, 0.4883).
+Those are superseded by the numbers above. The qualitative conclusions did not
+change; the numbers did.
 
 ## 5. The honest caveat
 
@@ -130,25 +144,39 @@ against `Beta(2,2)`'s 0.5 and 0.05. That is good evidence, but it is evidence,
 not proof, and it is now pinned by
 `test_bridge_imposes_its_reference_law_even_when_the_data_disagree`.
 
-A concrete residual, surfaced by the table in section 2: the incoming-partition
-sampling at `AR=3` is 4 percent off its `Beta(2,2)` target. That is a
-generator/weighting issue, not a kernel issue, and the bridge conceals it
-rather than fixing it. The `incoming_partition_pass` gate is what watches it.
+The residual an earlier draft claimed here — a 4 percent incoming-partition
+bias at `AR = 3` — does not exist; see the correction in section 2.
 
 ## 6. Relation to Hong & Morris (2022)
 
 Their DSMC for spherocylinders draws the post-collisional partition from an
-`AR`-independent polynomial, their Eq. (13). That polynomial is very nearly
-`Beta(2,2)`: peak-normalised it agrees to about 1 percent at `z = 0.1, 0.25,
-0.5` (0.3644 vs 0.36, 0.7272 vs 0.7296, 0.9993 vs 1.0). So the reference
-measure the bridge deforms is not an arbitrary modelling choice — it is
-essentially what their DEM ensembles measured.
+`AR`-independent polynomial, their Eq. (13). Peak-normalised against
+`Beta(2,2)`:
+
+| `z` | Eq. (13) | `Beta(2,2)` | rel. |
+|---|---|---|---|
+| 0.10 | 0.3644 | 0.3600 | +1% |
+| 0.25 | 0.7469 | 0.7500 | −0% |
+| 0.50 | 0.9992 | 1.0000 | −0% |
+| 0.75 | 0.8036 | 0.7500 | **+7%** |
+| 0.90 | 0.4618 | 0.3600 | **+28%** |
+| 0.98 | 0.2032 | 0.0784 | **+159%** |
+
+It matches `Beta(2,2)` to about 1 percent through the bulk `z <~ 0.5`, which is
+independent evidence that `Beta(2,2)` is the right reference for this system.
+It departs badly in the upper tail, because an unconstrained quartic cannot
+vanish at `z = 1` where a `Beta(2,2)` must — Eq. (13) evaluates to 0.00491
+there. That tail surplus is exactly where the mean bias below comes from.
+
+(An earlier draft of this report quoted only `z = 0.1, 0.25, 0.5` and claimed
+1 percent agreement. Those are precisely the three points where it agrees; the
+tail was omitted. Corrected here.)
 
 Two differences matter:
 
 - **Their fit has the same defect, unconstrained.** Normalised as a density,
-  Eq. (13) has mean 0.5128 and second moment 0.3153, against 0.5 and 0.3. That
-  is a 2.6 percent departure from equipartition in the published reference
+  Eq. (13) has mean 0.5145 and second moment 0.3182, against 0.5 and 0.3. That
+  is a 2.9 percent departure from equipartition in the published reference
   distribution — the same order as the 1 to 3 percent we were seeing, and for
   the same reason: a four-parameter unconstrained polynomial fit with nothing
   holding it to the equilibrium it is supposed to relax to.
@@ -165,6 +193,88 @@ collapse onto one curve. The geometry sets the *collision rate*, not the
 per-collision redistribution. That is exactly the separation the bridge encodes
 structurally: `λ₃` (per-collision memory) is free and node-dependent, while the
 equilibrium it relaxes towards is fixed and universal.
+
+## 6a. The replacement validation: `Z_R` and the spectrum
+
+Losing `theta*(alpha=1)` as evidence does not leave the bridge unvalidated,
+because the bridge *separates* the equilibrium (now imposed) from the
+relaxation rate (still entirely free) — and Hong & Morris measured the
+relaxation rate independently.
+
+Reversibility makes the kernel self-adjoint in `L2(Beta(2,2))`, so its spectrum
+is real. Verified on the deployed implementation: `max|Im mu| < 4e-17` at every
+memory tested. Two consequences the old kernel could not offer:
+
+- **Relaxation cannot ring.** `theta(t)` is a sum of decaying exponentials with
+  no oscillatory modes; it cannot overshoot or spiral.
+- **An H-theorem.** From a deliberately distorted start at `lambda3 = 5`, the
+  KL divergence to `Beta(2,2)` falls monotonically —
+  8.10e-1, 3.08e-2, 1.73e-3, 9.73e-5, 5.49e-6, 3.10e-7, 1.75e-8, 9.85e-10 —
+  about a factor 18 per collision. The elastic kernel provably relaxes to
+  equipartition and can do nothing else.
+
+The second eigenvalue `mu1` governs the decay and its eigenfunction is very
+nearly `z` itself, so Jeans' equation is *derived* rather than fitted, with
+`Z_R = -1/ln(mu1)`. Hong & Morris measured `Z_R = 5/3`. On our grid:
+
+```
+Z_R = 5/3  <=>  mu1 = e^-3/5 = 0.548812  <=>  lambda3 = 15.1650
+```
+
+This is a genuine, free, published check on a parameter the bridge leaves
+completely free. **Measured on the elastic sentinel nodes** (production
+kinematic weight, 128 offsets):
+
+| node | `lambda3` | `mu1` | `Z_R` | `2 Z_R` |
+|---|---|---|---|---|
+| `AR=1.1, th=2` | 180.26 | 0.9500 | 19.49 | — |
+| `AR=2, th=0.2` | 7.34 | 0.3312 | 0.905 | 1.81 |
+| `AR=2, th=1` | 6.35 | 0.2934 | 0.815 | 1.63 |
+| `AR=2, th=2` | 5.81 | 0.2716 | 0.767 | 1.54 |
+| `AR=3, th=0.2` | 6.24 | 0.2890 | 0.806 | 1.61 |
+| `AR=3, th=1` | 5.32 | 0.2512 | 0.724 | 1.45 |
+| `AR=3, th=2` | 4.58 | 0.2191 | 0.659 | 1.32 |
+
+Three things follow.
+
+**The `AR = 1.1` value is not a failure of AR-independence — it is a required
+limit.** Smooth spheres cannot exchange energy between modes at all, so
+`Z_R -> infinity` as `AR -> 1`. We measure `Z_R = 19.5` at `AR = 1.1`. Hong &
+Morris's collapse is claimed for `AR = 2..5` only; `AR = 1.1` lies outside it,
+and the closure reproduces the correct singular behaviour there without being
+told to.
+
+**Within their range the collapse holds.** `Z_R` spans 0.66 to 0.91 across
+`AR = 2` and `3` and across three temperature ratios — roughly AR-independent,
+as Fig. 8b requires.
+
+**The absolute value matches after one physical factor.** Only the *relative*
+translational energy is redistributed in a collision; the centre-of-mass half
+is untouched, so the gas relaxes about twice as slowly as the pair chain.
+`2 Z_R = 1.32` to `1.81`, mean 1.56, against the published `5/3 = 1.667` —
+within 7 percent.
+
+> **State this carefully.** The factor of 2 is physically motivated but was
+> applied *after* seeing the numbers, so it is a plausible reconciliation, not
+> yet a validation. Test 3 above — run the 0-D DSMC at `alpha = 1` from
+> `T_tr = 1, T_rot = 0` and overlay `dE_k(tau)` on their Fig. 8b — compares
+> like with like and settles it without any such factor. Do that before
+> claiming the agreement.
+
+There is also a clear **`theta` dependence** at fixed `AR`: `lambda3` runs
+7.34 / 6.35 / 5.81 at `AR = 2` for `theta = 0.2 / 1 / 2`, a 26 percent spread.
+A memoryless single-`Z_R` model cannot represent that. It is a concrete
+statement of what this closure adds over Hong & Morris.
+
+## 6b. Why `Beta(2,2)`, from counting
+
+At fixed pool energy the phase-space volume with translational share `z` goes
+as `z^(zeta_t/2 - 1) (1-z)^(zeta_r/2 - 1)`. Here `zeta_r = 4` (two transverse
+spins on each of two rods) and `zeta_t = 5 - 2*omega = 4` — three relative
+translational degrees of freedom, promoted to four by the collision-flux
+weighting proportional to `g`. Hence `Beta(2,2)`. This is why the naive
+"3 translational versus 4 rotational" count, which would give `Beta(3/2,2)` and
+a mean of `3/7`, is the wrong one: it omits the flux weighting.
 
 ## 7. Physical reading
 

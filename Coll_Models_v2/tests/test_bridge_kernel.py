@@ -14,6 +14,7 @@ the warm-started bracket used by bootstrap replicates keeps lambda3 free.
 
 import numpy as np
 import pytest
+from scipy.interpolate import CubicSpline
 
 from coll_models_v2.fit_exchange import (
     KERNEL_FORMS,
@@ -201,3 +202,53 @@ def test_bridge_imposes_its_reference_law_even_when_the_data_disagree():
     assert free["reset_mean"] == pytest.approx(3.0 / 7.0, abs=0.006)
     assert bridge["reset_mean"] == pytest.approx(0.5, abs=1.0e-9)
     assert bridge["reset_second_moment"] == pytest.approx(0.3, abs=1.0e-9)
+
+
+@pytest.mark.parametrize("memory", [0.5, 2.0, 5.0, 7.2517, 12.0, -5.0])
+def test_bridge_potential_obeys_the_reflection_relation(memory):
+    """phi(1-z) - phi(z) = lambda3 (z - 1/2), exactly.
+
+    Provable from Sinkhorn uniqueness: substituting z' -> 1-y in the fixed
+    point shows h(1-z)e^{-lambda3 z} solves the same equation as h, so the two
+    agree up to a constant fixed by evaluating at both endpoints.  This is a
+    far stronger check on the quadrature than its endpoint corollary, since it
+    constrains every node rather than the span, and it catches a wrong base
+    measure immediately.
+    """
+    nodes, _ = _legendre_nodes(256, 0.0, 1.0)
+    potential = np.asarray(bridge_potential(memory))
+    reflected = CubicSpline(nodes, potential)(1.0 - nodes)
+    predicted = memory * (nodes - 0.5) + potential
+    assert np.max(np.abs(reflected - predicted)) < 1.0e-11
+
+
+@pytest.mark.parametrize("memory", [-0.5, -5.0, -20.0])
+def test_bridge_is_exact_for_negative_memory_too(memory):
+    """Anti-correlated memory is outside MEMORY_BOUNDS but the construction
+    holds there, so nothing in the profile search may assume positivity."""
+    nodes, mass = bridge_stationary(np.array([memory]))
+    assert mass @ nodes == pytest.approx(0.5, abs=1.0e-9)
+    assert mass @ (nodes * nodes) == pytest.approx(0.3, abs=1.0e-9)
+
+
+def test_bridge_spectrum_is_real_and_fixes_the_relaxation_number():
+    """Reversibility makes the kernel self-adjoint in L2(Beta(2,2)), so the
+    spectrum is real: relaxation is a sum of decaying exponentials and theta(t)
+    cannot ring or overshoot.  The second eigenvalue sets Jeans' rotational
+    collision number, Z_R = -1/ln(mu1); Hong & Morris measured Z_R = 5/3, which
+    pins lambda3 = 15.165.  That is an independent, published check on a
+    parameter the bridge leaves entirely free.
+    """
+    z, w = _legendre_nodes(256, 0.0, 1.0)
+    base = w * 6.0 * z * (1.0 - z)
+    for memory, expected in ((5.0, 0.69565), (15.165, 5.0 / 3.0)):
+        potential = np.asarray(bridge_potential(memory))
+        exponent = ((np.log(base) + potential)[None, :] + potential[:, None]
+                    + memory * np.outer(z, z))
+        exponent -= exponent.max(axis=1, keepdims=True)
+        transition = np.exp(exponent)
+        transition /= transition.sum(axis=1, keepdims=True)
+        eigenvalues = np.linalg.eigvals(transition)
+        eigenvalues = eigenvalues[np.argsort(-np.abs(eigenvalues))]
+        assert np.max(np.abs(eigenvalues.imag)) < 1.0e-12
+        assert -1.0 / np.log(eigenvalues[1].real) == pytest.approx(expected, rel=1e-4)
