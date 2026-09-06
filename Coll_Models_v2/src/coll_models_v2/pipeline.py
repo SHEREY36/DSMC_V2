@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dsmc_v2_contracts import FEATURE_NAMES, load_run
 
-from .estimate import estimate_node
+from .estimate import equilibrium_anchor, estimate_node
 from .weights import DEFAULT_OFFSETS
 
 
@@ -75,9 +75,27 @@ def estimate_grid(runs_root: str | Path, output_directory: str | Path,
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     grouped = group_runs(discover_runs(runs_root))
+    # One equilibrium anchor per aspect ratio, measured on the elastic
+    # equipartitioned node and shared by every node at that aspect ratio.
+    # Without this each node re-measures the reference law from its own theta
+    # and the kernel loses its restoring force everywhere except theta = 1.
+    anchors: dict[float, tuple] = {}
+    for key, shards in sorted(grouped.items()):
+        alpha, theta, aspect = (float(key[0]), float(key[1]), float(key[2]))
+        if abs(alpha - 1.0) < 1e-9 and abs(theta - 1.0) < 1e-9:
+            anchors[aspect] = equilibrium_anchor(
+                shards, propensity_offsets=propensity_offsets)
+    if not anchors:
+        raise ValueError("grid has no elastic equipartitioned node to anchor on; "
+                         "the reference law cannot be established")
     results = []
     for key, paths in sorted(grouped.items()):
+        aspect = float(key[2])
+        if aspect not in anchors:
+            raise ValueError(f"no elastic equipartitioned node at AR={aspect}; "
+                             "cannot anchor this aspect ratio")
         result = estimate_node(paths, bl, n_bootstrap=n_bootstrap,
+                               anchor=anchors[aspect],
                                propensity_offsets=propensity_offsets)
         passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)

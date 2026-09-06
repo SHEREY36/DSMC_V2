@@ -132,6 +132,12 @@ class VariationalClosure:
         # Reference law the kernel is reversible with respect to. The sampler
         # tables already bake it in; it is carried for diagnostics and gates.
         self.energy_anchor = np.asarray(data["energy_anchor"], dtype=float)
+        # Rotational enhancement of the collision measure, normalised to mean
+        # one so installing it changes WHICH pairs collide, not how many.
+        self.xi_grid = (np.asarray(data["xi_grid"], dtype=float)
+                        if "xi_grid" in data.files else None)
+        self.xi_enhancement = (np.asarray(data["xi_enhancement"], dtype=float)
+                               if "xi_enhancement" in data.files else None)
         if self.energy_tables.ndim != 3 \
                 or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
             raise ValueError("energy quantile table must be (node, a, u)")

@@ -176,6 +176,25 @@ def _proposal_invariants(runs) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return features, diagnostics, np.concatenate(velocity)
 
 
+def equilibrium_anchor(run_directories, measure: str = MEASURE,
+                       propensity_offsets: int | None = DEFAULT_OFFSETS) -> tuple:
+    """Reference law, measured on an elastic equipartitioned shard.
+
+    The bridge is reversible with respect to this law, so it has to be the
+    EQUILIBRIUM -- a property of the aspect ratio under collision-ensemble
+    selection -- not the law of whatever theta a node was generated at. Pass
+    the result to every node sharing that aspect ratio.
+    """
+    from .fit_exchange import measure_anchor
+    runs = [load_run(directory) for directory in run_directories]
+    offsets = int(propensity_offsets or DEFAULT_OFFSETS)
+    parts = [_run_events(run, _run_propensity(run, propensity_offsets), offsets, measure)
+             for run in runs]
+    events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
+    weight = events["weight"] * len(events["weight"]) / np.sum(events["weight"])
+    return measure_anchor(events["z_in"], weight)
+
+
 def energy_anchor_moments(energy: dict) -> tuple[float, float]:
     """First two moments of the law the fitted kernel is anchored on."""
     anchor = (float(energy.get("anchor_c1", 0.0)), float(energy.get("anchor_c2", 0.0)))
@@ -269,8 +288,12 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
              for run, propensity in zip(runs, propensities)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
     fitted = _fit(events, anchor=anchor)
+    # The anchor must reach the replicates too, or each one re-measures the
+    # reference law from its own resample and the bootstrap reports the spread
+    # of a different estimator than the point fit.
     uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed),
-                             initial=_energy_parameters(fitted["energy"]))
+                             initial=_energy_parameters(fitted["energy"]),
+                             anchor=anchor)
     features, diagnostics, velocity = _proposal_invariants(runs)
     weight = events["weight"]
     ess = effective_sample_size(weight)

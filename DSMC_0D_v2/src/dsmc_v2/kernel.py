@@ -66,6 +66,8 @@ class SpherocylinderKernel:
         # loss covariate on the scale it was fitted against. The draw itself is
         # untouched, so the cooling rate and the collision clock do not move.
         self.area_mean, self.area_supremum = self._area_constants()
+        self.xi_grid = self.xi_enhancement = None
+        self.acceptance_supremum = self.area_supremum
         # candidates must be inflated by this so the rate is unchanged
         self.candidate_inflation = self.area_supremum / max(self.area_mean, 1e-30)
         self.mean_loss_fraction = float(self.loss.get(
@@ -104,13 +106,43 @@ class SpherocylinderKernel:
         supremum = np.pi * d * d + 4.0 * d * length + length * length
         return float(area.mean()), float(supremum)
 
-    def accept_orientation(self, u1: np.ndarray, u2: np.ndarray,
-                           ghat: np.ndarray, rng) -> bool:
-        """Second-stage acceptance carrying the orientation dependence."""
-        if self.area_supremum <= 0.0:
+    def accept_orientation(self, u1: np.ndarray, u2: np.ndarray, ghat: np.ndarray,
+                           w1: np.ndarray, w2: np.ndarray, speed: float, rng) -> bool:
+        """Second-stage acceptance reproducing the CTC collision measure.
+
+        The static projected area alone is inert: measured against the exact
+        encounter propensity it leaves <z> unchanged to four decimals, because
+        A_perp is essentially uncorrelated with the energy partition. What
+        actually biases which pairs collide is ROTATION -- a fast-spinning rod
+        sweeps more volume while closing, so it collides more often, and it
+        also carries more rotational energy. That enters through the
+        dimensionless rotation number
+
+            Xi = (|w1| + |w2|)(L + D) / |g|
+
+        and A_perp * g(Xi) reproduces the exact propensity's selection to four
+        decimals at every node tested.
+        """
+        if self.area_supremum <= 0.0 or self.xi_grid is None:
             return True
-        return bool(rng.random() < self.projected_excluded_area(u1, u2, ghat)
-                    / self.area_supremum)
+        reach = float(self.params.aspect_ratio) * self.params.diameter
+        xi = ((float(np.linalg.norm(w1)) + float(np.linalg.norm(w2))) * reach
+              / max(speed, 1.0e-30))
+        enhancement = float(np.interp(xi, self.xi_grid, self.xi_enhancement))
+        weight = self.projected_excluded_area(u1, u2, ghat) * enhancement
+        return bool(rng.random() < weight / self.acceptance_supremum)
+
+    def set_enhancement(self, grid, values) -> None:
+        """Tabulated g(Xi), normalised to mean one over the proposal ensemble."""
+        if grid is None:
+            self.xi_grid = self.xi_enhancement = None
+            self.acceptance_supremum = self.area_supremum
+            return
+        self.xi_grid = np.asarray(grid, dtype=float)
+        self.xi_enhancement = np.asarray(values, dtype=float)
+        self.acceptance_supremum = self.area_supremum * float(self.xi_enhancement.max())
+        self.candidate_inflation = self.acceptance_supremum / max(
+            self.area_mean * float(self.xi_enhancement.mean()), 1e-30)
 
     def projected_excluded_area(self, u1: np.ndarray, u2: np.ndarray,
                                 ghat: np.ndarray) -> float:

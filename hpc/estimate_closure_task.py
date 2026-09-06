@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 
 import numpy as np
 
-from coll_models_v2.estimate import estimate_node
+from coll_models_v2.estimate import equilibrium_anchor, estimate_node
 from coll_models_v2.pipeline import precision_status
 from dsmc_v2_contracts import load_run, validate_run
 
@@ -83,8 +84,22 @@ def main() -> None:
             "finalized closure shard failed contract validation: "
             + json.dumps(contract_qa, sort_keys=True)
         )
+    # Every node at one aspect ratio shares ONE reference law: the elastic,
+    # equipartitioned shard. Measuring it per node instead would declare each
+    # node's own theta stationary and strip the kernel of its restoring force
+    # everywhere except theta = 1. Each array task resolves it independently,
+    # so no task can silently fall back to self-anchoring.
+    anchor_run = re.sub(r"alpha_[0-9.]+_theta_[0-9.]+",
+                        "alpha_1.000_theta_1.000", run)
+    if not Path(anchor_run).is_dir():
+        raise RuntimeError(
+            f"cannot anchor: elastic equipartitioned shard missing at {anchor_run}")
+    anchor = equilibrium_anchor([anchor_run], propensity_offsets=None)
+    print(f"anchor for this aspect ratio: c1={anchor[0]:.5f} c2={anchor[1]:.5f}",
+          flush=True)
     try:
         result = estimate_node([run], n_bootstrap=args.bootstrap,
+                               anchor=anchor,
                                bootstrap_seed=20260902 + args.index,
                                propensity_offsets=args.propensity_offsets or None)
     except SCIENTIFIC_FIT_EXCEPTIONS as exc:

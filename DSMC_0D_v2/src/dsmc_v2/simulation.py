@@ -172,6 +172,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     closure.kernel_state(closure_alpha, theta, params.aspect_ratio, features))
                 closure_seconds += wallclock.perf_counter() - closure_started
 
+            if routing == "variational_v2" and not getattr(kernel, "_enhanced", False):
+                kernel.set_enhancement(getattr(closure, "xi_grid", None),
+                                       getattr(closure, "xi_enhancement", None))
+                kernel._enhanced = True
             inflation = (kernel.candidate_inflation
                          if (kernel is not None and routing == "variational_v2")
                          else 1.0)
@@ -194,7 +198,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         collisions += _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha)
                     elif routing == "variational_v2" and not kernel.accept_orientation(
                             state.axis[p1], state.axis[p2],
-                            vrel / max(speed, 1.0e-30), vss_rng):
+                            vrel / max(speed, 1.0e-30),
+                            state.omega[p1], state.omega[p2], speed, vss_rng):
                         pass          # rejected by the orientation-dependent area
                     else:
                         collisions += kernel.collide(
