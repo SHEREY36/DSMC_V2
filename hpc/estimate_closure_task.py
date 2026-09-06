@@ -89,9 +89,11 @@ def main() -> None:
     # node's own theta stationary and strip the kernel of its restoring force
     # everywhere except theta = 1. Each array task resolves it independently,
     # so no task can silently fall back to self-anchoring.
-    anchor_run = re.sub(r"alpha_[0-9.]+_theta_[0-9.]+",
-                        "alpha_1.000_theta_1.000", run)
-    if not Path(anchor_run).is_dir():
+    # Rewrite only the directory NAME, so nothing in the parent path that
+    # happens to look like alpha_/theta_ can be clobbered.
+    anchor_run = run.with_name(
+        re.sub(r"alpha_[0-9.]+_theta_[0-9.]+", "alpha_1.000_theta_1.000", run.name))
+    if not anchor_run.is_dir():
         raise RuntimeError(
             f"cannot anchor: elastic equipartitioned shard missing at {anchor_run}")
     anchor = equilibrium_anchor([anchor_run], propensity_offsets=None)
