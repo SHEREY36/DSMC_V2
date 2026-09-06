@@ -123,26 +123,42 @@ class SpherocylinderKernel:
         and A_perp * g(Xi) reproduces the exact propensity's selection to four
         decimals at every node tested.
         """
-        if self.area_supremum <= 0.0 or self.xi_grid is None:
+        curve = None if self.cell_variational is None else \
+            self.cell_variational.get("xi_enhancement")
+        if self.xi_grid is None or curve is None:
+            # Fail closed. Silently accepting every pair reverts the runtime to
+            # the orientation-isotropic proposal ensemble, which is precisely
+            # the bug the enhancement exists to remove -- and it would do so
+            # with no error and a plausible-looking answer.
+            raise RuntimeError(
+                "variational routing requires the collision-measure enhancement; "
+                "the artifact carries no xi_grid/xi_enhancement table")
+        if self.area_supremum <= 0.0:
             return True
         reach = float(self.params.aspect_ratio) * self.params.diameter
         xi = ((float(np.linalg.norm(w1)) + float(np.linalg.norm(w2))) * reach
               / max(speed, 1.0e-30))
-        enhancement = float(np.interp(xi, self.xi_grid, self.xi_enhancement))
+        # The curve is interpolated per cell: it depends on aspect ratio, and
+        # on theta through its own rate normalisation, so a single global table
+        # is wrong away from the node it was fitted at.
+        enhancement = float(np.interp(xi, self.xi_grid, curve))
         weight = self.projected_excluded_area(u1, u2, ghat) * enhancement
-        return bool(rng.random() < weight / self.acceptance_supremum)
+        return bool(rng.random() < weight / (self.area_supremum * float(curve.max())))
 
-    def set_enhancement(self, grid, values) -> None:
-        """Tabulated g(Xi), normalised to mean one over the proposal ensemble."""
+    def set_enhancement(self, grid, ceiling: float) -> None:
+        """Install the Xi axis and size the candidate inflation.
+
+        The curve itself is per cell and read from cell_variational; only the
+        axis and a bound on g are global. Inflating candidates by
+        supremum/mean keeps the accepted rate where the frozen clock put it.
+        """
         if grid is None:
-            self.xi_grid = self.xi_enhancement = None
-            self.acceptance_supremum = self.area_supremum
+            self.xi_grid = None
+            self.candidate_inflation = 1.0
             return
         self.xi_grid = np.asarray(grid, dtype=float)
-        self.xi_enhancement = np.asarray(values, dtype=float)
-        self.acceptance_supremum = self.area_supremum * float(self.xi_enhancement.max())
-        self.candidate_inflation = self.acceptance_supremum / max(
-            self.area_mean * float(self.xi_enhancement.mean()), 1e-30)
+        self.candidate_inflation = (self.area_supremum * float(ceiling)) / max(
+            self.area_mean, 1.0e-30)
 
     def projected_excluded_area(self, u1: np.ndarray, u2: np.ndarray,
                                 ghat: np.ndarray) -> float:

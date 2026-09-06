@@ -534,6 +534,18 @@ def bridge_logpdf(parameters: np.ndarray, z_in: np.ndarray, z_out: np.ndarray,
     return value
 
 
+def bridge_mean_map(parameters: np.ndarray, z_in: np.ndarray,
+                    loss: np.ndarray | float = 0.0, quadrature: int = 256,
+                    anchor: tuple = (0.0, 0.0)) -> np.ndarray:
+    """E[z' | z] of the deployed bridge kernel."""
+    z_in = np.atleast_1d(np.asarray(z_in, dtype=float))
+    if np.isscalar(loss) or np.ndim(loss) == 0:
+        loss = np.full(len(z_in), float(loss))
+    _, moments = _bridge_terms(parameters, z_in, loss, quadrature, order=1,
+                               anchor=_round_anchor(anchor))
+    return moments[0]
+
+
 def bridge_stationary(parameters: np.ndarray, mean_loss: float = 0.0,
                       quadrature: int = 256,
                       anchor: tuple = (0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:

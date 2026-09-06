@@ -134,10 +134,18 @@ class VariationalClosure:
         self.energy_anchor = np.asarray(data["energy_anchor"], dtype=float)
         # Rotational enhancement of the collision measure, normalised to mean
         # one so installing it changes WHICH pairs collide, not how many.
-        self.xi_grid = (np.asarray(data["xi_grid"], dtype=float)
-                        if "xi_grid" in data.files else None)
-        self.xi_enhancement = (np.asarray(data["xi_enhancement"], dtype=float)
-                               if "xi_enhancement" in data.files else None)
+        if "xi_grid" not in data.files or "xi_enhancement" not in data.files:
+            raise ValueError(
+                "artifact carries no collision-measure enhancement; a schema-2.3 "
+                "artifact must ship xi_grid and xi_enhancement or the runtime "
+                "silently samples the wrong collision ensemble")
+        self.xi_grid = np.asarray(data["xi_grid"], dtype=float)
+        self.xi_enhancement = np.asarray(data["xi_enhancement"], dtype=float)
+        if self.xi_enhancement.ndim != 2 \
+                or self.xi_enhancement.shape[0] != len(self.coordinates) \
+                or self.xi_enhancement.shape[1] != len(self.xi_grid):
+            raise ValueError("xi_enhancement must be (node, len(xi_grid)): the "
+                             "curve depends on aspect ratio and on theta")
         if self.energy_tables.ndim != 3 \
                 or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
             raise ValueError("energy quantile table must be (node, a, u)")
@@ -258,6 +266,10 @@ class VariationalClosure:
         anchor = self._interpolate(
             self.coordinates, self.energy_anchor, query, "energy anchor",
             self._interpolators.get("energy_anchor")).astype(float)
+        curve = self._interpolate(
+            self.coordinates, self.xi_enhancement, query,
+            "collision-measure enhancement",
+            self._interpolators.get("xi_enhancement")).astype(float)
         fitted_loss = float(self._interpolate(
             self.coordinates, self.energy_mean_loss, query, "energy mean loss",
             self._interpolators.get("energy_mean_loss")))
@@ -293,7 +305,7 @@ class VariationalClosure:
                     joint, joint_parameters = True, candidate.astype(float)
         state = {"p_exch": p_exch, "energy_parameters": eparams,
                 "energy_a_grid": agrid, "fitted_mean_loss": fitted_loss,
-                "energy_anchor": anchor,
+                "energy_anchor": anchor, "xi_enhancement": curve,
                 "angular_parameters": aparams, "energy_quantiles": etable,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "energy_corrected": correction != 0.0,

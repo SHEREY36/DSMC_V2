@@ -16,8 +16,17 @@ def fit_lambda1_coefficients(nodes: list[dict]) -> dict:
     excited = [node for node in nodes if int(node.get("ensemble_id", 0)) != 0]
     if len(excited) < len(FEATURE_NAMES):
         raise ValueError("fewer excitation ensembles than production coefficients")
-    x = np.array([[node["proposal_features"][name] for name in FEATURE_NAMES]
-                  for node in excited])
+    # Both sides are differences from the baseline node. The response already
+    # was; the design must be too, or the fit carries the baseline's own
+    # invariant offset as a spurious intercept. And the features must be the
+    # CELL measure -- the collision-attempt marginal is flux weighted and
+    # reports a2_tr = -0.0322 where the gas is Maxwellian.
+    def _design(node):
+        source = node.get("cell_features") or node["proposal_features"]
+        return [source[name] for name in FEATURE_NAMES]
+
+    base_design = np.array(_design(baseline))
+    x = np.array([_design(node) for node in excited]) - base_design
     y = np.array([node["energy"]["lambda1"] - baseline["energy"]["lambda1"]
                   for node in excited])
     se = np.array([node.get("uncertainty", {}).get("lambda1", {}).get(

@@ -36,6 +36,8 @@ class VariationalArtifactTests(unittest.TestCase):
             energy_a_grid=a_grid, kernel_form=np.array("sinkhorn_bridge_v2"),
             energy_mean_loss=np.zeros(len(coordinates)),
             energy_anchor=np.zeros((len(coordinates), 2)),
+            xi_grid=np.geomspace(0.05, 40.0, 32),
+            xi_enhancement=np.ones((len(coordinates), 32)),
             energy_quantiles=np.array([
                 energy_quantile_table(row[2], row[1], grid, probability)
                 for row, grid in zip(ep, a_grid)]),
@@ -68,6 +70,30 @@ class VariationalArtifactTests(unittest.TestCase):
             high = np.mean([closure.sample_energy(state, 0.9, 0.0, rng)
                             for _ in range(20000)])
             self.assertGreater(high - low, 0.05)
+
+    def test_refuses_an_artifact_without_the_collision_measure(self):
+        """Fail closed. A missing enhancement silently reverts the runtime to
+        the orientation-isotropic proposal ensemble -- the exact bug the table
+        exists to remove -- and would do it with a plausible-looking answer."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            del data["xi_enhancement"]
+            np.savez_compressed(path, **data)
+            with self.assertRaisesRegex(ValueError, "collision-measure enhancement"):
+                VariationalClosure(path)
+
+    def test_enhancement_must_be_per_node(self):
+        """One global curve is wrong: it depends on aspect ratio and on theta."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            data["xi_enhancement"] = np.ones(32)
+            np.savez_compressed(path, **data)
+            with self.assertRaisesRegex(ValueError, "xi_enhancement must be"):
+                VariationalClosure(path)
 
     def test_refuses_enabled_but_undeployed_corrections(self):
         with tempfile.TemporaryDirectory() as temporary:

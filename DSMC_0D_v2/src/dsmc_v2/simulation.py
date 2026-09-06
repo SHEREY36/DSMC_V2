@@ -173,8 +173,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 closure_seconds += wallclock.perf_counter() - closure_started
 
             if routing == "variational_v2" and not getattr(kernel, "_enhanced", False):
-                kernel.set_enhancement(getattr(closure, "xi_grid", None),
-                                       getattr(closure, "xi_enhancement", None))
+                kernel.set_enhancement(
+                    closure.xi_grid, float(np.max(closure.xi_enhancement)))
                 kernel._enhanced = True
             inflation = (kernel.candidate_inflation
                          if (kernel is not None and routing == "variational_v2")

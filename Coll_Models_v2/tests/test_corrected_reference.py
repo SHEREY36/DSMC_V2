@@ -14,7 +14,7 @@ from coll_models_v2.artifact import (
 from coll_models_v2.fit_exchange import fit_exchange_kernel
 from coll_models_v2.projections import (
     _legendre_nodes,
-    conditional_energy_mean_map,
+    bridge_mean_map,
     energy_quantiles,
     fit_angular_projection,
     fit_energy_projection,
@@ -103,20 +103,49 @@ def _memoryless_nodes(parameters, mean_loss, lambda3=0.0, lambda4=0.0):
                    "lambda3": float(lambda3),
                    "lambda4": float(lambda4)},
         "uncertainty": {"mean_partition_out": {"standard_error": 1.0e-5}},
+        # The gate averages the mean map over the node's measured incoming law,
+        # so a fixture has to carry one. Here it is the analytic collision
+        # weighted law at this theta, matched on its first two moments.
+        "incoming_law": _incoming_law(theta),
     } for theta in np.linspace(0.1, 3.0, 13)]
 
 
-def _post_collision_partition(theta, parameters, offset=0.0):
-    """Independent replica of the module's E[z_out] for the fitted kernel."""
+def _incoming_mean(theta):
+    """<z> under the same law the gate averages over."""
+    grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
+    mass = incoming_partition_density(theta, grid) * quadrature
+    return float((mass / np.sum(mass)) @ grid)
+
+
+def _incoming_law(theta):
     grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
     mass = incoming_partition_density(theta, grid) * quadrature
     mass = mass / np.sum(mass)
-    return float(mass @ conditional_energy_mean_map(parameters, grid, offset=offset))
+    projection = fit_energy_projection(float(mass @ grid),
+                                       float(mass @ (grid * grid)))
+    return {"c1": float(projection.parameters[0]),
+            "c2": float(projection.parameters[1])}
+
+
+def _post_collision_partition(theta, parameters, offset=0.0, mean_loss=0.0):
+    """Independent replica of the module's <E z_out>/<E>, for the DEPLOYED kernel.
+
+    parameters is (lambda1, lambda2, lambda3) as the old conditional form
+    ordered them; the bridge takes (lambda3, lambda1, lambda2, lambda4).
+    """
+    grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
+    law = _incoming_law(theta)
+    log = (np.log(quadrature * 6.0 * grid * (1.0 - grid))
+           + law["c1"] * grid + law["c2"] * grid * grid)
+    mass = np.exp(log - log.max()); mass = mass / np.sum(mass)
+    bridge = np.array([parameters[2], parameters[0], parameters[1],
+                       offset / mean_loss if mean_loss else 0.0])
+    return float(mass @ bridge_mean_map(bridge, grid, mean_loss, 192, (0.0, 0.0)))
 
 
 @pytest.mark.parametrize("root,mean_loss", [(0.5, 0.02), (1.0, 0.05), (2.0, 0.08)])
 def test_t6_composed_surface_stability_is_numerical_and_negative(root, mean_loss):
-    incoming = _energy_weighted_partition(root)
+    incoming = _incoming_mean(root)
     post_at_root = (incoming - root * mean_loss / (2.0 / 3.0 + root)) / (1.0 - mean_loss)
     # A memoryless kernel has a theta-independent post-collision partition, so
     # placing its mean at post_at_root places the drift root at root exactly.
@@ -132,7 +161,10 @@ def test_t6_composed_surface_stability_is_numerical_and_negative(root, mean_loss
             return {"mean_loss_fraction": mean_loss}
 
     row = _stability_rows(_memoryless_nodes(projection.parameters, mean_loss), Loss())[0]
-    assert row["roots"][0] == pytest.approx(root, abs=2.0e-7)
+    # The gate interpolates each node's measured incoming law across theta,
+    # while this fixture evaluates it exactly, so the two agree to the
+    # interpolation error of a 13-node Pchip and not to machine precision.
+    assert row["roots"][0] == pytest.approx(root, abs=5.0e-3)
     assert row["drift_derivative"] < 0.0
     assert row["unique_stable"]
     assert row["mean_scalar_loss"] == mean_loss
@@ -142,12 +174,12 @@ def test_t6_composed_surface_stability_is_numerical_and_negative(root, mean_loss
 @pytest.mark.parametrize("root,mean_loss,lambda3", [(0.6, 0.04, 4.0), (1.4, 0.06, 12.0)])
 def test_t6b_memory_term_enters_the_theta_fixed_point(root, mean_loss, lambda3):
     """The drift must see the memory parameter, not only the marginal tilt."""
-    incoming = _energy_weighted_partition(root)
+    incoming = _incoming_mean(root)
     post_at_root = (incoming - root * mean_loss / (2.0 / 3.0 + root)) / (1.0 - mean_loss)
 
     def residual(lambda1):
         return _post_collision_partition(
-            root, np.array([lambda1, -0.5, lambda3])) - post_at_root
+            root, np.array([lambda1, -0.5, lambda3]), mean_loss=mean_loss) - post_at_root
 
     lambda1 = brentq(residual, -60.0, 60.0, xtol=1.0e-13)
 
@@ -158,12 +190,15 @@ def test_t6b_memory_term_enters_the_theta_fixed_point(root, mean_loss, lambda3):
 
     nodes = _memoryless_nodes(np.array([lambda1, -0.5]), mean_loss, lambda3=lambda3)
     row = _stability_rows(nodes, Loss())[0]
-    assert row["roots"] == pytest.approx([root], abs=1.0e-5)
+    assert row["roots"] == pytest.approx([root], abs=5.0e-3)
     assert row["drift_derivative"] < 0.0
     # Dropping the memory term moves the root, so it is genuinely load bearing.
     without = _stability_rows(
         _memoryless_nodes(np.array([lambda1, -0.5]), mean_loss, lambda3=0.0), Loss())[0]
-    assert not without["roots"] or abs(without["roots"][0] - root) > 0.05
+    # Load bearing means "moves the root by far more than the gate's own
+    # interpolation error", which is 5e-3 above. The old threshold of 0.05 was
+    # calibrated against the conditional kernel this gate no longer evaluates.
+    assert not without["roots"] or abs(without["roots"][0] - root) > 0.02
 
 
 def _a2_tr_of_s(s):

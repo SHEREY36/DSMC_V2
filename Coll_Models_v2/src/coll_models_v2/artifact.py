@@ -20,7 +20,7 @@ from .projections import (
     _legendre_nodes,
     _bridge_spline,
     angular_quantiles,
-    conditional_energy_mean_map,
+    bridge_mean_map,
     energy_quantile_table,
     incoming_partition_density,
 )
@@ -31,10 +31,61 @@ SCHEMA_VERSION = "2.3.0"
 # of order one in a, so the grid is sized by span rather than fixed: at the low
 # aspect ratios lambda3 reaches ~350 and a fixed 65 nodes would leave gaps of
 # five units on a kernel that turns over in one.
+# Fixed Xi axis for the collision-measure enhancement. Shared by every node so
+# the runtime can interpolate the curve like any other surface.
+XI_GRID = np.geomspace(0.05, 40.0, 32)
+XI_BINS = 24
 ENERGY_A_STEP = 0.15
 ENERGY_A_MIN_NODES = 65
 ENERGY_A_MAX_NODES = 2049
 ARTIFACT_TYPE = "bl_variational_closure"
+
+
+def _measure_enhancement(run_directories, offsets: int = 128) -> np.ndarray:
+    """g(Xi) on the shared axis, normalised so THIS node's collision rate holds.
+
+    Two measured facts drive the shape of this function:
+      * the enhancement depends on aspect ratio. An AR = 3 curve used at
+        AR = 1.1 misses the selected <z> by 0.0186 -- the whole size of the
+        effect -- while a per-aspect-ratio curve is out by 0.0002.
+      * "normalised to mean one" holds only on the sample it was fitted on.
+        The Xi distribution shifts with theta, so <A g>/<A> runs to 1.15 at
+        theta = 0.2 and 0.95 at theta = 2 for AR = 3. Dividing by this node's
+        own rate multiplier keeps the NTC clock frozen at every grid node.
+    """
+    from .estimate import _run_propensity
+    from .weights import projected_excluded_area
+    from dsmc_v2_contracts.io import AI, _vec, load_run
+
+    parts = []
+    for directory in run_directories:
+        run = load_run(directory)
+        propensity = _run_propensity(run, offsets)
+        if propensity is None:
+            raise ValueError("the collision-measure enhancement requires the "
+                             "kinematic propensity; set propensity_offsets")
+        values = np.asarray(run.attempts["values"])
+        c1, c2 = _vec(values, AI, "c1"), _vec(values, AI, "c2")
+        w1, w2 = _vec(values, AI, "omega1"), _vec(values, AI, "omega2")
+        speed = np.linalg.norm(c1 - c2, axis=1)
+        reach = float(run.metadata["aspect_ratio"]) * float(
+            run.metadata.get("diameter", 1.0))
+        xi = ((np.linalg.norm(w1, axis=1) + np.linalg.norm(w2, axis=1)) * reach
+              / np.maximum(speed, 1.0e-30))
+        parts.append((xi, projected_excluded_area(run),
+                      np.asarray(propensity, dtype=float)))
+    xi = np.concatenate([q[0] for q in parts])
+    area = np.concatenate([q[1] for q in parts])
+    propensity = np.concatenate([q[2] for q in parts])
+
+    ratio = propensity / np.maximum(area, 1.0e-30)
+    edges = np.quantile(xi, np.linspace(0.0, 1.0, XI_BINS + 1))
+    which = np.clip(np.digitize(xi, edges[1:-1]), 0, XI_BINS - 1)
+    centres = np.array([np.median(xi[which == k]) for k in range(XI_BINS)])
+    medians = np.array([np.median(ratio[which == k]) for k in range(XI_BINS)])
+    curve = np.interp(XI_GRID, centres, medians)
+    applied = np.interp(xi, XI_GRID, curve)
+    return curve / (float(np.mean(area * applied)) / float(np.mean(area)))
 
 
 def _node_key(values) -> tuple[float, float, float, int]:
@@ -109,6 +160,22 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         lambda3 = PchipInterpolator(theta, [row["energy"]["lambda3"] for row in nodes])
         lambda4 = PchipInterpolator(theta, [row["energy"].get("lambda4", 0.0)
                                             for row in nodes])
+        # The deployed kernel is the Sinkhorn bridge on a measured reference
+        # law, so the gate must evaluate that, not the conditional I-projection
+        # it replaced, and it must average over each node's OWN incoming law.
+        anchor1 = PchipInterpolator(theta, [row["energy"].get("anchor_c1", 0.0)
+                                            for row in nodes])
+        anchor2 = PchipInterpolator(theta, [row["energy"].get("anchor_c2", 0.0)
+                                            for row in nodes])
+        if any("incoming_law" not in row for row in nodes):
+            # Defaulting to Beta(2,2) here would make the incoming law
+            # theta-independent, which silently removes the very theta
+            # dependence the drift balance is measuring.
+            raise ValueError(
+                "the stability gate needs each node's measured incoming law; "
+                "re-estimate the grid so incoming_law is present")
+        incoming1 = PchipInterpolator(theta, [row["incoming_law"]["c1"] for row in nodes])
+        incoming2 = PchipInterpolator(theta, [row["incoming_law"]["c2"] for row in nodes])
         partition_se = [row.get("uncertainty", {}).get(
             "mean_partition_out", {}).get("standard_error", np.nan) for row in nodes]
         mu_se = (PchipInterpolator(theta, partition_se)
@@ -123,24 +190,31 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
         else:
             mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
 
-        def post_collision_partition(value):
-            """E[z_out] of the fitted kernel at the DSMC's own fractional loss.
+        def _incoming_mass(value):
+            """The node's measured incoming law, ENERGY weighted.
 
-            The incoming partition is averaged over its exact collision-weighted
-            law, not evaluated at the energy-weighted fraction: those are two
-            different objects and only the second belongs in the balance below.
+            Modal energy drift is driven by <E z>, not <z>: a collision carrying
+            twice the energy moves the gas twice as far. Weighting by z + (1-z)
+            = 1 would be the per-collision average, which is a different and
+            wrong quantity here.
             """
-            mass = incoming_partition_density(value, grid) * quad
-            mass = mass / np.sum(mass)
-            parameters = np.array([float(lambda1(value)), float(lambda2(value)),
-                                   float(lambda3(value))])
-            mean_map = conditional_energy_mean_map(
-                parameters, grid, offset=float(lambda4(value)) * mean_loss)
-            return float(mass @ mean_map)
+            log = (np.log(quad * 6.0 * grid * (1.0 - grid))
+                   + float(incoming1(value)) * grid
+                   + float(incoming2(value)) * grid * grid)
+            mass = np.exp(log - log.max())
+            return mass / np.sum(mass)
+
+        def post_collision_partition(value):
+            """<E z'>/<E> of the DEPLOYED bridge at the DSMC's own loss."""
+            mass = _incoming_mass(value)
+            parameters = np.array([float(lambda3(value)), float(lambda1(value)),
+                                   float(lambda2(value)), float(lambda4(value))])
+            anchor = (float(anchor1(value)), float(anchor2(value)))
+            mean_map = bridge_mean_map(parameters, grid, mean_loss, 192, anchor)
+            return float(mass @ mean_map), float(mass @ grid)
 
         def drift(value):
-            incoming = _energy_weighted_partition(value)
-            post_partition = post_collision_partition(value)
+            post_partition, incoming = post_collision_partition(value)
             delta_tr = (1.0 - mean_loss) * post_partition - incoming
             delta_rot = ((1.0 - mean_loss) * (1.0 - post_partition)
                          - (1.0 - incoming))
@@ -188,7 +262,8 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
 
 
 def build_artifact(run_directories, output_directory, bl=None,
-                   n_bootstrap: int = 200, node_estimates=None) -> dict:
+                   n_bootstrap: int = 200, node_estimates=None,
+                   propensity_offsets: int = 128) -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -245,6 +320,22 @@ def build_artifact(run_directories, output_directory, bl=None,
                     row["energy"].get("anchor_c2", 0.0))))
     a_grids = np.array(a_grids)
     equant = np.array(equant)
+
+    # --- collision-measure enhancement g(Xi), per node --------------------
+    # Two things this must get right, both measured:
+    #   * it depends on aspect ratio. An AR = 3 table used at AR = 1.1 misses
+    #     the selected <z> by 0.0186, which is the whole size of the effect;
+    #     fitted per aspect ratio the error is 0.0002.
+    #   * "normalised to mean one" is only true on the sample it was fitted on.
+    #     The Xi distribution shifts with theta, so <A g>/<A> runs to 1.15 at
+    #     theta = 0.2 and 0.95 at theta = 2 for AR = 3. Each node's curve is
+    #     therefore divided by its OWN rate multiplier, which keeps the NTC
+    #     clock frozen at every grid node rather than only at theta = 1.
+    enhancement = []
+    for row in baseline:
+        shards = grouped[(row["alpha"], row["theta"], row["aspect_ratio"])]
+        enhancement.append(_measure_enhancement(shards, propensity_offsets))
+    enhancement = np.array(enhancement)
 
     aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]
                         for row in baseline])
@@ -338,6 +429,15 @@ def build_artifact(run_directories, output_directory, bl=None,
         if path.is_file())
     clock_hash = _sha256_bytes(clock_payload) if len(clock_payload) else "unavailable"
     stability = _stability_rows(baseline, bl)
+    if not stability or not all(row["unique_stable"] for row in stability):
+        # Fail closed. A kernel with no root, or more than one, does not have a
+        # steady temperature ratio to deploy; exporting it anyway is how a
+        # spurious fixed point reaches a production run.
+        bad = [row for row in stability if not row["unique_stable"]]
+        raise ValueError(
+            "closure has no unique stable temperature ratio at "
+            + ", ".join(f"(alpha={row['alpha']}, AR={row['aspect_ratio']})"
+                        for row in bad) or "any node")
     artifact_path = output / "closure_v2.npz"
     np.savez_compressed(
         artifact_path,
@@ -351,6 +451,7 @@ def build_artifact(run_directories, output_directory, bl=None,
         parameter_uncertainties=uncertainties,
         uncertainty_names=np.array(uncertainty_names),
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
+        xi_grid=XI_GRID, xi_enhancement=enhancement,
         quantile_probability=probability, energy_quantiles=equant,
         energy_a_grid=a_grids,
         energy_anchor=np.array([[row["energy"].get("anchor_c1", 0.0),

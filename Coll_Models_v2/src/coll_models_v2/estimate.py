@@ -163,17 +163,48 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
     }
 
 
-def _proposal_invariants(runs) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    velocity, omega, axis = [], [], []
+def _systematic(weight: np.ndarray, count: int, seed: int) -> np.ndarray:
+    """Low-variance resampling: one stratified pass, not a multinomial draw."""
+    weight = weight / np.sum(weight)
+    positions = (np.random.default_rng(seed).random() + np.arange(count)) / count
+    return np.searchsorted(np.cumsum(weight), positions, side="right").clip(
+        0, len(weight) - 1)
+
+
+def _proposal_invariants(runs, cell_measure: bool = False
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Invariants of the proposal ensemble.
+
+    ``cell_measure`` de-biases the collision-flux weighting. The generator draws
+    the relative speed from p(g) ~ g^3 exp(-g^2/4kT) while a gas cell holds
+    p(g) ~ g^2 exp(-g^2/4kT): exactly one power of g. Left in, the attempt
+    ensemble reports a2_tr = -0.0322 for a shard whose underlying gas is
+    Maxwellian; weighting by 1/|g| returns +0.00007.
+
+    That matters because the excitation coefficients answer "how does the kernel
+    move when the CELL carries an invariant". Regressing against the
+    collision-attempt marginal instead would push a fixed offset straight into
+    beta.
+    """
+    velocity, omega, axis, speed = [], [], [], []
     for run in runs:
         values = np.asarray(run.attempts["values"])
-        velocity.extend((_vec(values, AI, "c1"), _vec(values, AI, "c2")))
+        c1, c2 = _vec(values, AI, "c1"), _vec(values, AI, "c2")
+        velocity.extend((c1, c2))
         omega.extend((_vec(values, AI, "omega1"), _vec(values, AI, "omega2")))
         axis.extend((_vec(values, AI, "u1"), _vec(values, AI, "u2")))
-    features, diagnostics = cell_invariants(
-        np.concatenate(velocity), np.concatenate(omega), np.concatenate(axis),
-        float(runs[0].metadata["mass"]), float(runs[0].metadata["moi_perpendicular"]))
-    return features, diagnostics, np.concatenate(velocity)
+        relative = np.linalg.norm(c1 - c2, axis=1)
+        speed.extend((relative, relative))
+    velocity = np.concatenate(velocity)
+    omega, axis = np.concatenate(omega), np.concatenate(axis)
+    mass = float(runs[0].metadata["mass"])
+    inertia = float(runs[0].metadata["moi_perpendicular"])
+    if cell_measure:
+        pick = _systematic(1.0 / np.maximum(np.concatenate(speed), 1.0e-30),
+                           len(velocity), seed=0x0CE11)
+        velocity, omega, axis = velocity[pick], omega[pick], axis[pick]
+    features, diagnostics = cell_invariants(velocity, omega, axis, mass, inertia)
+    return features, diagnostics, velocity
 
 
 def equilibrium_anchor(run_directories, measure: str = MEASURE,
@@ -288,6 +319,13 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
              for run, propensity in zip(runs, propensities)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
     fitted = _fit(events, anchor=anchor)
+    # The node's OWN incoming law. This is no longer the bridge's reference
+    # measure -- that is the shared equilibrium -- but it is the law the
+    # stability gate must average the mean map over, because it is what the
+    # kernel is actually fed at this theta.
+    from .fit_exchange import measure_anchor
+    _w = events["weight"] * len(events["weight"]) / np.sum(events["weight"])
+    incoming_c1, incoming_c2 = measure_anchor(events["z_in"], _w)
     # The anchor must reach the replicates too, or each one re-measures the
     # reference law from its own resample and the bootstrap reports the spread
     # of a different estimator than the point fit.
@@ -295,6 +333,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                              initial=_energy_parameters(fitted["energy"]),
                              anchor=anchor)
     features, diagnostics, velocity = _proposal_invariants(runs)
+    cell_features_value, _, _ = _proposal_invariants(runs, cell_measure=True)
     weight = events["weight"]
     ess = effective_sample_size(weight)
     propensity_rows = [propensity_diagnostics(run, propensity)
@@ -369,6 +408,10 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         "n_attempts": int(sum(len(run.attempts) for run in runs)),
         "n_outcomes": int(len(events["z_out"])),
         "proposal_features": dict(zip(FEATURE_NAMES, features.tolist())),
+        # The measure the DSMC cell actually carries. beta must be regressed
+        # against this, never against the collision-attempt marginal above.
+        "cell_features": dict(zip(FEATURE_NAMES, cell_features_value.tolist())),
+        "incoming_law": {"c1": incoming_c1, "c2": incoming_c2},
         "proposal_diagnostics": dict(zip(DIAGNOSTIC_NAMES, diagnostics.tolist())),
         "energy": energy,
         "angular": angular,
