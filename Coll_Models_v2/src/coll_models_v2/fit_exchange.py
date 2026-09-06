@@ -92,12 +92,18 @@ BRIDGE_DAMPING_ESCALATIONS = 6
 
 
 def measure_anchor(z_in: np.ndarray, weight: np.ndarray) -> tuple[float, float]:
-    """Two-moment I-projection of the measured incoming partition.
+    """Two-moment I-projection of a partition sample.
 
-    This is the law the elastic kernel must leave alone. It is Beta(2,2) only
-    for the proposal ensemble; the physical collision ensemble is weighted by
-    the orientation-dependent cross section, so it sits below one half by an
-    amount that grows with aspect ratio.
+    The bridge is reversible with respect to this law, so it must be the
+    EQUILIBRIUM the kernel relaxes to -- not whatever law the node happens to
+    have been generated at. Measured on the elastic, equipartitioned shard it
+    is the right thing; measured on an off-equilibrium node it declares that
+    node stationary and destroys the restoring force. The elastic data is
+    unambiguous about this: at AR 3 one collision moves <z> by +0.2086 from
+    theta = 0.2 and by -0.1078 from theta = 2, and by -0.0004 from theta = 1.
+
+    So callers fitting an off-equilibrium node must pass the equilibrium anchor
+    in; only the theta = 1 node may measure its own.
     """
     weight = np.asarray(weight, dtype=float)
     weight = weight / np.sum(weight)
@@ -288,11 +294,12 @@ KERNEL_FORMS = ("sinkhorn_bridge_v2", "conditional_iprojection_v2")
 
 
 def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
-                     model_form: bool, initial=None) -> dict:
+                     model_form: bool, initial=None, anchor=None) -> dict:
     """``fit_exchange_kernel`` contract, served by the Sinkhorn bridge."""
     intercept, coefficient = _affine_memory(z_in, z_out, weight)
     p_exch = 1.0 - coefficient
-    anchor = measure_anchor(z_in, weight)
+    if anchor is None:
+        anchor = measure_anchor(z_in, weight)
     fit = fit_bridge_kernel(z_in, z_out, weight, loss=loss, quadrature=quadrature,
                             initial=initial, anchor=anchor)
     point = [fit["lambda3"]]
@@ -366,7 +373,8 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
                         loss_spread_threshold: float = 1.0e-4,
                         model_form: bool = True,
                         initial: np.ndarray | None = None,
-                        kernel_form: str = "sinkhorn_bridge_v2") -> dict:
+                        kernel_form: str = "sinkhorn_bridge_v2",
+                        anchor: tuple | None = None) -> dict:
     z_in, z_out, weight = map(lambda x: np.asarray(x, dtype=float),
                               (z_in, z_out, weight))
     if not (z_in.shape == z_out.shape == weight.shape) or z_in.ndim != 1:
@@ -382,7 +390,7 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
             raise ValueError("loss must have one entry per event")
     if kernel_form == "sinkhorn_bridge_v2":
         return _bridge_exchange(z_in, z_out, weight, loss, quadrature,
-                                model_form, initial)
+                                model_form, initial, anchor)
 
     # Affine memory diagnostic. This is unchanged and is what the previous
     # p_exch was, but it is now reported rather than inverted for a reset law.

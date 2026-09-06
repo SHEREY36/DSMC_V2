@@ -129,6 +129,9 @@ class VariationalClosure:
         # lambda4 multiplies the loss, so the tilt it produces is only right if
         # the loss handed to it is on the same scale it was fitted against.
         self.energy_mean_loss = np.asarray(data["energy_mean_loss"], dtype=float)
+        # Reference law the kernel is reversible with respect to. The sampler
+        # tables already bake it in; it is carried for diagnostics and gates.
+        self.energy_anchor = np.asarray(data["energy_anchor"], dtype=float)
         if self.energy_tables.ndim != 3 \
                 or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
             raise ValueError("energy quantile table must be (node, a, u)")
@@ -246,6 +249,9 @@ class VariationalClosure:
         agrid = self._interpolate(self.coordinates, self.energy_a_grid, query,
                                   "energy a-grid",
                                   self._interpolators.get("energy_a_grid")).astype(float)
+        anchor = self._interpolate(
+            self.coordinates, self.energy_anchor, query, "energy anchor",
+            self._interpolators.get("energy_anchor")).astype(float)
         fitted_loss = float(self._interpolate(
             self.coordinates, self.energy_mean_loss, query, "energy mean loss",
             self._interpolators.get("energy_mean_loss")))
@@ -281,6 +287,7 @@ class VariationalClosure:
                     joint, joint_parameters = True, candidate.astype(float)
         state = {"p_exch": p_exch, "energy_parameters": eparams,
                 "energy_a_grid": agrid, "fitted_mean_loss": fitted_loss,
+                "energy_anchor": anchor,
                 "angular_parameters": aparams, "energy_quantiles": etable,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "energy_corrected": correction != 0.0,

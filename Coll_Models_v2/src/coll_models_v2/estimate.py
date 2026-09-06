@@ -184,12 +184,13 @@ def energy_anchor_moments(energy: dict) -> tuple[float, float]:
 
 
 def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
-         model_form: bool = True, initial: np.ndarray | None = None) -> dict:
+         model_form: bool = True, initial: np.ndarray | None = None,
+         anchor: tuple | None = None) -> dict:
     weight = events["weight"]
     weight = weight * len(weight) / np.sum(weight)
     energy = fit_exchange_kernel(events["z_in"], events["z_out"], weight,
                                  loss=events.get("loss"), model_form=model_form,
-                                 initial=initial)
+                                 initial=initial, anchor=anchor)
     angular = fit_angular_kernel(events["cosine"], events["z_out"], weight,
                                  allow_joint=allow_joint)
     return {"energy": energy, "angular": angular}
@@ -212,7 +213,7 @@ def _energy_parameters(energy: dict) -> np.ndarray:
 
 
 def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
-               initial: np.ndarray | None = None) -> dict:
+               initial: np.ndarray | None = None, anchor: tuple | None = None) -> dict:
     if count <= 0:
         return {}
     rng = np.random.default_rng(seed)
@@ -228,7 +229,8 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
         sample = {key: value[mask] for key, value in events.items() if key != "block"}
         sample["weight"] = selected_weight[mask]
         try:
-            fit = _fit(sample, allow_joint=False, model_form=False, initial=initial)
+            fit = _fit(sample, allow_joint=False, model_form=False, initial=initial,
+                   anchor=anchor)
         except (ValueError, np.linalg.LinAlgError):
             continue
         for name in values:
@@ -251,7 +253,8 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
 def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   bootstrap_seed: int = 20260902,
                   propensity_offsets: int | None = DEFAULT_OFFSETS,
-                  measure: str = MEASURE) -> dict:
+                  measure: str = MEASURE,
+                  anchor: tuple | None = None) -> dict:
     """Estimate one (alpha, theta, AR, ensemble) node.
 
     ``bl`` remains an accepted argument for command-line compatibility.  It
@@ -265,7 +268,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     parts = [_run_events(run, propensity, offsets, measure)
              for run, propensity in zip(runs, propensities)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
-    fitted = _fit(events)
+    fitted = _fit(events, anchor=anchor)
     uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed),
                              initial=_energy_parameters(fitted["energy"]))
     features, diagnostics, velocity = _proposal_invariants(runs)
