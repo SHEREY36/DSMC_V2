@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from coll_models_v2.estimate import _run_events
 from coll_models_v2.weights import effective_sample_size, projected_excluded_area
-from dsmc_v2_contracts.io import AI, ATTEMPT_DTYPE
+from dsmc_v2_contracts.io import AI, OI, ATTEMPT_DTYPE, OUTCOME_DTYPE
 
 
 class MeasureWeightTests(unittest.TestCase):
@@ -30,6 +31,30 @@ class MeasureWeightTests(unittest.TestCase):
     def test_inverse_area_ess_definition(self):
         weight = np.array([1.0, 2.0, 3.0])
         self.assertAlmostEqual(effective_sample_size(weight), 36.0 / 14.0)
+
+    def test_excitation_weight_is_joined_by_attempt_key_not_row_order(self):
+        attempts = np.zeros(3, dtype=ATTEMPT_DTYPE)
+        attempts["event_id"] = [10, 11, 12]
+        attempts["attempt_index"] = [0, 0, 0]
+        attempts["hit"] = [1, 0, 1]
+        for row in range(3):
+            attempts["values"][row, AI["c1_x"]] = 1.0
+            attempts["values"][row, AI["c2_x"]] = -1.0
+        outcomes = np.zeros(2, dtype=OUTCOME_DTYPE)
+        # Deliberately reverse the two hit attempts.
+        outcomes["event_id"] = [12, 10]
+        outcomes["attempt_index"] = 0
+        outcomes["values"][:, OI["e_initial"]] = 5.0
+        outcomes["values"][:, OI["et_elastic"]] = 2.0
+        outcomes["values"][:, OI["et_inelastic"]] = 2.0
+        outcomes["values"][:, OI["ghat_pre_x"]] = 1.0
+        outcomes["values"][:, OI["ghat_post_x"]] = 1.0
+        run = SimpleNamespace(
+            attempts=attempts, outcomes=outcomes,
+            metadata={"mass": 1.0, "seed": 4})
+        events = _run_events(
+            run, measure="collision", attempt_weight=np.array([2.0, 3.0, 5.0]))
+        np.testing.assert_allclose(events["weight"], [5.0, 2.0])
 
 
 if __name__ == "__main__":

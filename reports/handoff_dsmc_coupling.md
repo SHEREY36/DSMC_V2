@@ -1,5 +1,9 @@
 # Handoff: the closure is validated, the DSMC coupling is not
 
+> **Superseded on 2026-09-07:** the coupling defect was isolated and repaired.
+> See `reports/dsmc_coupling_resolution.md`.  Statements below describe the
+> pre-repair code and are retained as diagnostic history.
+
 **Branch** `closure-v2-repairs` · **Suite** 151 passing · **Written** 2026-09-07
 
 This is a handoff to whoever picks up the DSMC coupling problem. It says what

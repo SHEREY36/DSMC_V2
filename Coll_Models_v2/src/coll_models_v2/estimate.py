@@ -129,7 +129,8 @@ MEASURE = "collision"
 
 
 def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
-                measure: str = MEASURE) -> dict[str, np.ndarray]:
+                measure: str = MEASURE,
+                attempt_weight: np.ndarray | None = None) -> dict[str, np.ndarray]:
     outcome = np.asarray(run.outcomes)
     values = outcome["values"]
     indices = outcome_attempt_indices(run)
@@ -149,6 +150,21 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
     gpre = _vec(values, OI, "ghat_pre")
     gpost = _vec(values, OI, "ghat_post")
     cosine = np.clip(np.einsum("ni,ni->n", gpre, gpost), -1.0, 1.0)
+    weight = (np.ones(len(values)) if measure == "collision"
+              else outcome_weights(run, normalise=False,
+                                   propensity=propensity, offsets=offsets))
+    if attempt_weight is not None:
+        attempt_weight = np.asarray(attempt_weight, dtype=float)
+        if attempt_weight.shape != (len(attempts),) \
+                or np.any(~np.isfinite(attempt_weight)) \
+                or np.any(attempt_weight < 0.0) \
+                or not np.any(attempt_weight > 0.0):
+            raise ValueError("attempt importance weights are invalid")
+        # The accepted collision law contains the same geometric hit factor in
+        # baseline and target ensembles, so only the incoming pair density
+        # ratio remains.  Map it by the recorded attempt index; never assume
+        # outcomes happen to retain attempt-row order.
+        weight = weight * attempt_weight[indices]
     return {
         "z_in": z_in,
         "z_el": z_el,
@@ -156,9 +172,7 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
         "loss": values[:, OI["delta_total"]] / total_in,
         "energy": total_in,
         "cosine": cosine,
-        "weight": np.ones(len(values)) if measure == "collision"
-                  else outcome_weights(run, normalise=False,
-                                  propensity=propensity, offsets=offsets),
+        "weight": weight,
         "block": (outcome["block_id"].astype(int)
                   + (int(run.metadata["seed"]) * 31) % N_BLOCKS) % N_BLOCKS,
     }
@@ -305,19 +319,33 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   bootstrap_seed: int = 20260902,
                   propensity_offsets: int | None = DEFAULT_OFFSETS,
                   measure: str = MEASURE,
-                  anchor: tuple | None = None) -> dict:
+                  anchor: tuple | None = None,
+                  attempt_weights: list[np.ndarray] | None = None,
+                  cell_features_override: np.ndarray | None = None,
+                  ensemble_id_override: int | None = None,
+                  excitation: dict | None = None) -> dict:
     """Estimate one (alpha, theta, AR, ensemble) node.
 
     ``bl`` remains an accepted argument for command-line compatibility.  It
     is intentionally unused: the CTC fit transfers only the surviving energy
     partition, while the existing BL model remains authoritative for loss.
+
+    ``attempt_weights`` optionally supplies a target-to-baseline incoming-pair
+    density ratio for each shard.  It is joined to accepted outcomes by their
+    recorded attempt keys, enabling exact importance-sampled excitation without
+    pretending that a reweighted sample was freshly generated CTC data.
     """
     runs = [load_run(path) for path in run_directories]
     _check_compatible(runs)
+    if attempt_weights is None:
+        attempt_weights = [None] * len(runs)
+    elif len(attempt_weights) != len(runs):
+        raise ValueError("one attempt-weight array is required per input shard")
     propensities = [_run_propensity(run, propensity_offsets) for run in runs]
     offsets = int(propensity_offsets or DEFAULT_OFFSETS)
-    parts = [_run_events(run, propensity, offsets, measure)
-             for run, propensity in zip(runs, propensities)]
+    parts = [_run_events(run, propensity, offsets, measure, importance)
+             for run, propensity, importance in
+             zip(runs, propensities, attempt_weights)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
     fitted = _fit(events, anchor=anchor)
     # The node's OWN incoming law. This is no longer the bridge's reference
@@ -341,6 +369,11 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                              anchor=anchor)
     features, diagnostics, velocity = _proposal_invariants(runs)
     cell_features_value, _, _ = _proposal_invariants(runs, cell_measure=True)
+    if cell_features_override is not None:
+        override = np.asarray(cell_features_override, dtype=float)
+        if override.shape != (len(FEATURE_NAMES),) or np.any(~np.isfinite(override)):
+            raise ValueError("cell feature override has the wrong shape or is non-finite")
+        cell_features_value = override
     weight = events["weight"]
     ess = effective_sample_size(weight)
     propensity_rows = [propensity_diagnostics(run, propensity)
@@ -409,7 +442,8 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         "alpha": alpha,
         "theta": float(metadata["theta"]),
         "aspect_ratio": float(metadata["aspect_ratio"]),
-        "ensemble_id": int(metadata.get("ensemble_id", 0)),
+        "ensemble_id": int(metadata.get("ensemble_id", 0) if ensemble_id_override is None
+                           else ensemble_id_override),
         "source_schema_versions": sorted({run.metadata["source_schema_version"] for run in runs}),
         "source_runs": [str(run.directory.resolve()) for run in runs],
         "n_attempts": int(sum(len(run.attempts) for run in runs)),
@@ -440,4 +474,5 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
             "mean_center_of_mass_velocity": np.mean(velocity, axis=0).tolist(),
         },
         "qa": qa,
+        "excitation": excitation,
     }

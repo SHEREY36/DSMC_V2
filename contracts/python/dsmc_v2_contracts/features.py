@@ -103,8 +103,8 @@ def pair_score_kernel(
 
     Averaging these kernels over independent proposal pairs gives the same
     population invariants as :func:`cell_features`. They are used for
-    proposal-balance diagnostics; coefficient identification uses directly
-    generated excitation ensembles rather than score reweighting.
+    proposal-balance diagnostics and for checking importance-reweighted or
+    directly generated excitation ensembles against the same feature basis.
     """
     arrays = [np.atleast_2d(np.asarray(value, dtype=float)) for value in
               (c1, c2, omega1, omega2, u1, u2)]

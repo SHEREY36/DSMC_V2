@@ -62,7 +62,7 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
     # Excitation continuation is driven by the contribution uncertainty, not
     # a relative coefficient error that diverges at a true zero coefficient.
     if int(result.get("ensemble_id", 0)) != 0:
-        x = result["proposal_features"]
+        x = result.get("cell_features") or result["proposal_features"]
         lambda_se = result.get("uncertainty", {}).get("lambda1", {}).get("standard_error")
         if lambda_se is None or max(abs(value) for value in x.values()) * 1.96 * lambda_se > 0.005:
             reasons.append("lambda1_contribution_precision")

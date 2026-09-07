@@ -57,12 +57,16 @@ class VariationalArtifactTests(unittest.TestCase):
             closure = VariationalClosure(path)
             features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
             state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertEqual(closure.energy_interpolation,
+                             "node_first_quantile_interpolation_v1")
             self.assertAlmostEqual(state["p_exch"], 0.4)
             self.assertAlmostEqual(state["energy_parameters"][0], 0.02)
             rng = np.random.default_rng(123)
             values = np.array([closure.sample_energy(state, 0.5, 0.0, rng)
                                for _ in range(100000)])
             self.assertTrue(np.all((values > 0.0) & (values < 1.0)))
+            self.assertAlmostEqual(
+                np.mean(values), closure.mean_energy(state, 0.5, 0.0), places=3)
             # Memory must actually bite: a larger incoming share must push the
             # outgoing share up, or lambda3 is being dropped again.
             low = np.mean([closure.sample_energy(state, 0.1, 0.0, rng)
@@ -70,6 +74,47 @@ class VariationalArtifactTests(unittest.TestCase):
             high = np.mean([closure.sample_energy(state, 0.9, 0.0, rng)
                             for _ in range(20000)])
             self.assertGreater(high - low, 0.05)
+
+    def test_physical_interpolation_preserves_exact_grid_planes(self):
+        """An exact sampled alpha must not borrow a neighbouring alpha plane.
+
+        Generic Delaunay interpolation through a Cartesian grid can select a
+        diagonal simplex that does so, even though a tensor-product stencil is
+        available and has the physically unambiguous answer.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.8, 0.75, 1.75,
+                                         np.zeros(len(FEATURE_NAMES)))
+            indices = state["energy_vertex_indices"]
+            np.testing.assert_allclose(closure.coordinates[indices, 0], 0.8)
+            self.assertAlmostEqual(float(np.sum(state["energy_vertex_weights"])), 1.0)
+
+    def test_energy_sampler_evaluates_nodes_before_mixing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.9, 0.75, 1.75,
+                                         np.zeros(len(FEATURE_NAMES)))
+            z_in = 0.37
+            rows = []
+            for index in state["energy_vertex_indices"]:
+                lambda1, _, lambda3, lambda4 = closure.energy_parameters[index]
+                a = lambda1 + lambda3 * z_in + lambda4 * 0.0
+                grid = closure.energy_a_grid[index]
+                upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
+                lower = upper - 1
+                blend = (a - grid[lower]) / (grid[upper] - grid[lower])
+                table = closure.energy_tables[index]
+                rows.append((1.0 - blend) * table[lower] + blend * table[upper])
+            expected_row = np.tensordot(state["energy_vertex_weights"], rows,
+                                        axes=(0, 0))
+            expected_mean = np.trapezoid(expected_row, closure.probability)
+            self.assertAlmostEqual(closure.mean_energy(state, z_in, 0.0),
+                                   expected_mean, places=13)
 
     def test_refuses_an_artifact_without_the_collision_measure(self):
         """Fail closed. A missing enhancement silently reverts the runtime to
@@ -115,6 +160,16 @@ class VariationalArtifactTests(unittest.TestCase):
             state = closure.kernel_state(0.8, 0.5, 1.5, features)
             self.assertTrue(state["out_of_domain"])
             self.assertEqual(closure.out_of_domain_fraction, 1.0)
+
+    def test_feature_domain_is_inactive_when_corrections_are_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
+            state = closure.kernel_state(0.8, 0.5, 1.5, features)
+            self.assertFalse(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 0.0)
 
     def test_joint_angular_parameters_interpolate_inside_deployed_mask(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -181,6 +236,8 @@ class VariationalArtifactTests(unittest.TestCase):
             }
             diagnostics = run_simulation(config, 42, root / "hcs.txt")
             self.assertEqual(diagnostics["routing"], "variational_v2")
+            self.assertEqual(diagnostics["energy_interpolation"],
+                             "node_first_quantile_interpolation_v1")
             self.assertEqual(diagnostics["negative_energy_repairs"], 0)
             self.assertIsNotNone(diagnostics["runtime_gate"])
 

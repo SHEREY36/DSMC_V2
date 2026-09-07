@@ -111,15 +111,29 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
     }
     nodes = [json.loads(path.read_text()) for path in sorted(Path(directory).glob("alpha_*.json"))]
     keys = {_node_key(node) for node in nodes}
-    if len(nodes) != len(keys) or keys != set(expected_groups):
-        missing, extra = sorted(set(expected_groups) - keys), sorted(keys - set(expected_groups))
-        raise ValueError(f"precomputed node grid mismatch; missing={missing}, extra={extra}")
+    if len(nodes) != len(keys):
+        raise ValueError("precomputed node estimates contain duplicate grid/ensemble keys")
+    baseline_keys = {_node_key(node) for node in nodes
+                     if int(node.get("ensemble_id", 0)) == 0}
+    if baseline_keys != set(expected_groups):
+        missing = sorted(set(expected_groups) - baseline_keys)
+        extra = sorted(baseline_keys - set(expected_groups))
+        raise ValueError(f"precomputed baseline grid mismatch; missing={missing}, extra={extra}")
     for node in nodes:
         # Compare shard identities, not absolute paths: a grid estimated on the
         # cluster must validate against the same shards copied to another root.
         # The directory name carries alpha, theta, AR, ensemble and shard, so
         # this still catches an estimate built from different shards.
-        expected = {Path(path).name for path in expected_groups[_node_key(node)]}
+        key = _node_key(node)
+        lookup_key = key
+        if int(node.get("ensemble_id", 0)) != 0 and node.get("excitation"):
+            # Importance-sampled excitations are virtual ensembles evaluated on
+            # the baseline shard.  They intentionally have no fresh CTC
+            # directory bearing their new ensemble ID.
+            lookup_key = (key[0], key[1], key[2], 0)
+        if lookup_key not in expected_groups:
+            raise ValueError(f"node {key} has no matching baseline or direct CTC shard")
+        expected = {Path(path).name for path in expected_groups[lookup_key]}
         actual = {Path(path).name for path in node.get("source_runs", [])}
         if actual != expected:
             raise ValueError(
@@ -156,7 +170,7 @@ def _energy_weighted_partition(theta: float) -> float:
     return float(theta / (1.0 + theta))
 
 
-def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
+def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
     grouped = defaultdict(list)
     for node in baseline:
         grouped[(node["alpha"], node["aspect_ratio"])].append(node)
@@ -202,6 +216,23 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
             raise ValueError("the complete stability gate requires the frozen BL loss model")
         else:
             mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
+        # The hybrid DSMC has deliberately separate loss variables.  The BL
+        # draw controls the amount of energy destroyed, while the bridge must
+        # see a covariate on the scale of the CTC loss against which lambda4
+        # was fitted.  Feeding the BL mean to both jobs moves the inelastic
+        # root whenever those means differ (13--28 percent on the sentinel).
+        fitted_loss = PchipInterpolator(
+            theta, [row["energy"].get("mean_fractional_loss", mean_loss)
+                    for row in nodes])
+        sampler_means = {}
+        if sampler is not None:
+            probability = sampler["probability"]
+            for node in nodes:
+                node_key = (float(node["alpha"]), float(node["theta"]),
+                            float(node["aspect_ratio"]))
+                a_axis, quantiles = sampler["nodes"][node_key]
+                sampler_means[node_key] = (
+                    a_axis, _trapezoid(quantiles, probability, axis=1))
 
         def _incoming_mass(value):
             """The node's measured incoming law, as fitted under the energy weight."""
@@ -212,12 +243,46 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
             return mass / np.sum(mass)
 
         def post_collision_partition(value):
-            """<E z'>/<E> of the DEPLOYED bridge at the DSMC's own loss."""
+            """<E z'>/<E> of the exact law exported to the DSMC runtime."""
             mass = _incoming_mass(value)
-            parameters = np.array([float(lambda3(value)), float(lambda1(value)),
-                                   float(lambda2(value)), float(lambda4(value))])
-            anchor = (float(anchor1(value)), float(anchor2(value)))
-            mean_map = bridge_mean_map(parameters, grid, mean_loss, 192, anchor)
+            if sampler is None:
+                # Analytic fallback retained for unit tests and diagnostics
+                # that operate on node estimates before tables are generated.
+                parameters = np.array([float(lambda3(value)), float(lambda1(value)),
+                                       float(lambda2(value)), float(lambda4(value))])
+                anchor = (float(anchor1(value)), float(anchor2(value)))
+                mean_map = bridge_mean_map(
+                    parameters, grid, float(fitted_loss(value)), 192, anchor)
+                return float(mass @ mean_map), float(mass @ grid)
+
+            # The runtime blends neighbouring fitted conditional quantiles. It must
+            # not first mix their nonlinear natural parameters, a-grids and
+            # quantile tables: those operations do not commute and the old
+            # order created three roots where the CTC operator has one.
+            exact_theta = np.flatnonzero(np.isclose(theta, value, atol=1.0e-12,
+                                                    rtol=0.0))
+            if len(exact_theta):
+                stencil = [(int(exact_theta[0]), 1.0)]
+            else:
+                upper = int(np.searchsorted(theta, value))
+                if upper == 0 or upper == len(theta):
+                    raise ValueError("stability query lies outside its theta grid")
+                lower = upper - 1
+                high_weight = float((value - theta[lower])
+                                    / (theta[upper] - theta[lower]))
+                stencil = [(lower, 1.0 - high_weight), (upper, high_weight)]
+            mean_map = np.zeros_like(grid)
+            for index, physical_weight in stencil:
+                node = nodes[index]
+                node_key = (float(node["alpha"]), float(node["theta"]),
+                            float(node["aspect_ratio"]))
+                a_axis, conditional_mean = sampler_means[node_key]
+                energy = node["energy"]
+                route_loss = float(energy.get("mean_fractional_loss", mean_loss))
+                a = (float(energy["lambda1"])
+                     + float(energy["lambda3"]) * grid
+                     + float(energy.get("lambda4", 0.0)) * route_loss)
+                mean_map += physical_weight * np.interp(a, a_axis, conditional_mean)
             return float(mass @ mean_map), float(mass @ grid)
 
         def drift(value):
@@ -263,7 +328,13 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
                      "root_standard_error": root_standard_error,
                      "uncertainty_margin_to_hull": uncertainty_margin,
                      "mean_scalar_loss": mean_loss,
-                     "drift_model": "complete_variational_partition_plus_frozen_BL_loss",
+                     "routing_loss_at_root": (None if len(roots) != 1 else
+                                              float(fitted_loss(roots[0]))),
+                     "drift_model": (
+                         "node_first_quantile_interpolation_with_CTC_routing_loss_"
+                         "plus_frozen_BL_budget_loss" if sampler is not None else
+                         "analytic_bridge_with_CTC_routing_loss_"
+                         "plus_frozen_BL_budget_loss"),
                      "includes_surface_derivatives": True})
     return rows
 
@@ -420,8 +491,14 @@ def build_artifact(run_directories, output_directory, bl=None,
         if coefficient_rows else np.empty_like(beta)
     beta_deployed = np.array([row["beta_deployed"] for row in coefficient_rows], dtype=bool) \
         if coefficient_rows else np.empty_like(beta, dtype=bool)
-    feature_values = np.array([[node["proposal_features"][name] for name in FEATURE_NAMES]
-                               for node in nodes])
+    # Runtime features are cell moments.  Collision-attempt moments are flux
+    # weighted (a Maxwellian reports a2_tr ~= -0.032 there), so using them as
+    # the runtime hull makes every real cell out of domain even at startup.
+    feature_values = np.array([
+        [(node.get("cell_features") or node["proposal_features"])[name]
+         for name in FEATURE_NAMES]
+        for node in nodes
+    ])
     diagnostic_values = np.array([[node["proposal_diagnostics"][name]
                                     for name in DIAGNOSTIC_NAMES] for node in nodes])
 
@@ -445,7 +522,15 @@ def build_artifact(run_directories, output_directory, bl=None,
         path.name.encode() + b"\0" + path.read_bytes() for path in clock_paths
         if path.is_file())
     clock_hash = _sha256_bytes(clock_payload) if len(clock_payload) else "unavailable"
-    stability = _stability_rows(baseline, bl)
+    sampler = {
+        "probability": probability,
+        "nodes": {
+            (float(row["alpha"]), float(row["theta"]),
+             float(row["aspect_ratio"])): (a_grids[index], equant[index])
+            for index, row in enumerate(baseline)
+        },
+    }
+    stability = _stability_rows(baseline, bl, sampler=sampler)
     if not stability or not all(row["unique_stable"] for row in stability):
         # Fail closed. A kernel with no root, or more than one, has no steady
         # temperature ratio to deploy, and exporting it anyway is how a
@@ -484,6 +569,7 @@ def build_artifact(run_directories, output_directory, bl=None,
                                 for row in baseline], dtype=float),
         energy_mean_loss=np.array([row["energy"]["mean_fractional_loss"]
                                    for row in baseline], dtype=float),
+        energy_interpolation=np.array("node_first_quantile_interpolation_v1"),
         kernel_form=np.array(kernel_form), angular_quantiles=aquant,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed,

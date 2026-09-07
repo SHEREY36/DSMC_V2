@@ -160,11 +160,17 @@ It preserves the NTC clock and scalar loss. Positive post-collision modal
 energies follow by construction; a non-positive energy raises an error rather
 than triggering a repair.
 
-The runtime still samples the retired gated kernel. Wiring the conditional
-kernel in requires the two-dimensional `(a, u)` quantile table, where
-`a = lambda3 z_in + lambda4 eps` is the scalar the conditional law depends on;
-until that lands, `build_artifact` refuses to export an energy sampler for any
-node with a non-zero `lambda3` rather than silently dropping the memory term.
+The runtime samples the conditional kernel from the two-dimensional `(a, u)`
+quantile table, where
+`a = lambda1 + lambda3 z_in + lambda4 eps` is the scalar the conditional law
+depends on.  It evaluates this law at every neighbouring fitted node before
+interpolating the conditional quantiles.  Interpolating natural parameters,
+node-specific `a` axes, and tables separately is forbidden: those nonlinear
+operations do not commute and can manufacture spurious HCS fixed points.
+
+The BL loss draw controls the surviving total energy.  Only the `lambda4 eps`
+routing covariate is rescaled to the CTC loss scale on which it was fitted;
+these two loss roles are intentionally distinct.
 
 The complete v1 path is still:
 

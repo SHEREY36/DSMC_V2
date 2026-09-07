@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import cell_features, legacy_cell_features
+from dsmc_v2_contracts import FEATURE_NAMES, cell_features, legacy_cell_features
 
 from .artifact import MicroscopicClosure, VariationalClosure
 from .kernel import SpherocylinderKernel
@@ -73,6 +73,16 @@ def _write_row(handle, time: float, tau: float, state, mass: float) -> None:
     handle.write(f"{time:13.6f} {tau:13.6f} {ttr:13.6f} {trot:13.6f} {total:13.6f}\n")
 
 
+def _pair_modal_energies(state, p1: int, p2: int, v1: np.ndarray,
+                         v2: np.ndarray, mass: float) -> tuple[float, float]:
+    """Translational COM-frame and rotational energy of one selected pair."""
+    vcom = 0.5 * (v1 + v2)
+    etr = 0.5 * mass * (np.dot(v1 - vcom, v1 - vcom)
+                        + np.dot(v2 - vcom, v2 - vcom))
+    erot = float(state.rotational_energy[p1] + state.rotational_energy[p2])
+    return float(etr), erot
+
+
 def run_simulation(config: dict, seed: int, output_path: str | Path,
                    pressure_path: str | Path | None = None) -> dict:
     """Run one realization while preserving the v1 clock and scalar kernel."""
@@ -92,7 +102,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     count = math.ceil(float(config["system"]["phi"]) * volume / params.volume)
     sphere = bool(config.get("simulation", {}).get("sphere_collision", False))
     state = initialize_particles(count, ktt, ktr, params.mass, params.inertia,
-                                 axis_rng, sphere)
+                                 axis_rng, sphere,
+                                 isotropic_rotation=(
+                                     config.get("microscopic_closure", {}).get("routing")
+                                     == "variational_v2"))
     routing, angular, closure = _closure_from_config(config)
     if sphere:
         models = kernel = None
@@ -133,6 +146,21 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         pressure_path.parent.mkdir(parents=True, exist_ok=True)
     pressure_accumulator = np.zeros((3, 3)) if flow_mode == "usf" else None
     last_pressure_time = 0.0
+    audit_enabled = bool(config.get("diagnostics", {}).get("collision_audit", False))
+    audit = {
+        "post_ntc_pairs": 0, "accepted_pairs": 0,
+        "post_ntc_z_sum": 0.0, "post_ntc_energy_sum": 0.0,
+        "post_ntc_ez_sum": 0.0, "accepted_z_sum": 0.0,
+        "accepted_energy_sum": 0.0, "accepted_ez_sum": 0.0,
+        "outgoing_energy_sum": 0.0, "outgoing_ez_sum": 0.0,
+        "loss_sum": 0.0, "energy_loss_sum": 0.0,
+        "routing_loss_sum": 0.0, "drift_energy_sum": 0.0,
+        "expected_drift_energy_sum": 0.0, "theta_energy_sum": 0.0,
+    }
+    feature_count = 0
+    feature_sum = np.zeros(len(FEATURE_NAMES))
+    feature_min = np.full(feature_sum.shape, np.inf)
+    feature_max = np.full(feature_sum.shape, -np.inf)
     pressure_context = pressure_path.open("w", buffering=65536) if pressure_path else nullcontext(None)
     with output_path.open("w", buffering=65536) as handle, pressure_context as pressure_handle:
         while time < end_time and (tau_end is None or collisions / count < tau_end
@@ -167,6 +195,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 closure_started = wallclock.perf_counter()
                 features = cell_features(state.velocity, state.omega, state.axis,
                                          params.mass, params.inertia, sphere=False)
+                if audit_enabled:
+                    feature_count += 1
+                    feature_sum += features
+                    feature_min = np.minimum(feature_min, features)
+                    feature_max = np.maximum(feature_max, features)
                 closure_alpha = 1.0 if time < kernel.equilibration_time else alpha
                 kernel.set_cell_variational(
                     closure.kernel_state(closure_alpha, theta, params.aspect_ratio, features))
@@ -194,6 +227,17 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     if cr < 0.0:
                         normal, cr = -normal, -cr
                     speed = float(np.linalg.norm(vrel))
+                    pair_before = None
+                    if audit_enabled and not sphere:
+                        pair_before = _pair_modal_energies(
+                            state, p1, p2, v1, v2, params.mass)
+                        pair_total = pair_before[0] + pair_before[1]
+                        if pair_total > 0.0:
+                            pair_z = pair_before[0] / pair_total
+                            audit["post_ntc_pairs"] += 1
+                            audit["post_ntc_z_sum"] += pair_z
+                            audit["post_ntc_energy_sum"] += pair_total
+                            audit["post_ntc_ez_sum"] += pair_total * pair_z
                     if sphere:
                         collisions += _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha)
                     elif routing == "variational_v2" and not kernel.accept_orientation(
@@ -202,8 +246,44 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                             state.omega[p1], state.omega[p2], speed, vss_rng):
                         pass          # rejected by the orientation-dependent area
                     else:
-                        collisions += kernel.collide(
+                        added = kernel.collide(
                             state, p1, p2, normal, v1, v2, vrel, speed, time, theta)
+                        collisions += added
+                        if audit_enabled and pair_before is not None and added:
+                            etr_i, erot_i = pair_before
+                            total_i = etr_i + erot_i
+                            etr_f, erot_f = _pair_modal_energies(
+                                state, p1, p2, state.velocity[p1],
+                                state.velocity[p2], params.mass)
+                            total_f = etr_f + erot_f
+                            z_in = etr_i / total_i
+                            z_out = etr_f / total_f
+                            loss = 1.0 - total_f / total_i
+                            fitted_loss = float(kernel.cell_variational["fitted_mean_loss"])
+                            routing_loss = loss
+                            if kernel.mean_loss_fraction > 0.0 and fitted_loss > 0.0:
+                                routing_loss *= fitted_loss / kernel.mean_loss_fraction
+                            expected_z_out = closure.mean_energy(
+                                kernel.cell_variational, z_in, loss,
+                                loss_mean=kernel.mean_loss_fraction)
+                            audit["accepted_pairs"] += 1
+                            audit["accepted_z_sum"] += z_in
+                            audit["accepted_energy_sum"] += total_i
+                            audit["accepted_ez_sum"] += total_i * z_in
+                            audit["outgoing_energy_sum"] += total_f
+                            audit["outgoing_ez_sum"] += total_f * z_out
+                            audit["loss_sum"] += loss
+                            audit["energy_loss_sum"] += total_i * loss
+                            audit["routing_loss_sum"] += routing_loss
+                            audit["drift_energy_sum"] += (
+                                (2.0 / 3.0) * (etr_f - etr_i)
+                                - theta * (erot_f - erot_i))
+                            expected_etr_f = total_f * expected_z_out
+                            expected_erot_f = total_f * (1.0 - expected_z_out)
+                            audit["expected_drift_energy_sum"] += (
+                                (2.0 / 3.0) * (expected_etr_f - etr_i)
+                                - theta * (expected_erot_f - erot_i))
+                            audit["theta_energy_sum"] += total_i * theta
                     if pressure_accumulator is not None:
                         accumulate_pij_c(pressure_accumulator, v1, v2,
                                          state.velocity[p1], params.mass, speed,
@@ -225,9 +305,50 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "closure_overhead_fraction": closure_seconds / max(total_seconds, 1.0e-30),
         "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
                                     else closure.out_of_domain_fraction),
+        "energy_interpolation": (None if not isinstance(closure, VariationalClosure)
+                                 else closure.energy_interpolation),
         "output": str(output_path),
         "pressure_output": None if pressure_path is None else str(pressure_path),
     }
+    if audit_enabled:
+        accepted = int(audit["accepted_pairs"])
+        post_ntc = int(audit["post_ntc_pairs"])
+        if accepted:
+            diagnostics["collision_audit"] = {
+                "post_ntc_pairs": post_ntc,
+                "accepted_pairs": accepted,
+                "orientation_acceptance": accepted / max(post_ntc, 1),
+                "post_ntc_z_mean": audit["post_ntc_z_sum"] / max(post_ntc, 1),
+                "post_ntc_z_energy_weighted": (
+                    audit["post_ntc_ez_sum"] / audit["post_ntc_energy_sum"]),
+                "accepted_z_mean": audit["accepted_z_sum"] / accepted,
+                "accepted_z_energy_weighted": (
+                    audit["accepted_ez_sum"] / audit["accepted_energy_sum"]),
+                "outgoing_z_energy_weighted": (
+                    audit["outgoing_ez_sum"] / audit["outgoing_energy_sum"]),
+                "loss_mean": audit["loss_sum"] / accepted,
+                "loss_energy_weighted": (
+                    audit["energy_loss_sum"] / audit["accepted_energy_sum"]),
+                "routing_loss_mean": audit["routing_loss_sum"] / accepted,
+                "theta_energy_weighted": (
+                    audit["theta_energy_sum"] / audit["accepted_energy_sum"]),
+                "temperature_ratio_drift_per_pair_energy": (
+                    audit["drift_energy_sum"] / audit["accepted_energy_sum"]),
+                "expected_temperature_ratio_drift_per_pair_energy": (
+                    audit["expected_drift_energy_sum"]
+                    / audit["accepted_energy_sum"]),
+                "cell_features": {
+                    "samples": feature_count,
+                    "mean": dict(zip(
+                        FEATURE_NAMES,
+                        (feature_sum / max(feature_count, 1)).tolist())),
+                    "minimum": dict(zip(FEATURE_NAMES, feature_min.tolist())),
+                    "maximum": dict(zip(FEATURE_NAMES, feature_max.tolist())),
+                },
+            }
+        else:
+            diagnostics["collision_audit"] = {
+                "post_ntc_pairs": post_ntc, "accepted_pairs": 0}
     diagnostics["runtime_gate"] = (runtime_gate_status(diagnostics)
                                    if routing == "variational_v2" else None)
     return diagnostics

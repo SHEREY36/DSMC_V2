@@ -25,6 +25,25 @@ class ArtifactInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "stale node estimate"):
                 _load_node_estimates(root, groups)
 
+    def test_reweighted_virtual_node_resolves_to_its_baseline_shard(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shard = root / "baseline_shard"
+            shard.mkdir()
+            common = {
+                "alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
+                "source_runs": [str(shard)], "qa": {"precision_pass": True},
+            }
+            baseline = dict(common, ensemble_id=0)
+            virtual = dict(
+                common, ensemble_id=1,
+                excitation={"family": "A_cu", "eta": 0.4})
+            (root / "alpha_base.json").write_text(json.dumps(baseline))
+            (root / "alpha_virtual.json").write_text(json.dumps(virtual))
+            loaded = _load_node_estimates(
+                root, {(0.8, 1.0, 2.0, 0): [shard]})
+            self.assertEqual([row["ensemble_id"] for row in loaded], [0, 1])
+
 
 if __name__ == "__main__":
     unittest.main()

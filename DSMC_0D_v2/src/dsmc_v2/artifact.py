@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.spatial import Delaunay, QhullError
+
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 from coll_models_v2.direction_library import DirectionLibrary, conditioning
 from coll_models_v2.surfaces import SplineSurface
@@ -125,6 +129,12 @@ class VariationalClosure:
         self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
         self.energy_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
         self.kernel_form = str(data["kernel_form"])
+        self.energy_interpolation = "node_first_quantile_interpolation_v1"
+        declared_interpolation = (str(data["energy_interpolation"])
+                                  if "energy_interpolation" in data.files else None)
+        if declared_interpolation not in (None, self.energy_interpolation):
+            raise ValueError(
+                f"unsupported energy interpolation {declared_interpolation!r}")
         # Mean fractional loss of the CTC ensemble each node was fitted on.
         # lambda4 multiplies the loss, so the tilt it produces is only right if
         # the loss handed to it is on the same scale it was fitted against.
@@ -152,12 +162,10 @@ class VariationalClosure:
         if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
             raise ValueError("energy a-grid must be strictly increasing per node")
         self.energy_axis_clamps = 0
-        # Interpolating the (a, u) table costs ~10 ms because it moves a
-        # million numbers. In a 0-D run alpha and the aspect ratio are fixed
-        # and theta drifts slowly, so the identical state is rebuilt thousands
-        # of times. Cache it on a rounded key: the closure varies over a theta
-        # grid spaced by ~0.8, so quantising theta at 1e-3 perturbs the
-        # interpolation weights by about a part in a thousand.
+        # In a 0-D run alpha and aspect ratio are fixed and theta drifts slowly,
+        # so the same interpolation stencil and angular state recur thousands
+        # of times. Cache the small state on a rounded key. Energy tables stay
+        # node-owned and are never copied into this cache.
         self._state_cache: dict[tuple, dict] = {}
         self._state_cache_hits = 0
         self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
@@ -182,15 +190,19 @@ class VariationalClosure:
         self.out_of_domain_queries = 0
         self.total_queries = 0
         self._interpolators = {}
+        self._coordinate_index = {
+            tuple(float(value) for value in row): index
+            for index, row in enumerate(self.coordinates)
+        }
+        self._physical_triangulation = None
         if len(self.coordinates) >= 4:
-            self._interpolators.update(
-                p_exch=LinearNDInterpolator(self.coordinates, self.p_exch),
-                energy_parameters=LinearNDInterpolator(self.coordinates, self.energy_parameters),
-                angular_parameters=LinearNDInterpolator(self.coordinates, self.angular_parameters),
-                energy_tables=LinearNDInterpolator(self.coordinates, self.energy_tables),
-                energy_a_grid=LinearNDInterpolator(self.coordinates, self.energy_a_grid),
-                angular_tables=LinearNDInterpolator(self.coordinates, self.angular_tables),
-            )
+            try:
+                self._physical_triangulation = Delaunay(self.coordinates)
+            except QhullError:
+                # Exact nodes and complete tensor cells still work for a
+                # lower-dimensional test/design.  Off-grid queries fail
+                # closed in _physical_vertex_weights below.
+                self._physical_triangulation = None
         if len(self.beta_coordinates) >= 4:
             self._interpolators["beta"] = LinearNDInterpolator(
                 self.beta_coordinates, self.beta)
@@ -223,6 +235,71 @@ class VariationalClosure:
             raise ValueError(f"{label} query lies outside the calibrated physical hull")
         return result
 
+    def _physical_vertex_weights(self, query: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return one common interpolation stencil for a physical query.
+
+        A complete Cartesian cell is interpolated multilinearly.  This is
+        important on the sampled alpha/theta/AR grid: asking at an exact alpha
+        or aspect ratio must not mix the adjacent planes merely because a
+        Delaunay tessellation chose a diagonal through the cube.  Incomplete
+        cells (for example a deliberately truncated low-theta campaign) fall
+        back to barycentric interpolation on the measured convex hull.
+        """
+        exact = self._exact(self.coordinates, query)
+        if len(exact):
+            return exact[:1].astype(int), np.ones(1, dtype=float)
+
+        choices = []
+        for axis in range(3):
+            values = np.unique(self.coordinates[:, axis])
+            matched = np.flatnonzero(np.isclose(values, query[axis], atol=1.0e-12,
+                                                 rtol=0.0))
+            if len(matched):
+                choices.append([(float(values[matched[0]]), 1.0)])
+                continue
+            upper = int(np.searchsorted(values, query[axis]))
+            if upper == 0 or upper == len(values):
+                raise ValueError("physical query lies outside the calibrated hull")
+            lower = upper - 1
+            span = float(values[upper] - values[lower])
+            high_weight = float((query[axis] - values[lower]) / span)
+            choices.append([(float(values[lower]), 1.0 - high_weight),
+                            (float(values[upper]), high_weight)])
+
+        tensor_indices, tensor_weights = [], []
+        tensor_complete = True
+        for vertex in itertools.product(*choices):
+            coordinate = tuple(item[0] for item in vertex)
+            index = self._coordinate_index.get(coordinate)
+            if index is None:
+                tensor_complete = False
+                break
+            tensor_indices.append(index)
+            tensor_weights.append(float(np.prod([item[1] for item in vertex])))
+        if tensor_complete:
+            return (np.asarray(tensor_indices, dtype=int),
+                    np.asarray(tensor_weights, dtype=float))
+
+        tri = self._physical_triangulation
+        if tri is None:
+            raise ValueError("physical query has no complete interpolation cell")
+        simplex = int(tri.find_simplex(query))
+        if simplex < 0:
+            raise ValueError("physical query lies outside the calibrated hull")
+        transform = tri.transform[simplex]
+        leading = transform[:3] @ (query - transform[3])
+        weights = np.r_[leading, 1.0 - np.sum(leading)]
+        if np.any(weights < -1.0e-10):
+            raise ValueError("physical interpolation produced invalid barycentric weights")
+        weights = np.maximum(weights, 0.0)
+        weights /= np.sum(weights)
+        return tri.simplices[simplex].astype(int), weights
+
+    @staticmethod
+    def _weighted(values: np.ndarray, indices: np.ndarray,
+                  weights: np.ndarray) -> np.ndarray:
+        return np.tensordot(weights, np.asarray(values)[indices], axes=(0, 0))
+
     STATE_CACHE_LIMIT = 4096
 
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
@@ -240,42 +317,33 @@ class VariationalClosure:
             hit = self._state_cache.get(key)
             if hit is not None:
                 self._state_cache_hits += 1
+                # Features do not enter this state when corrections are off,
+                # so a feature-hull failure has no mathematical meaning.
                 self.out_of_domain_queries += int(
-                    bool(np.any(features < self.feature_lower)
-                         or np.any(features > self.feature_upper)))
+                    self.corrections_enabled
+                    and bool(np.any(features < self.feature_lower)
+                             or np.any(features > self.feature_upper)))
                 return hit
-        ood = bool(np.any(features < self.feature_lower) or np.any(features > self.feature_upper))
+        ood = bool(
+            self.corrections_enabled
+            and (np.any(features < self.feature_lower)
+                 or np.any(features > self.feature_upper)))
         self.out_of_domain_queries += int(ood)
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
-        p_exch = float(self._interpolate(self.coordinates, self.p_exch, query, "p_exch",
-                                         self._interpolators.get("p_exch")))
-        eparams = self._interpolate(self.coordinates, self.energy_parameters, query,
-                                    "energy parameters",
-                                    self._interpolators.get("energy_parameters")).astype(float)
-        aparams = self._interpolate(self.coordinates, self.angular_parameters, query,
-                                    "angular parameters",
-                                    self._interpolators.get("angular_parameters")).astype(float)
-        shape = self.energy_tables.shape[1:]
-        etable = self._interpolate(
-            self.coordinates, self.energy_tables.reshape(len(self.energy_tables), -1),
-            query, "energy quantiles",
-            self._interpolators.get("energy_tables")).astype(float).reshape(shape)
-        agrid = self._interpolate(self.coordinates, self.energy_a_grid, query,
-                                  "energy a-grid",
-                                  self._interpolators.get("energy_a_grid")).astype(float)
-        anchor = self._interpolate(
-            self.coordinates, self.energy_anchor, query, "energy anchor",
-            self._interpolators.get("energy_anchor")).astype(float)
-        curve = self._interpolate(
-            self.coordinates, self.xi_enhancement, query,
-            "collision-measure enhancement",
-            self._interpolators.get("xi_enhancement")).astype(float)
-        fitted_loss = float(self._interpolate(
-            self.coordinates, self.energy_mean_loss, query, "energy mean loss",
-            self._interpolators.get("energy_mean_loss")))
-        atable = self._interpolate(self.coordinates, self.angular_tables, query,
-                                   "angular quantiles",
-                                   self._interpolators.get("angular_tables")).astype(float)
+        vertex_indices, vertex_weights = self._physical_vertex_weights(query)
+        p_exch = float(self._weighted(self.p_exch, vertex_indices, vertex_weights))
+        eparams = self._weighted(
+            self.energy_parameters, vertex_indices, vertex_weights).astype(float)
+        aparams = self._weighted(
+            self.angular_parameters, vertex_indices, vertex_weights).astype(float)
+        anchor = self._weighted(
+            self.energy_anchor, vertex_indices, vertex_weights).astype(float)
+        curve = self._weighted(
+            self.xi_enhancement, vertex_indices, vertex_weights).astype(float)
+        fitted_loss = float(self._weighted(
+            self.energy_mean_loss, vertex_indices, vertex_weights))
+        atable = self._weighted(
+            self.angular_tables, vertex_indices, vertex_weights).astype(float)
         beta = np.zeros(len(FEATURE_NAMES))
         if self.corrections_enabled:
             beta = self._interpolate(self.beta_coordinates, self.beta,
@@ -304,9 +372,12 @@ class VariationalClosure:
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
         state = {"p_exch": p_exch, "energy_parameters": eparams,
-                "energy_a_grid": agrid, "fitted_mean_loss": fitted_loss,
+                "energy_vertex_indices": vertex_indices,
+                "energy_vertex_weights": vertex_weights,
+                "energy_correction": correction,
+                "fitted_mean_loss": fitted_loss,
                 "energy_anchor": anchor, "xi_enhancement": curve,
-                "angular_parameters": aparams, "energy_quantiles": etable,
+                "angular_parameters": aparams,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "energy_corrected": correction != 0.0,
                 "joint_deployed": joint, "joint_parameters": joint_parameters}
@@ -315,6 +386,50 @@ class VariationalClosure:
                 self._state_cache.clear()
             self._state_cache[key] = state
         return state
+
+    def _energy_quantile_row(self, state: dict, z_in: float, loss: float,
+                             loss_mean: float = 0.0) -> np.ndarray:
+        """Evaluate at each fitted node, then interpolate the distributions.
+
+        Interpolating lambda, the a-grid and a quantile table independently is
+        not equivalent because the conditional law is nonlinear in all three.
+        That old order manufactured two extra HCS fixed points near theta=1.
+        Blending the neighbouring conditional quantiles is a one-dimensional
+        Wasserstein interpolation and remains a valid monotone quantile law.
+        It is the interpolation actually justified by the exported tables.
+        """
+        indices = np.asarray(state["energy_vertex_indices"], dtype=int)
+        weights = np.asarray(state["energy_vertex_weights"], dtype=float)
+        correction = float(state.get("energy_correction", 0.0))
+        result = np.zeros_like(self.probability, dtype=float)
+        clamped = False
+        for index, physical_weight in zip(indices, weights):
+            lambda1, _, lambda3, lambda4 = self.energy_parameters[index]
+            covariate = float(loss)
+            fitted_mean = float(self.energy_mean_loss[index])
+            if loss_mean > 0.0 and fitted_mean > 0.0:
+                covariate *= fitted_mean / float(loss_mean)
+            a = float(lambda1 + correction + lambda3 * float(z_in)
+                      + lambda4 * covariate)
+            grid = self.energy_a_grid[index]
+            if a < grid[0] or a > grid[-1]:
+                clamped = True
+                a = min(max(a, grid[0]), grid[-1])
+            upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
+            lower = upper - 1
+            span = grid[upper] - grid[lower]
+            blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
+            table = self.energy_tables[index]
+            result += physical_weight * (
+                (1.0 - blend) * table[lower] + blend * table[upper])
+        self.energy_axis_clamps += int(clamped)
+        return result
+
+    def mean_energy(self, state: dict, z_in: float, loss: float,
+                    loss_mean: float = 0.0) -> float:
+        """Conditional mean of the exact quantile law deployed at runtime."""
+        row = self._energy_quantile_row(state, z_in, loss, loss_mean)
+        return float(_trapezoid(row, self.probability))
 
     def sample_energy(self, state: dict, z_in: float, loss: float,
                       rng: np.random.Generator, loss_mean: float = 0.0) -> float:
@@ -326,32 +441,10 @@ class VariationalClosure:
         that scalar, so the draw is a bilinear interpolation and costs the same
         as the memoryless one it replaces.
         """
-        lambda1, _, lambda3, lambda4 = state["energy_parameters"]
-        grid = state["energy_a_grid"]
-        covariate = float(loss)
-        if loss_mean > 0.0 and state["fitted_mean_loss"] > 0.0:
-            # The loss has two jobs and they must not be confused. How much
-            # energy the collision destroys is set by the runtime draw and is
-            # validated against DEM by the cooling curve -- that is left alone.
-            # How the survivors are routed is set by lambda4 times the loss,
-            # and lambda4 was fitted against the CTC ensemble whose mean loss
-            # differs from the runtime's by 13 to 28 per cent. Putting the
-            # covariate back on the scale it was fitted against restores the
-            # intended tilt without touching a single joule of the budget.
-            covariate *= state["fitted_mean_loss"] / float(loss_mean)
-        a = float(lambda1 + lambda3 * float(z_in) + lambda4 * covariate)
-        if a < grid[0] or a > grid[-1]:
-            # The natural-parameter correction shifts lambda1 after the table
-            # was tabulated, so a can leave the exported span. Clamping is the
-            # conservative choice; the count is reported so it cannot hide.
-            self.energy_axis_clamps += 1
-            a = min(max(a, grid[0]), grid[-1])
-        upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
-        lower = upper - 1
-        span = grid[upper] - grid[lower]
-        blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
-        table = state["energy_quantiles"]
-        row = (1.0 - blend) * table[lower] + blend * table[upper]
+        # The loss has two jobs and they must not be confused. How much energy
+        # is destroyed uses the raw BL draw. The row helper rescales only the
+        # routing covariate onto the CTC loss scale used to fit lambda4.
+        row = self._energy_quantile_row(state, z_in, loss, loss_mean)
         return float(np.interp(rng.random(), self.probability, row))
 
     def sample_direction(self, ghat_pre: np.ndarray, state: dict, z: float,

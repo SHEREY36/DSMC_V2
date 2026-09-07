@@ -15,6 +15,7 @@ from coll_models_v2.fit_exchange import fit_exchange_kernel
 from coll_models_v2.projections import (
     _legendre_nodes,
     bridge_mean_map,
+    energy_quantile_table,
     energy_quantiles,
     fit_angular_projection,
     fit_energy_projection,
@@ -205,6 +206,67 @@ def test_t6b_memory_term_enters_the_theta_fixed_point(root, mean_loss, lambda3):
     # interpolation error", which is 5e-3 above. The old threshold of 0.05 was
     # calibrated against the conditional kernel this gate no longer evaluates.
     assert not without["roots"] or abs(without["roots"][0] - root) > 0.02
+
+
+def test_stability_gate_evaluates_the_exported_node_first_quantiles():
+    mean_loss, lambda3, root = 0.04, 4.0, 0.6
+    incoming = _incoming_mean(root)
+    post_at_root = (incoming - root * mean_loss / (2.0 / 3.0 + root)) / (1.0 - mean_loss)
+    lambda2 = -0.5
+    lambda1 = brentq(
+        lambda value: _post_collision_partition(
+            root, np.array([value, lambda2, lambda3]), mean_loss=mean_loss)
+        - post_at_root,
+        -60.0, 60.0)
+    nodes = _memoryless_nodes(
+        np.array([lambda1, lambda2]), mean_loss, lambda3=lambda3)
+    probability = np.linspace(0.0, 1.0, 257)
+    a_axis = np.linspace(lambda1 - 0.1, lambda1 + lambda3 + 0.1, 257)
+    quantiles = energy_quantile_table(
+        lambda3, lambda2, a_axis, probability, grid_size=2049)
+    sampler = {
+        "probability": probability,
+        "nodes": {
+            (node["alpha"], node["theta"], node["aspect_ratio"]):
+                (a_axis, quantiles)
+            for node in nodes
+        },
+    }
+
+    class Loss:
+        @staticmethod
+        def parameters(alpha, aspect_ratio):
+            return {"mean_loss_fraction": mean_loss}
+
+    analytic = _stability_rows(nodes, Loss())[0]
+    deployed = _stability_rows(nodes, Loss(), sampler=sampler)[0]
+    assert deployed["roots"] == pytest.approx(analytic["roots"], abs=2.0e-3)
+    assert deployed["unique_stable"]
+    assert deployed["drift_model"].startswith("node_first_quantile")
+
+
+def test_stability_gate_separates_budget_loss_from_routing_covariate(monkeypatch):
+    """BL destroys energy; lambda4 must see the CTC loss scale it was fitted on."""
+    nodes = _memoryless_nodes(np.array([0.0, 0.0]), mean_loss=0.04, lambda4=3.0)
+    for node in nodes:
+        node["energy"]["mean_fractional_loss"] = 0.09
+    routing_losses = []
+
+    def identity_mean_map(parameters, z_in, loss, quadrature, anchor):
+        routing_losses.append(float(loss))
+        return np.asarray(z_in)
+
+    monkeypatch.setattr("coll_models_v2.artifact.bridge_mean_map", identity_mean_map)
+
+    class Loss:
+        @staticmethod
+        def parameters(alpha, aspect_ratio):
+            return {"mean_loss_fraction": 0.04}
+
+    rows = _stability_rows(nodes, Loss())
+    assert rows[0]["mean_scalar_loss"] == pytest.approx(0.04)
+    assert routing_losses
+    assert np.asarray(routing_losses) == pytest.approx(0.09)
 
 
 def _a2_tr_of_s(s):
