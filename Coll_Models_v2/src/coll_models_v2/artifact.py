@@ -9,6 +9,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+
+# numpy 2 renamed trapz; keep one spelling for both
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
@@ -74,6 +77,8 @@ def _measure_enhancement(run_directories, offsets: int = 128) -> np.ndarray:
               / np.maximum(speed, 1.0e-30))
         parts.append((xi, projected_excluded_area(run),
                       np.asarray(propensity, dtype=float)))
+    if not parts:
+        raise ValueError("no run directories supplied for the enhancement")
     xi = np.concatenate([q[0] for q in parts])
     area = np.concatenate([q[1] for q in parts])
     propensity = np.concatenate([q[2] for q in parts])
@@ -110,10 +115,16 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
         missing, extra = sorted(set(expected_groups) - keys), sorted(keys - set(expected_groups))
         raise ValueError(f"precomputed node grid mismatch; missing={missing}, extra={extra}")
     for node in nodes:
-        expected = {Path(path).resolve() for path in expected_groups[_node_key(node)]}
-        actual = {Path(path).resolve() for path in node.get("source_runs", [])}
+        # Compare shard identities, not absolute paths: a grid estimated on the
+        # cluster must validate against the same shards copied to another root.
+        # The directory name carries alpha, theta, AR, ensemble and shard, so
+        # this still catches an estimate built from different shards.
+        expected = {Path(path).name for path in expected_groups[_node_key(node)]}
+        actual = {Path(path).name for path in node.get("source_runs", [])}
         if actual != expected:
-            raise ValueError(f"stale node estimate for {_node_key(node)}")
+            raise ValueError(
+                f"stale node estimate for {_node_key(node)}: "
+                f"expected shards {sorted(expected)}, got {sorted(actual)}")
         if not node.get("qa", {}).get("precision_pass", node.get("qa", {}).get("sentinel_pass", False)):
             raise ValueError(f"node {_node_key(node)} has not passed closure QA")
     return sorted(nodes, key=_node_key)
@@ -286,7 +297,9 @@ def build_artifact(run_directories, output_directory, bl=None,
     baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
-    probability = np.linspace(0.0, 1.0, 1025)
+    # 513 nodes reproduce the kernel's first two moments to ~1e-5, and the
+    # a-axis is the dimension that has to be wide.
+    probability = np.linspace(0.0, 1.0, 513)
     # Two-dimensional (a, u) energy sampler.  Everything the kernel needs from
     # the incoming pair enters through the single scalar
     #     a = lambda1 + lambda3 * z_in + lambda4 * eps,
@@ -303,16 +316,25 @@ def build_artifact(run_directories, output_directory, bl=None,
     eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"],
                          row["energy"]["lambda3"], row["energy"]["lambda4"]]
                         for row in baseline], dtype=float)
+    # One a-axis LENGTH for every node so the tables stack, but each node keeps
+    # its own span. The length is set by the widest span present: at AR 1.1
+    # lambda3 reaches ~350, and a grid coarse enough for that node would leave
+    # gaps of several units on a kernel that turns over in one.
+    spans = []
+    for lambda1, lambda2, lambda3, lambda4 in eparams:
+        reach = [lambda1, lambda1 + lambda3, lambda1 + lambda4 * loss_ceiling,
+                 lambda1 + lambda3 + lambda4 * loss_ceiling]
+        spans.append(max(reach) - min(reach))
+    a_nodes = int(np.clip(np.ceil(max(spans) * 1.1 / ENERGY_A_STEP) + 1,
+                          ENERGY_A_MIN_NODES, ENERGY_A_MAX_NODES))
+
     a_grids, equant = [], []
     for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
-        reach = [lambda1, lambda1 + lambda3,
-                 lambda1 + lambda4 * loss_ceiling,
+        reach = [lambda1, lambda1 + lambda3, lambda1 + lambda4 * loss_ceiling,
                  lambda1 + lambda3 + lambda4 * loss_ceiling]
         low, high = min(reach), max(reach)
         pad = max(0.05 * (high - low), 1.0e-6)
-        count = int(np.clip(np.ceil((high - low + 2.0 * pad) / ENERGY_A_STEP) + 1,
-                            ENERGY_A_MIN_NODES, ENERGY_A_MAX_NODES))
-        grid = np.linspace(low - pad, high + pad, count)
+        grid = np.linspace(low - pad, high + pad, a_nodes)
         a_grids.append(grid)
         equant.append(energy_quantile_table(
             lambda3, lambda2, grid, probability, kernel_form=kernel_form,
@@ -322,18 +344,17 @@ def build_artifact(run_directories, output_directory, bl=None,
     equant = np.array(equant)
 
     # --- collision-measure enhancement g(Xi), per node --------------------
-    # Two things this must get right, both measured:
-    #   * it depends on aspect ratio. An AR = 3 table used at AR = 1.1 misses
-    #     the selected <z> by 0.0186, which is the whole size of the effect;
-    #     fitted per aspect ratio the error is 0.0002.
-    #   * "normalised to mean one" is only true on the sample it was fitted on.
-    #     The Xi distribution shifts with theta, so <A g>/<A> runs to 1.15 at
-    #     theta = 0.2 and 0.95 at theta = 2 for AR = 3. Each node's curve is
-    #     therefore divided by its OWN rate multiplier, which keeps the NTC
-    #     clock frozen at every grid node rather than only at theta = 1.
+    # Measured per node, not once: it depends on aspect ratio (an AR 3 curve
+    # used at AR 1.1 misses the selected <z> by the whole size of the effect)
+    # and each curve is divided by its OWN rate multiplier, because "mean one"
+    # holds only on the sample it was fitted on and the Xi distribution moves
+    # with theta.
     enhancement = []
     for row in baseline:
-        shards = grouped[(row["alpha"], row["theta"], row["aspect_ratio"])]
+        shards = dict(grouped).get(_node_key(row))
+        if not shards:
+            raise ValueError(f"no shards for node {_node_key(row)}; cannot "
+                             "measure its collision-measure enhancement")
         enhancement.append(_measure_enhancement(shards, propensity_offsets))
     enhancement = np.array(enhancement)
 
@@ -360,17 +381,17 @@ def build_artifact(run_directories, output_directory, bl=None,
                                     - np.max(logbase + a * quad + lambda2 * quad * quad),
                                     -700.0, 700.0))
             weight[0] = weight[-1] = 0.0
-            mass = np.trapz(weight, quad)
-            exact = (np.trapz(weight * quad, quad) / mass,
-                     np.trapz(weight * quad * quad, quad) / mass)
+            mass = _trapezoid(weight, quad)
+            exact = (_trapezoid(weight * quad, quad) / mass,
+                     _trapezoid(weight * quad * quad, quad) / mass)
             table = np.array([np.interp(a, grid, equant[index, :, j])
                               for j in range(equant.shape[2])])
-            energy_errors.extend((abs(np.trapz(table, probability) - exact[0]),
-                                  abs(np.trapz(table * table, probability) - exact[1])))
+            energy_errors.extend((abs(_trapezoid(table, probability) - exact[0]),
+                                  abs(_trapezoid(table * table, probability) - exact[1])))
     for row, quantile in zip(baseline, aquant):
         angular_errors.extend((
-            abs(np.trapz(quantile, probability) - row["angular"]["mean_cosine"]),
-            abs(np.trapz(0.5 * (3.0 * quantile * quantile - 1.0), probability)
+            abs(_trapezoid(quantile, probability) - row["angular"]["mean_cosine"]),
+            abs(_trapezoid(0.5 * (3.0 * quantile * quantile - 1.0), probability)
                 - row["angular"]["mean_p2"]),
         ))
     sampler_error = max(energy_errors + angular_errors)
@@ -430,14 +451,22 @@ def build_artifact(run_directories, output_directory, bl=None,
     clock_hash = _sha256_bytes(clock_payload) if len(clock_payload) else "unavailable"
     stability = _stability_rows(baseline, bl)
     if not stability or not all(row["unique_stable"] for row in stability):
-        # Fail closed. A kernel with no root, or more than one, does not have a
-        # steady temperature ratio to deploy; exporting it anyway is how a
+        # Fail closed. A kernel with no root, or more than one, has no steady
+        # temperature ratio to deploy, and exporting it anyway is how a
         # spurious fixed point reaches a production run.
-        bad = [row for row in stability if not row["unique_stable"]]
-        raise ValueError(
-            "closure has no unique stable temperature ratio at "
-            + ", ".join(f"(alpha={row['alpha']}, AR={row['aspect_ratio']})"
-                        for row in bad) or "any node")
+        detail = []
+        for row in stability:
+            if row["unique_stable"]:
+                continue
+            if not row["roots"]:
+                why = ("no root inside the calibrated theta range: the fixed "
+                       "point lies outside the grid, so generate CTC nodes that "
+                       "bracket it")
+            else:
+                why = f"{len(row['roots'])} roots {row['roots']}: not a unique attractor"
+            detail.append(f"(alpha={row['alpha']}, AR={row['aspect_ratio']}) {why}")
+        raise ValueError("closure has no unique stable temperature ratio -- "
+                         + "; ".join(detail or ["no nodes to test"]))
     artifact_path = output / "closure_v2.npz"
     np.savez_compressed(
         artifact_path,
