@@ -107,19 +107,25 @@ def _memoryless_nodes(parameters, mean_loss, lambda3=0.0, lambda4=0.0):
         # so a fixture has to carry one. Here it is the analytic collision
         # weighted law at this theta, matched on its first two moments.
         "incoming_law": _incoming_law(theta),
+        "incoming_law_energy": _incoming_law(theta, energy_weighted=True),
     } for theta in np.linspace(0.1, 3.0, 13)]
 
 
 def _incoming_mean(theta):
-    """<z> under the same law the gate averages over."""
+    """<E z>/<E> under the same law the gate averages over."""
     grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
-    mass = incoming_partition_density(theta, grid) * quadrature
+    mass = (incoming_partition_density(theta, grid) * quadrature
+            / (grid / float(theta) + 1.0 - grid))
     return float((mass / np.sum(mass)) @ grid)
 
 
-def _incoming_law(theta):
+def _incoming_law(theta, energy_weighted=False):
     grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
     mass = incoming_partition_density(theta, grid) * quadrature
+    if energy_weighted:
+        # Weighting each collision by the energy it carries adds one power of
+        # the pool-energy factor, so the exponent goes from -4 to -5.
+        mass = mass / (grid / float(theta) + 1.0 - grid)
     mass = mass / np.sum(mass)
     projection = fit_energy_projection(float(mass @ grid),
                                        float(mass @ (grid * grid)))
@@ -134,7 +140,7 @@ def _post_collision_partition(theta, parameters, offset=0.0, mean_loss=0.0):
     ordered them; the bridge takes (lambda3, lambda1, lambda2, lambda4).
     """
     grid, quadrature = _legendre_nodes(192, 0.0, 1.0)
-    law = _incoming_law(theta)
+    law = _incoming_law(theta, energy_weighted=True)
     log = (np.log(quadrature * 6.0 * grid * (1.0 - grid))
            + law["c1"] * grid + law["c2"] * grid * grid)
     mass = np.exp(log - log.max()); mass = mass / np.sum(mass)

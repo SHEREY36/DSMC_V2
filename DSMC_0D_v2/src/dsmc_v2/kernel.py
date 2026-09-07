@@ -67,7 +67,7 @@ class SpherocylinderKernel:
         # untouched, so the cooling rate and the collision clock do not move.
         self.area_mean, self.area_supremum = self._area_constants()
         self.xi_grid = self.xi_enhancement = None
-        self.acceptance_supremum = self.area_supremum
+        self.acceptance_ceiling = self.area_supremum
         # candidates must be inflated by this so the rate is unchanged
         self.candidate_inflation = self.area_supremum / max(self.area_mean, 1e-30)
         self.mean_loss_fraction = float(self.loss.get(
@@ -143,7 +143,11 @@ class SpherocylinderKernel:
         # is wrong away from the node it was fitted at.
         enhancement = float(np.interp(xi, self.xi_grid, curve))
         weight = self.projected_excluded_area(u1, u2, ghat) * enhancement
-        return bool(rng.random() < weight / (self.area_supremum * float(curve.max())))
+        # Divide by the SAME ceiling the candidate count was inflated with.
+        # Using this cell's own maximum here while inflating by the global one
+        # leaves a stray rate factor g_max_global / g_max_cell, which unfreezes
+        # the collision clock in exactly the cells whose curve is flattest.
+        return bool(rng.random() < weight / self.acceptance_ceiling)
 
     def set_enhancement(self, grid, ceiling: float) -> None:
         """Install the Xi axis and size the candidate inflation.
@@ -155,9 +159,11 @@ class SpherocylinderKernel:
         if grid is None:
             self.xi_grid = None
             self.candidate_inflation = 1.0
+            self.acceptance_ceiling = self.area_supremum
             return
         self.xi_grid = np.asarray(grid, dtype=float)
-        self.candidate_inflation = (self.area_supremum * float(ceiling)) / max(
+        self.acceptance_ceiling = self.area_supremum * float(ceiling)
+        self.candidate_inflation = self.acceptance_ceiling / max(
             self.area_mean, 1.0e-30)
 
     def projected_excluded_area(self, u1: np.ndarray, u2: np.ndarray,

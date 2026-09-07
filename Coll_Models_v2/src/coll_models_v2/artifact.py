@@ -178,15 +178,17 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
                                             for row in nodes])
         anchor2 = PchipInterpolator(theta, [row["energy"].get("anchor_c2", 0.0)
                                             for row in nodes])
-        if any("incoming_law" not in row for row in nodes):
+        if any("incoming_law_energy" not in row for row in nodes):
             # Defaulting to Beta(2,2) here would make the incoming law
             # theta-independent, which silently removes the very theta
             # dependence the drift balance is measuring.
             raise ValueError(
-                "the stability gate needs each node's measured incoming law; "
-                "re-estimate the grid so incoming_law is present")
-        incoming1 = PchipInterpolator(theta, [row["incoming_law"]["c1"] for row in nodes])
-        incoming2 = PchipInterpolator(theta, [row["incoming_law"]["c2"] for row in nodes])
+                "the stability gate needs each node's ENERGY-weighted incoming "
+                "law; re-estimate the grid so incoming_law_energy is present")
+        incoming1 = PchipInterpolator(
+            theta, [row["incoming_law_energy"]["c1"] for row in nodes])
+        incoming2 = PchipInterpolator(
+            theta, [row["incoming_law_energy"]["c2"] for row in nodes])
         partition_se = [row.get("uncertainty", {}).get(
             "mean_partition_out", {}).get("standard_error", np.nan) for row in nodes]
         mu_se = (PchipInterpolator(theta, partition_se)
@@ -202,13 +204,7 @@ def _stability_rows(baseline: list[dict], bl=None) -> list[dict]:
             mean_loss = float(bl.parameters(alpha, ar)["mean_loss_fraction"])
 
         def _incoming_mass(value):
-            """The node's measured incoming law, ENERGY weighted.
-
-            Modal energy drift is driven by <E z>, not <z>: a collision carrying
-            twice the energy moves the gas twice as far. Weighting by z + (1-z)
-            = 1 would be the per-collision average, which is a different and
-            wrong quantity here.
-            """
+            """The node's measured incoming law, as fitted under the energy weight."""
             log = (np.log(quad * 6.0 * grid * (1.0 - grid))
                    + float(incoming1(value)) * grid
                    + float(incoming2(value)) * grid * grid)

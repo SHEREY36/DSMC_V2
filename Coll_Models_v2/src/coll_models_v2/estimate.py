@@ -154,6 +154,7 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
         "z_el": z_el,
         "z_out": z_out,
         "loss": values[:, OI["delta_total"]] / total_in,
+        "energy": total_in,
         "cosine": cosine,
         "weight": np.ones(len(values)) if measure == "collision"
                   else outcome_weights(run, normalise=False,
@@ -326,6 +327,12 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     from .fit_exchange import measure_anchor
     _w = events["weight"] * len(events["weight"]) / np.sum(events["weight"])
     incoming_c1, incoming_c2 = measure_anchor(events["z_in"], _w)
+    # Modal energy drift is driven by <E z>, not <z>: a collision carrying twice
+    # the energy moves the gas twice as far. The gate averages the mean map over
+    # THIS law, so it has to be measured with the energy weight rather than
+    # relabelled after the fact.
+    _we = _w * events["energy"]
+    energy_c1, energy_c2 = measure_anchor(events["z_in"], _we)
     # The anchor must reach the replicates too, or each one re-measures the
     # reference law from its own resample and the bootstrap reports the spread
     # of a different estimator than the point fit.
@@ -412,6 +419,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         # against this, never against the collision-attempt marginal above.
         "cell_features": dict(zip(FEATURE_NAMES, cell_features_value.tolist())),
         "incoming_law": {"c1": incoming_c1, "c2": incoming_c2},
+        "incoming_law_energy": {"c1": energy_c1, "c2": energy_c2},
         "proposal_diagnostics": dict(zip(DIAGNOSTIC_NAMES, diagnostics.tolist())),
         "energy": energy,
         "angular": angular,
