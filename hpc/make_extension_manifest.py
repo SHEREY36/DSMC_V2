@@ -17,8 +17,6 @@ ar_low_theta
 Seeds are offset by aspect-ratio index so no row can collide with the sentinel
 campaign, which shares the generator's seed function.
 """
-from __future__ import annotations
-
 import argparse
 import csv
 from pathlib import Path
@@ -38,13 +36,19 @@ DESIGNS = {
     # p_exch/(AR-1)^2 runs 5.55, 0.71, 0.19, so the naive quadratic torque law
     # is not what the data shows.
     "ar_near_sphere": {"ar": (1.2, 1.35), "theta": (0.2, 1.0, 2.0), "ar_offset": 30},
-    # theta below the sentinel floor, where AR = 1.1 actually settles
-    "ar_low_theta": {"ar": (1.1,), "theta": (0.0125, 0.025, 0.05, 0.1, 0.15),
+    # Theta below the sentinel floor. Every near-sphere aspect ratio needs it,
+    # not only 1.1: as the torque arm shrinks the steady ratio drops steeply
+    # with inelasticity, so the attractor leaves the sampled window sooner the
+    # closer the rod is to a sphere. Rubio-Largo et al. (Physica A 443, 2016,
+    # Fig. 2b) show it falling to 0.31 at AR = 1.1 while AR = 1.5 is still near
+    # 0.9, and the fits here put AR = 1.1 lower still.
+    "ar_low_theta": {"ar": (1.1, 1.2, 1.35),
+                     "theta": (0.0125, 0.025, 0.05, 0.1, 0.15),
                      "ar_offset": 20},
 }
 
 
-def rows_for(design: str, samples: int, root: str) -> list[dict]:
+def rows_for(design, samples, root):
     spec = DESIGNS[design]
     rows = []
     for ri, ar in enumerate(spec["ar"]):
@@ -80,7 +84,7 @@ def rows_for(design: str, samples: int, root: str) -> list[dict]:
     return rows
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--design", choices=sorted(DESIGNS), required=True)
     parser.add_argument("--output", required=True)

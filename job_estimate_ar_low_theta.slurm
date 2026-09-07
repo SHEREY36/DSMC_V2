@@ -7,7 +7,7 @@
 #SBATCH -c 2
 #SBATCH --mem=4G
 #SBATCH -t 06:00:00
-#SBATCH --array=0-20
+#SBATCH --array=0-62
 #SBATCH -o logs/closure_fit_ar_low_theta_%A_%a.out
 #SBATCH -e logs/closure_fit_ar_low_theta_%A_%a.err
 
