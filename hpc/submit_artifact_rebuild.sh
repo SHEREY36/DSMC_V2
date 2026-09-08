@@ -26,10 +26,12 @@ MAX_CONCURRENT=${CLOSURE_MAX_CONCURRENT:-256}
 FIT_JOB_RAW=$(sbatch --parsable --array="0-$((ROWS - 1))%$MAX_CONCURRENT" \
   hpc/closure_fit_array.slurm "$MANIFEST" "$ESTIMATES")
 FIT_JOB=${FIT_JOB_RAW%%;*}
-QA_JOB_RAW=$(sbatch --parsable --dependency="afterok:$FIT_JOB" \
+QA_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
+  --dependency="afterok:$FIT_JOB" \
   hpc/validate_artifact_grid.slurm "$MANIFEST" "$ESTIMATES" "$REPORT")
 QA_JOB=${QA_JOB_RAW%%;*}
-BUILD_JOB_RAW=$(sbatch --parsable --dependency="afterok:$QA_JOB" \
+BUILD_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
+  --dependency="afterok:$QA_JOB" \
   hpc/aggregate.slurm "$MANIFEST" "$ESTIMATES" "$OUTPUT")
 BUILD_JOB=${BUILD_JOB_RAW%%;*}
 
