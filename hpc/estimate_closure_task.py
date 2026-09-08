@@ -7,16 +7,30 @@ import argparse
 import csv
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
 
-from coll_models_v2.estimate import equilibrium_anchor, estimate_node
+from coll_models_v2.estimate import (
+    NODE_ESTIMATE_CONTRACT,
+    equilibrium_anchor,
+    estimate_node,
+)
 from coll_models_v2.pipeline import precision_status
 from dsmc_v2_contracts import load_run, validate_run
 
 
 SCIENTIFIC_FIT_EXCEPTIONS = (ValueError, np.linalg.LinAlgError, FloatingPointError)
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 
 def _failed_fit_result(row: dict, run: Path, exc: Exception) -> dict:
@@ -30,6 +44,7 @@ def _failed_fit_result(row: dict, run: Path, exc: Exception) -> dict:
     reason = f"scientific_fit_error:{type(exc).__name__}"
     return {
         "schema_version": "2.2.0",
+        "estimator_contract": NODE_ESTIMATE_CONTRACT,
         "alpha": float(row["alpha"]),
         "theta": float(row["theta"]),
         "aspect_ratio": float(row["aspect_ratio"]),
@@ -89,9 +104,13 @@ def main() -> None:
     # node's own theta stationary and strip the kernel of its restoring force
     # everywhere except theta = 1. Each array task resolves it independently,
     # so no task can silently fall back to self-anchoring.
-    # Rewrite only the directory NAME, so nothing in the parent path that
-    # happens to look like alpha_/theta_ can be clobbered.
-    anchor_run = run.with_name(
+    # A canonical combined manifest can name one shared equilibrium shard for
+    # every theta at an aspect ratio.  This prevents independently generated
+    # duplicate anchors from injecting sampling noise into a reference law
+    # that is mathematically theta-independent.  Older design manifests retain
+    # the sibling-name fallback.
+    anchor_text = row.get("anchor_directory", "").strip()
+    anchor_run = Path(anchor_text) if anchor_text else run.with_name(
         re.sub(r"alpha_[0-9.]+_theta_[0-9.]+", "alpha_1.000_theta_1.000", run.name))
     if not anchor_run.is_dir():
         raise RuntimeError(
@@ -111,6 +130,14 @@ def main() -> None:
     else:
         passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
+    result["estimator_provenance"] = {
+        "git_sha": _git_sha(),
+        "bootstrap": int(args.bootstrap),
+        "propensity_offsets": int(args.propensity_offsets),
+        "manifest": str(Path(args.manifest)),
+        "manifest_index": int(args.index),
+        "anchor_run": str(anchor_run.resolve()),
+    }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     target = output / (

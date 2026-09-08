@@ -12,7 +12,7 @@
 # on the heaviest. Requesting more does not make it faster: Negishi allocates
 # about 2 GB per core, so an oversized --mem silently reserves cores the task
 # never uses and throttles the array to a fraction of the account's CPUs.
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/closure_fit_%A_%a.out
 #SBATCH --error=logs/closure_fit_%A_%a.err
 

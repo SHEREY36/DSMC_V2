@@ -17,7 +17,7 @@ from scipy.optimize import brentq
 
 from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
-from .estimate import estimate_node
+from .estimate import NODE_ESTIMATE_CONTRACT, estimate_node
 from .fit_coefficients import fit_lambda1_coefficients
 from .projections import (
     _legendre_nodes,
@@ -120,6 +120,16 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
         extra = sorted(baseline_keys - set(expected_groups))
         raise ValueError(f"precomputed baseline grid mismatch; missing={missing}, extra={extra}")
     for node in nodes:
+        if node.get("estimator_contract") != NODE_ESTIMATE_CONTRACT:
+            raise ValueError(
+                f"stale node estimate for {_node_key(node)}: estimator contract "
+                f"{node.get('estimator_contract')!r}, expected {NODE_ESTIMATE_CONTRACT!r}")
+        missing_fields = [name for name in (
+            "cell_features", "incoming_law", "incoming_law_energy") if name not in node]
+        if missing_fields:
+            raise ValueError(
+                f"stale node estimate for {_node_key(node)}: missing "
+                + ", ".join(missing_fields))
         # Compare shard identities, not absolute paths: a grid estimated on the
         # cluster must validate against the same shards copied to another root.
         # The directory name carries alpha, theta, AR, ensemble and shard, so

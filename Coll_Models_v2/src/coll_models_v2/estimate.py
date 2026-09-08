@@ -28,6 +28,7 @@ from .weights import (
 
 N_BLOCKS = 128
 N_SCALARS = 10
+NODE_ESTIMATE_CONTRACT = "node_estimate_v3_energy_weighted_incoming_law"
 
 
 def _evaluate(sums: np.ndarray, metadata: dict, bl) -> np.ndarray:
@@ -439,6 +440,13 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     metadata = runs[0].metadata
     return {
         "schema_version": "2.2.0",
+        # This is deliberately separate from the CTC record schema.  A node
+        # JSON can still be schema 2.2 while having been produced before the
+        # energy-weighted incoming law and cell-measure features existed.
+        # Artifact construction therefore keys on this semantic contract,
+        # rather than accepting an old estimate because its record schema is
+        # readable.
+        "estimator_contract": NODE_ESTIMATE_CONTRACT,
         "alpha": alpha,
         "theta": float(metadata["theta"]),
         "aspect_ratio": float(metadata["aspect_ratio"]),
