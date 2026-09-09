@@ -42,7 +42,10 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
         "temperature_cools": bool(total[-1] < total[0] and np.all(total > 0.0)),
         "bounded": bool(np.all(np.isfinite(theta)) and np.all(theta > 0.0)
                         and np.max(theta) < 10.0),
-        "runtime_gate_pass": bool(diagnostics["runtime_gate"]["pass"]),
+        "negative_energy_repairs": int(diagnostics["negative_energy_repairs"]),
+        "out_of_domain_fraction": float(diagnostics["out_of_domain_fraction"]),
+        "closure_overhead_fraction": float(diagnostics["closure_overhead_fraction"]),
+        "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.05,
     }
     return result, np.column_stack((tau, theta, total / total[0]))
 
@@ -77,20 +80,29 @@ def main() -> None:
         target = items[0]["target_theta"]
         convergence = ((float(np.ptp(means)) / max(float(np.mean(means)), 1.0e-12))
                        if len(means) > 1 else None)
-        gate = (len(means) > 1 and convergence <= 0.10
-                and all(item["bounded"] and item["temperature_cools"]
-                        and item["runtime_gate_pass"]
-                        and item["late_relative_drift"] <= 0.10 for item in items)
-                and (target is None or abs(float(np.mean(means)) - target) / target <= 0.10))
+        physics_pass = (len(means) > 1 and convergence <= 0.10
+                        and all(item["bounded"] and item["temperature_cools"]
+                                and item["negative_energy_repairs"] == 0
+                                and item["out_of_domain_fraction"] < 1.0e-3
+                                and item["late_relative_drift"] <= 0.10 for item in items)
+                        and (target is None
+                             or abs(float(np.mean(means)) - target) / target <= 0.10))
+        production_pass = physics_pass and all(
+            item["performance_gate_pass"] for item in items)
         cases.append({"alpha": alpha, "aspect_ratio": ar, "tier": items[0]["tier"],
                       "target_theta": target, "mean_theta": float(np.mean(means)),
-                      "initial_condition_spread": convergence, "pass": bool(gate)})
+                      "initial_condition_spread": convergence,
+                      "physics_pass": bool(physics_pass),
+                      "production_pass": bool(production_pass)})
 
     summary = {"criteria": {"target_relative_error_max": 0.10,
                              "late_relative_drift_max": 0.10,
                              "initial_condition_spread_max": 0.10},
                "runs": records, "cases": cases,
-               "gate_pass": all(case["pass"] for case in cases if case["tier"] == "gate")}
+               "physics_gate_pass": all(case["physics_pass"] for case in cases
+                                        if case["tier"] == "gate"),
+               "production_gate_pass": all(case["production_pass"] for case in cases
+                                           if case["tier"] == "gate")}
     summary_path = Path(args.summary)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
@@ -128,7 +140,9 @@ def main() -> None:
     figure = Path(args.figure)
     figure.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(figure, dpi=180, bbox_inches="tight")
-    print(f"wrote {figure} and {summary_path}; gate_pass={summary['gate_pass']}")
+    print(f"wrote {figure} and {summary_path}; "
+          f"physics_gate_pass={summary['physics_gate_pass']}; "
+          f"production_gate_pass={summary['production_gate_pass']}")
 
 
 if __name__ == "__main__":

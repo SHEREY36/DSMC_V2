@@ -85,12 +85,15 @@ step. This is deliberately a decision screen: rerun only borderline cases with
 When all jobs finish, inspect:
 
 ```bash
-jq '{gate_pass, cases}' results/hcs_validation/summary.json
+jq '{physics_gate_pass, production_gate_pass, cases}' \
+  results/hcs_validation/summary.json
 ls -lh models/microscopic_closure_v2/{closure_v2.npz,manifest.json} \
        results/hcs_validation/hcs_theta_attraction.png
 ```
 
-Proceed to the isotropic HCS excitation responses when `gate_pass` is true. If
+Proceed to the isotropic HCS excitation responses when `physics_gate_pass` is
+true. `production_gate_pass` additionally enforces the 5% runtime-overhead goal;
+it is an optimization gate, not a statement about the collision physics. If
 only diagnostic cases fail, proceed on the passing AR/alpha domain and record
 the exclusions. Do not use USF excitation to compensate for a failed baseline
 gate, because that would confound the collision law with the forcing response.
