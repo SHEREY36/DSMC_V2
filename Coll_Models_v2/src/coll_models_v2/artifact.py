@@ -18,6 +18,7 @@ from scipy.optimize import brentq
 from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
 from .estimate import NODE_ESTIMATE_CONTRACT, estimate_node
+from .fit_exchange import LOGIT_CUBIC_KERNEL, logit_memory_basis
 from .fit_coefficients import fit_lambda1_coefficients
 from .projections import (
     _legendre_nodes,
@@ -42,6 +43,18 @@ ENERGY_A_STEP = 0.15
 ENERGY_A_MIN_NODES = 65
 ENERGY_A_MAX_NODES = 2049
 ARTIFACT_TYPE = "bl_variational_closure"
+
+
+def _node_memory_shift(energy: dict, z_in) -> np.ndarray:
+    """Incoming-state contribution to the conditional natural parameter."""
+    z = np.asarray(z_in, dtype=float)
+    if energy.get("kernel_form") == LOGIT_CUBIC_KERNEL:
+        coefficients = np.asarray(energy["memory_coefficients"], dtype=float)
+        basis = logit_memory_basis(
+            z, float(energy["memory_center"]), float(energy["memory_scale"]),
+            degree=len(coefficients))
+        return basis @ coefficients
+    return float(energy["lambda3"]) * z
 
 
 def _measure_enhancement(run_directories, offsets: int = 128) -> np.ndarray:
@@ -195,9 +208,8 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
         lambda3 = PchipInterpolator(theta, [row["energy"]["lambda3"] for row in nodes])
         lambda4 = PchipInterpolator(theta, [row["energy"].get("lambda4", 0.0)
                                             for row in nodes])
-        # The deployed kernel is the Sinkhorn bridge on a measured reference
-        # law, so the gate must evaluate that, not the conditional I-projection
-        # it replaced, and it must average over each node's OWN incoming law.
+        # The gate must evaluate the actual node-owned conditional sampler and
+        # average it over each node's OWN incoming law.
         anchor1 = PchipInterpolator(theta, [row["energy"].get("anchor_c1", 0.0)
                                             for row in nodes])
         anchor2 = PchipInterpolator(theta, [row["energy"].get("anchor_c2", 0.0)
@@ -290,7 +302,7 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
                 energy = node["energy"]
                 route_loss = float(energy.get("mean_fractional_loss", mean_loss))
                 a = (float(energy["lambda1"])
-                     + float(energy["lambda3"]) * grid
+                     + _node_memory_shift(energy, grid)
                      + float(energy.get("lambda4", 0.0)) * route_loss)
                 mean_map += physical_weight * np.interp(a, a_axis, conditional_mean)
             return float(mass @ mean_map), float(mass @ grid)
@@ -377,16 +389,18 @@ def build_artifact(run_directories, output_directory, bl=None,
     # 513 nodes reproduce the kernel's first two moments to ~1e-5, and the
     # a-axis is the dimension that has to be wide.
     probability = np.linspace(0.0, 1.0, 513)
-    # Two-dimensional (a, u) energy sampler.  Everything the kernel needs from
-    # the incoming pair enters through the single scalar
-    #     a = lambda1 + lambda3 * z_in + lambda4 * eps,
-    # so one table per node over (a, u) represents the memory exactly.  The old
-    # one-dimensional table silently dropped lambda3.
-    kernel_forms = {row["energy"].get("kernel_form", "conditional_iprojection_v2")
-                    for row in baseline}
-    if len(kernel_forms) != 1:
-        raise ValueError(f"baseline mixes kernel forms: {sorted(kernel_forms)}")
-    kernel_form = kernel_forms.pop()
+    # Two-dimensional (a, u) energy sampler. Everything the kernel needs from
+    # the incoming pair enters through one scalar
+    #     a = lambda1 + memory(z_in) + lambda4 * eps.
+    # ``memory`` is linear for the bridge and bounded-logit cubic at repaired
+    # nodes. One table per node over (a, u) therefore represents either form
+    # exactly; the old one-dimensional table silently dropped this dependence.
+    kernel_forms = np.array([
+        row["energy"].get("kernel_form", "conditional_iprojection_v2")
+        for row in baseline
+    ])
+    kernel_form_label = (str(kernel_forms[0]) if len(set(kernel_forms.tolist())) == 1
+                         else "nodewise_mixed_v1")
     loss_ceiling = float(max(getattr(bl, "gamma_max", {}).values() or [0.0])) \
         if isinstance(getattr(bl, "gamma_max", {}), dict) else float(getattr(bl, "gamma_max", 0.0))
 
@@ -398,23 +412,29 @@ def build_artifact(run_directories, output_directory, bl=None,
     # lambda3 reaches ~350, and a grid coarse enough for that node would leave
     # gaps of several units on a kernel that turns over in one.
     spans = []
-    for lambda1, lambda2, lambda3, lambda4 in eparams:
-        reach = [lambda1, lambda1 + lambda3, lambda1 + lambda4 * loss_ceiling,
-                 lambda1 + lambda3 + lambda4 * loss_ceiling]
+    memory_grid = np.linspace(1.0e-9, 1.0 - 1.0e-9, 2049)
+    for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
+        memory = _node_memory_shift(row["energy"], memory_grid)
+        reach = [lambda1 + float(np.min(memory)), lambda1 + float(np.max(memory)),
+                 lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
+                 lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling]
         spans.append(max(reach) - min(reach))
     a_nodes = int(np.clip(np.ceil(max(spans) * 1.1 / ENERGY_A_STEP) + 1,
                           ENERGY_A_MIN_NODES, ENERGY_A_MAX_NODES))
 
     a_grids, equant = [], []
     for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
-        reach = [lambda1, lambda1 + lambda3, lambda1 + lambda4 * loss_ceiling,
-                 lambda1 + lambda3 + lambda4 * loss_ceiling]
+        memory = _node_memory_shift(row["energy"], memory_grid)
+        reach = [lambda1 + float(np.min(memory)), lambda1 + float(np.max(memory)),
+                 lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
+                 lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling]
         low, high = min(reach), max(reach)
         pad = max(0.05 * (high - low), 1.0e-6)
         grid = np.linspace(low - pad, high + pad, a_nodes)
         a_grids.append(grid)
         equant.append(energy_quantile_table(
-            lambda3, lambda2, grid, probability, kernel_form=kernel_form,
+            lambda3, lambda2, grid, probability,
+            kernel_form=row["energy"].get("kernel_form", "conditional_iprojection_v2"),
             anchor=(row["energy"].get("anchor_c1", 0.0),
                     row["energy"].get("anchor_c2", 0.0))))
     a_grids = np.array(a_grids)
@@ -446,6 +466,7 @@ def build_artifact(run_directories, output_directory, bl=None,
     quad = np.linspace(0.0, 1.0, 4097)
     for index, (lambda1, lambda2, lambda3, lambda4) in enumerate(eparams):
         grid = a_grids[index]
+        kernel_form = kernel_forms[index]
         for a in (grid[0], grid[len(grid) // 2], grid[-1]):
             with np.errstate(divide="ignore"):
                 logbase = np.log(6.0 * quad * (1.0 - quad))
@@ -580,7 +601,16 @@ def build_artifact(run_directories, output_directory, bl=None,
         energy_mean_loss=np.array([row["energy"]["mean_fractional_loss"]
                                    for row in baseline], dtype=float),
         energy_interpolation=np.array("node_first_quantile_interpolation_v1"),
-        kernel_form=np.array(kernel_form), angular_quantiles=aquant,
+        kernel_form=np.array(kernel_form_label), angular_quantiles=aquant,
+        energy_kernel_forms=kernel_forms,
+        energy_memory_coefficients=np.array([
+            row["energy"].get("memory_coefficients",
+                              [row["energy"]["lambda3"], 0.0, 0.0])
+            for row in baseline], dtype=float),
+        energy_memory_center=np.array([
+            row["energy"].get("memory_center", 0.0) for row in baseline], dtype=float),
+        energy_memory_scale=np.array([
+            row["energy"].get("memory_scale", 1.0) for row in baseline], dtype=float),
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
@@ -609,6 +639,7 @@ def build_artifact(run_directories, output_directory, bl=None,
         "stability": stability,
         "stability_pass": bool(stability and all(row["unique_stable"] for row in stability)),
         "joint_energy_angle_nodes": int(np.sum(joint_deployed)),
+        "kernel_forms": sorted(set(kernel_forms.tolist())),
         "maximum_quantile_moment_error": float(sampler_error),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

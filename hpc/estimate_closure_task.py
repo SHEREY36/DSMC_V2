@@ -119,10 +119,12 @@ def main() -> None:
     print(f"anchor for this aspect ratio: c1={anchor[0]:.5f} c2={anchor[1]:.5f}",
           flush=True)
     try:
+        kernel_form = row.get("kernel_form", "").strip() or "sinkhorn_bridge_v2"
         result = estimate_node([run], n_bootstrap=args.bootstrap,
                                anchor=anchor,
                                bootstrap_seed=20260902 + args.index,
-                               propensity_offsets=args.propensity_offsets or None)
+                               propensity_offsets=args.propensity_offsets or None,
+                               kernel_form=kernel_form)
     except SCIENTIFIC_FIT_EXCEPTIONS as exc:
         result = _failed_fit_result(row, run, exc)
         passed = False
@@ -137,6 +139,7 @@ def main() -> None:
         "manifest": str(Path(args.manifest)),
         "manifest_index": int(args.index),
         "anchor_run": str(anchor_run.resolve()),
+        "kernel_form": result.get("energy", {}).get("kernel_form", kernel_form),
     }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)

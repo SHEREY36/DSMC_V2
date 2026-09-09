@@ -1,8 +1,10 @@
 """Weighted identification of the energy-partition kernel.
 
-Two kernel forms are available; ``sinkhorn_bridge_v2`` is the default.
+Three kernel forms are available. ``sinkhorn_bridge_v2`` remains the default
+and the exact equilibrium model; rejected nonequilibrium nodes can explicitly
+select ``conditional_logit_cubic_v3`` without changing accepted nodes.
 
-**The bridge (deployed).**  The exchange kernel is an entropic bridge that is
+**The bridge (equilibrium and accepted nodes).** The exchange kernel is an
 reversible with respect to Beta(2,2) by construction:
 
     p(z' | z, eps)  proportional to  6 z'(1-z') h(z) h(z')
@@ -55,9 +57,13 @@ kernel's *invariant* law -- the partition the kernel drives towards, which is
 what the reset law was a proxy for.  On synthetic gated-Beta data the two agree
 to 0.001 at an exchange probability of 0.4 and to 0.03 at 0.2: the gate is not
 a member of this family, and the weaker the exchange the fewer collisions carry
-information about the law being approached.  Where that matters -- the
-weakly-coupled low aspect ratios -- the bridge above imposes equilibrium
-instead of inferring it.
+information about the law being approached.
+
+**The bounded-logit conditional form (targeted repair).** At rejected
+far-from-equilibrium nodes, a cubic in a standardized, bounded log energy ratio
+resolves nonlinear memory without forcing detailed balance on a scalar
+marginal process. Its implementation and rationale are documented alongside
+``logit_memory_basis`` below.
 """
 
 from __future__ import annotations
@@ -290,7 +296,164 @@ def fit_bridge_kernel(z_in, z_out, weight, loss=None, quadrature: int = 128,
     }
 
 
-KERNEL_FORMS = ("sinkhorn_bridge_v2", "conditional_iprojection_v2")
+LOGIT_MEMORY_TANH_SCALE = 2.0
+LOGIT_CUBIC_KERNEL = "conditional_logit_cubic_v3"
+KERNEL_FORMS = ("sinkhorn_bridge_v2", "conditional_iprojection_v2",
+                LOGIT_CUBIC_KERNEL)
+
+
+def logit_memory_basis(z_in: np.ndarray, center: float, scale: float,
+                       degree: int = 3) -> np.ndarray:
+    """Stable memory coordinates for an energy fraction near zero or one.
+
+    Raw powers of ``z`` become numerically singular as theta tends to zero:
+    the fitted linear coefficient reached 2389 on the near-sphere shard and a
+    raw cubic still bought 0.038 held-out nats.  The log energy ratio resolves
+    multiplicative changes at either boundary. Centering/scaling is measured
+    per node, and the hyperbolic tangent maps the unbounded standardized ratio
+    to (-1, 1), preventing a single tail event from dominating the exponential
+    tilt or the exported table range.
+    """
+    z = np.clip(np.asarray(z_in, dtype=float), 1.0e-12, 1.0 - 1.0e-12)
+    standardized = ((np.log(z / (1.0 - z)) - float(center))
+                    / max(float(scale), 1.0e-8))
+    x = np.tanh(standardized / LOGIT_MEMORY_TANH_SCALE)
+    return np.column_stack([x ** power for power in range(1, int(degree) + 1)])
+
+
+def _basis_stationary(lambda1: float, lambda2: float, coefficients: np.ndarray,
+                      center: float, scale: float, offset: float,
+                      quadrature: int) -> tuple[np.ndarray, np.ndarray]:
+    """Invariant diagnostic for a conditional kernel with logit memory."""
+    from .projections import _legendre_nodes
+    z, weight = _legendre_nodes(quadrature, 0.0, 1.0)
+    basis = logit_memory_basis(z, center, scale, len(coefficients))
+    shift = basis @ np.asarray(coefficients, dtype=float) + float(offset)
+    log_base = np.log(weight * 6.0 * z * (1.0 - z))
+    exponent = (log_base + lambda1 * z + lambda2 * z * z)[None, :] \
+        + shift[:, None] * z[None, :]
+    exponent -= np.max(exponent, axis=1, keepdims=True)
+    transition = np.exp(exponent)
+    transition /= np.sum(transition, axis=1, keepdims=True)
+    system = np.vstack((transition.T - np.eye(len(z)), np.ones(len(z))))
+    rhs = np.zeros(len(z) + 1); rhs[-1] = 1.0
+    mass, *_ = np.linalg.lstsq(system, rhs, rcond=None)
+    mass = np.maximum(mass, 0.0)
+    return z, mass / np.sum(mass)
+
+
+def _conditional_logit_exchange(z_in, z_out, weight, loss, quadrature,
+                                model_form: bool, initial=None,
+                                compute_stationary: bool = True) -> dict:
+    """Local nonequilibrium kernel with cubic log-energy-ratio memory.
+
+    Detailed balance is an equilibrium property of the full collision state.
+    After orientation and impact geometry are marginalized, forcing every
+    far-from-equilibrium scalar-z node to be reversible overconstrains the
+    local response.  This family is used only at nodes rejected by that bridge;
+    the elastic theta=1 anchor remains the reversible Sinkhorn kernel.
+    """
+    weight = np.asarray(weight, dtype=float)
+    weight = weight / np.sum(weight)
+    intercept, coefficient = _affine_memory(z_in, z_out, weight)
+    p_exch = 1.0 - coefficient
+
+    z_safe = np.clip(np.asarray(z_in, dtype=float), 1.0e-12, 1.0 - 1.0e-12)
+    logit = np.log(z_safe / (1.0 - z_safe))
+    center = float(weight @ logit)
+    scale = float(np.sqrt(max(weight @ ((logit - center) ** 2), 1.0e-16)))
+    cubic = logit_memory_basis(z_in, center, scale, degree=3)
+
+    mean_loss = 0.0 if loss is None else float(weight @ loss)
+    spread = 0.0 if loss is None else float(
+        np.sqrt(max(weight @ (loss - mean_loss) ** 2, 0.0)))
+    loss_deployed = bool(loss is not None and spread > 1.0e-4)
+    columns = [cubic[:, k] for k in range(3)]
+    names = ["logit_z", "logit_z2", "logit_z3"]
+    if loss_deployed:
+        columns.append(np.asarray(loss, dtype=float))
+        names.append("loss")
+    design = np.column_stack(columns)
+    expected_width = 2 + design.shape[1]
+    warm = np.asarray(initial, dtype=float) if initial is not None else None
+    if warm is not None and warm.shape != (expected_width,):
+        warm = None
+    projection = fit_conditional_energy_projection(
+        z_out, design, weight, tuple(names), quadrature=quadrature, initial=warm)
+
+    base_score = rich_score = float("nan")
+    gain = 0.0
+    if model_form:
+        train = np.arange(len(z_in)) % 5 != 0
+        test = ~train
+        quartic = logit_memory_basis(z_in, center, scale, degree=4)
+        rich_columns = [quartic[:, k] for k in range(4)]
+        if loss_deployed:
+            rich_columns.append(np.asarray(loss, dtype=float))
+        enriched = np.column_stack(rich_columns)
+        base = fit_conditional_energy_projection(
+            z_out[train], design[train], weight[train], quadrature=quadrature,
+            initial=projection.parameters)
+        rich_initial = np.insert(projection.parameters, 5, 0.0)
+        rich = fit_conditional_energy_projection(
+            z_out[train], enriched[train], weight[train], quadrature=quadrature,
+            initial=rich_initial)
+        base_score = _weighted_mean(conditional_energy_logpdf(
+            base.parameters, design[test], z_out[test], quadrature), weight[test])
+        rich_score = _weighted_mean(conditional_energy_logpdf(
+            rich.parameters, enriched[test], z_out[test], quadrature), weight[test])
+        gain = float(rich_score - base_score)
+
+    parameters = projection.parameters
+    memory = np.asarray(parameters[2:5], dtype=float)
+    loss_coefficient = float(parameters[5]) if loss_deployed else 0.0
+    if compute_stationary:
+        nodes, mass = _basis_stationary(
+            float(parameters[0]), float(parameters[1]), memory, center, scale,
+            loss_coefficient * mean_loss, quadrature)
+        stationary_mean = float(mass @ nodes)
+        stationary_second = float(mass @ (nodes * nodes))
+    else:
+        # Bootstrap precision is attached to the deployed natural parameters.
+        # Re-solving a dense stationary system in every replicate would add no
+        # runtime-relevant uncertainty and dominate the nine targeted refits.
+        stationary_mean = stationary_second = float("nan")
+    return {
+        "p_exch": float(p_exch),
+        # Retained as a diagnostic only.  The deployed continuous kernel uses
+        # the memory coefficients directly; it has no Bernoulli exchange gate.
+        "memory_diagnostic_pass": bool(0.0 < p_exch <= 1.0),
+        "affine_intercept": float(intercept),
+        "affine_slope": float(coefficient - 1.0),
+        "lambda1": float(parameters[0]),
+        "lambda2": float(parameters[1]),
+        "lambda3": float(memory[0]),
+        "lambda4": loss_coefficient,
+        "lambda5": float(memory[1]),
+        "lambda6": float(memory[2]),
+        "memory_coefficients": memory.tolist(),
+        "memory_coordinate": "bounded_standardized_logit_z",
+        "memory_center": center,
+        "memory_scale": scale,
+        "memory_tanh_scale": LOGIT_MEMORY_TANH_SCALE,
+        "loss_covariate_deployed": loss_deployed,
+        "mean_fractional_loss": mean_loss,
+        "mean_partition_out": _weighted_mean(z_out, weight),
+        "stationary_mean": stationary_mean,
+        "stationary_second_moment": stationary_second,
+        "reset_mean": stationary_mean,
+        "reset_second_moment": stationary_second,
+        "projection_residual": float(projection.residual),
+        "projection_converged": bool(projection.converged),
+        "heldout_base_log_density": float(base_score),
+        "heldout_enriched_log_density": float(rich_score),
+        "nonlinear_improvement": gain,
+        "model_form_pass": bool(not model_form or gain < MODEL_FORM_TOLERANCE_NATS),
+        "elastic_block": False,
+        "anchor_c1": 0.0,
+        "anchor_c2": 0.0,
+        "kernel_form": LOGIT_CUBIC_KERNEL,
+    }
 
 
 def _bridge_exchange(z_in, z_out, weight, loss, quadrature,
@@ -374,7 +537,8 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
                         model_form: bool = True,
                         initial: np.ndarray | None = None,
                         kernel_form: str = "sinkhorn_bridge_v2",
-                        anchor: tuple | None = None) -> dict:
+                        anchor: tuple | None = None,
+                        compute_stationary: bool = True) -> dict:
     z_in, z_out, weight = map(lambda x: np.asarray(x, dtype=float),
                               (z_in, z_out, weight))
     if not (z_in.shape == z_out.shape == weight.shape) or z_in.ndim != 1:
@@ -391,6 +555,10 @@ def fit_exchange_kernel(z_in: np.ndarray, z_out: np.ndarray,
     if kernel_form == "sinkhorn_bridge_v2":
         return _bridge_exchange(z_in, z_out, weight, loss, quadrature,
                                 model_form, initial, anchor)
+    if kernel_form == LOGIT_CUBIC_KERNEL:
+        return _conditional_logit_exchange(
+            z_in, z_out, weight, loss, quadrature, model_form, initial,
+            compute_stationary=compute_stationary)
 
     # Affine memory diagnostic. This is unchanged and is what the previous
     # p_exch was, but it is now reported rather than inverted for a reset law.

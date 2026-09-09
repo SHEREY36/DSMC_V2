@@ -18,15 +18,18 @@ from scipy.interpolate import CubicSpline
 
 from coll_models_v2.fit_exchange import (
     KERNEL_FORMS,
+    LOGIT_CUBIC_KERNEL,
     WARM_BRACKET,
     fit_bridge_kernel,
     fit_exchange_kernel,
+    logit_memory_basis,
 )
 from coll_models_v2.projections import (
     _legendre_nodes,
     bridge_logpdf,
     bridge_potential,
     bridge_stationary,
+    energy_quantile_table,
 )
 
 
@@ -176,6 +179,46 @@ def test_unknown_kernel_form_is_rejected():
     z_in, z_out = _bridge_sample(5.0, 500, seed=19)
     with pytest.raises(ValueError, match="unknown kernel_form"):
         fit_exchange_kernel(z_in, z_out, np.ones(len(z_in)), kernel_form="beta22_gate")
+
+
+def test_bounded_logit_memory_recovers_a_cubic_conditional_law():
+    """The repair basis resolves boundary dynamics without unbounded powers."""
+    rng = np.random.default_rng(20260909)
+    count = 10_000
+    z_in = rng.beta(0.8, 5.0, count)
+    logit = np.log(z_in / (1.0 - z_in))
+    center, scale = float(logit.mean()), float(logit.std())
+    basis = logit_memory_basis(z_in, center, scale)
+    assert basis.shape == (count, 3)
+    assert np.max(np.abs(basis)) <= 1.0
+
+    truth = np.array([0.7, -1.1, 3.0, -1.5, 0.8])
+    a = truth[0] + basis @ truth[2:]
+    a_grid = np.linspace(float(a.min()) - 0.1, float(a.max()) + 0.1, 257)
+    probability = np.linspace(0.0, 1.0, 1025)
+    table = energy_quantile_table(
+        0.0, truth[1], a_grid, probability, kernel_form=LOGIT_CUBIC_KERNEL)
+    upper = np.searchsorted(a_grid, a).clip(1, len(a_grid) - 1)
+    lower = upper - 1
+    blend = (a - a_grid[lower]) / (a_grid[upper] - a_grid[lower])
+    u_index = (rng.random(count) * (len(probability) - 1)).astype(int)
+    u_index = np.minimum(u_index, len(probability) - 2)
+    u_blend = rng.random(count)
+    low_row = ((1.0 - blend) * table[lower, u_index]
+               + blend * table[upper, u_index])
+    high_row = ((1.0 - blend) * table[lower, u_index + 1]
+                + blend * table[upper, u_index + 1])
+    z_out = (1.0 - u_blend) * low_row + u_blend * high_row
+
+    fitted = fit_exchange_kernel(
+        z_in, z_out, np.ones(count), quadrature=64,
+        kernel_form=LOGIT_CUBIC_KERNEL, compute_stationary=False)
+    assert fitted["kernel_form"] == LOGIT_CUBIC_KERNEL
+    assert fitted["projection_residual"] < 1.0e-6
+    assert fitted["model_form_pass"]
+    np.testing.assert_allclose(
+        [fitted["lambda1"], fitted["lambda2"], fitted["lambda3"],
+         fitted["lambda5"], fitted["lambda6"]], truth, atol=0.35)
 
 
 def test_bridge_imposes_its_reference_law_even_when_the_data_disagree():

@@ -697,11 +697,11 @@ def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
                           anchor: tuple = (0.0, 0.0)) -> np.ndarray:
     """Two-dimensional quantile table ``z'(a, u)`` for the deployed kernel.
 
-    Both kernel forms normalise to the same shape, because everything that
+    All supported kernel forms normalise to the same shape, because everything that
     depends on the incoming state enters through one scalar:
 
         p(z' | z, eps)  ∝  base(z') exp(a z' + lambda2 z'^2),
-        a = lambda1 + lambda3 z + lambda4 eps.
+        a = lambda1 + memory(z) + lambda4 eps.
 
     ``base`` is Beta(2,2) for ``conditional_iprojection_v2`` and
     Beta(2,2) times the Sinkhorn potential ``h`` for ``sinkhorn_bridge_v2``.
@@ -730,7 +730,8 @@ def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
     if kernel_form == "sinkhorn_bridge_v2":
         log_base = (log_base + anchor[0] * z + anchor[1] * z * z
                     + _bridge_spline(float(memory), quadrature, anchor)(z))
-    elif kernel_form != "conditional_iprojection_v2":
+    elif kernel_form not in ("conditional_iprojection_v2",
+                             "conditional_logit_cubic_v3"):
         raise ValueError(f"unknown kernel_form {kernel_form!r}")
 
     exponent = (log_base[None, :] + a_grid[:, None] * z[None, :]

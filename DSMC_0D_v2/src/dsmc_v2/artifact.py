@@ -124,11 +124,44 @@ class VariationalClosure:
         self.angular_parameters = np.asarray(data["angular_parameters"], dtype=float)
         self.probability = np.asarray(data["quantile_probability"], dtype=float)
         # (node, a, u).  The energy kernel has memory: everything it needs from
-        # the incoming pair arrives as a = lambda1 + lambda3 z_in + lambda4 eps,
-        # so the sampler interpolates in a as well as in the uniform draw.
+        # the incoming pair arrives as
+        # a = lambda1 + memory(z_in) + lambda4 eps, so the sampler interpolates
+        # in a as well as in the uniform draw.
         self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
         self.energy_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
         self.kernel_form = str(data["kernel_form"])
+        self.energy_kernel_forms = (
+            np.asarray(data["energy_kernel_forms"]).astype(str)
+            if "energy_kernel_forms" in data.files
+            else np.full(len(self.coordinates), self.kernel_form))
+        self.energy_memory_coefficients = (
+            np.asarray(data["energy_memory_coefficients"], dtype=float)
+            if "energy_memory_coefficients" in data.files
+            else np.column_stack((self.energy_parameters[:, 2],
+                                  np.zeros((len(self.coordinates), 2)))))
+        self.energy_memory_center = (
+            np.asarray(data["energy_memory_center"], dtype=float)
+            if "energy_memory_center" in data.files
+            else np.zeros(len(self.coordinates)))
+        self.energy_memory_scale = (
+            np.asarray(data["energy_memory_scale"], dtype=float)
+            if "energy_memory_scale" in data.files
+            else np.ones(len(self.coordinates)))
+        supported_energy_forms = {
+            "sinkhorn_bridge_v2", "conditional_iprojection_v2",
+            "conditional_logit_cubic_v3",
+        }
+        if self.energy_kernel_forms.shape != (len(self.coordinates),) \
+                or not set(self.energy_kernel_forms).issubset(supported_energy_forms):
+            raise ValueError("artifact has invalid per-node energy kernel forms")
+        if self.energy_memory_coefficients.shape != (len(self.coordinates), 3):
+            raise ValueError("artifact energy memory coefficients must be (node, 3)")
+        if self.energy_memory_center.shape != (len(self.coordinates),) \
+                or self.energy_memory_scale.shape != (len(self.coordinates),) \
+                or np.any(~np.isfinite(self.energy_memory_center)) \
+                or np.any(~np.isfinite(self.energy_memory_scale)) \
+                or np.any(self.energy_memory_scale <= 0.0):
+            raise ValueError("artifact energy-memory normalization is invalid")
         self.energy_interpolation = "node_first_quantile_interpolation_v1"
         declared_interpolation = (str(data["energy_interpolation"])
                                   if "energy_interpolation" in data.files else None)
@@ -176,8 +209,8 @@ class VariationalClosure:
         self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
         self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
         self.joint_parameters = np.asarray(data["joint_parameters"], dtype=float)
-        if np.any((self.p_exch <= 0.0) | (self.p_exch > 1.0)):
-            raise ValueError("artifact contains an invalid direct exchange probability")
+        if np.any(~np.isfinite(self.p_exch)):
+            raise ValueError("artifact contains a non-finite affine-memory diagnostic")
         if not np.all(np.diff(self.probability) > 0.0) \
                 or self.probability[0] != 0.0 or self.probability[-1] != 1.0:
             raise ValueError("artifact quantile axis must increase from zero to one")
@@ -404,13 +437,22 @@ class VariationalClosure:
         result = np.zeros_like(self.probability, dtype=float)
         clamped = False
         for index, physical_weight in zip(indices, weights):
-            lambda1, _, lambda3, lambda4 = self.energy_parameters[index]
+            lambda1, _, _, lambda4 = self.energy_parameters[index]
             covariate = float(loss)
             fitted_mean = float(self.energy_mean_loss[index])
             if loss_mean > 0.0 and fitted_mean > 0.0:
                 covariate *= fitted_mean / float(loss_mean)
-            a = float(lambda1 + correction + lambda3 * float(z_in)
-                      + lambda4 * covariate)
+            coefficients = self.energy_memory_coefficients[index]
+            if self.energy_kernel_forms[index] == "conditional_logit_cubic_v3":
+                z = min(max(float(z_in), 1.0e-12), 1.0 - 1.0e-12)
+                scale = max(float(self.energy_memory_scale[index]), 1.0e-8)
+                standardized = ((np.log(z / (1.0 - z))
+                                 - float(self.energy_memory_center[index])) / scale)
+                x = float(np.tanh(standardized / 2.0))
+                memory = float(coefficients @ np.array([x, x * x, x * x * x]))
+            else:
+                memory = float(coefficients[0] * float(z_in))
+            a = float(lambda1 + correction + memory + lambda4 * covariate)
             grid = self.energy_a_grid[index]
             if a < grid[0] or a > grid[-1]:
                 clamped = True

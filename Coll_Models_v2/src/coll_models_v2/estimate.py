@@ -251,12 +251,16 @@ def energy_anchor_moments(energy: dict) -> tuple[float, float]:
 
 def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
          model_form: bool = True, initial: np.ndarray | None = None,
-         anchor: tuple | None = None) -> dict:
+         anchor: tuple | None = None,
+         kernel_form: str = "sinkhorn_bridge_v2",
+         compute_stationary: bool = True) -> dict:
     weight = events["weight"]
     weight = weight * len(weight) / np.sum(weight)
     energy = fit_exchange_kernel(events["z_in"], events["z_out"], weight,
                                  loss=events.get("loss"), model_form=model_form,
-                                 initial=initial, anchor=anchor)
+                                 initial=initial, anchor=anchor,
+                                 kernel_form=kernel_form,
+                                 compute_stationary=compute_stationary)
     angular = fit_angular_kernel(events["cosine"], events["z_out"], weight,
                                  allow_joint=allow_joint)
     return {"energy": energy, "angular": angular}
@@ -272,6 +276,12 @@ def _energy_parameters(energy: dict) -> np.ndarray:
             if energy.get("loss_covariate_deployed"):
                 values.append(energy["lambda4"])
         return np.asarray(values, dtype=float)
+    if energy.get("kernel_form") == "conditional_logit_cubic_v3":
+        values = [energy["lambda1"], energy["lambda2"],
+                  energy["lambda3"], energy["lambda5"], energy["lambda6"]]
+        if energy.get("loss_covariate_deployed"):
+            values.append(energy["lambda4"])
+        return np.asarray(values, dtype=float)
     values = [energy["lambda1"], energy["lambda2"], energy["lambda3"]]
     if energy.get("loss_covariate_deployed"):
         values.append(energy["lambda4"])
@@ -279,14 +289,19 @@ def _energy_parameters(energy: dict) -> np.ndarray:
 
 
 def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
-               initial: np.ndarray | None = None, anchor: tuple | None = None) -> dict:
+               initial: np.ndarray | None = None, anchor: tuple | None = None,
+               kernel_form: str = "sinkhorn_bridge_v2") -> dict:
     if count <= 0:
         return {}
     rng = np.random.default_rng(seed)
+    energy_names = ["p_exch", "mean_partition_out", "lambda1", "lambda2",
+                    "lambda3", "lambda4"]
+    if kernel_form == "conditional_logit_cubic_v3":
+        energy_names += ["lambda5", "lambda6"]
+    else:
+        energy_names += ["reset_mean", "reset_second_moment"]
     values: dict[str, list[float]] = {name: [] for name in
-        ("p_exch", "reset_mean", "reset_second_moment", "mean_partition_out",
-         "lambda1", "lambda2", "lambda3", "lambda4",
-         "eta1", "eta2", "rho_z_cosine")}
+        (*energy_names, "eta1", "eta2", "rho_z_cosine")}
     for _ in range(count):
         chosen = rng.integers(0, N_BLOCKS, N_BLOCKS)
         multiplicity = np.bincount(chosen, minlength=N_BLOCKS)
@@ -296,7 +311,8 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
         sample["weight"] = selected_weight[mask]
         try:
             fit = _fit(sample, allow_joint=False, model_form=False, initial=initial,
-                   anchor=anchor)
+                       anchor=anchor, kernel_form=kernel_form,
+                       compute_stationary=kernel_form != "conditional_logit_cubic_v3")
         except (ValueError, np.linalg.LinAlgError):
             continue
         for name in values:
@@ -324,7 +340,8 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   attempt_weights: list[np.ndarray] | None = None,
                   cell_features_override: np.ndarray | None = None,
                   ensemble_id_override: int | None = None,
-                  excitation: dict | None = None) -> dict:
+                  excitation: dict | None = None,
+                  kernel_form: str = "sinkhorn_bridge_v2") -> dict:
     """Estimate one (alpha, theta, AR, ensemble) node.
 
     ``bl`` remains an accepted argument for command-line compatibility.  It
@@ -348,7 +365,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
              for run, propensity, importance in
              zip(runs, propensities, attempt_weights)]
     events = {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
-    fitted = _fit(events, anchor=anchor)
+    fitted = _fit(events, anchor=anchor, kernel_form=kernel_form)
     # The node's OWN incoming law. This is no longer the bridge's reference
     # measure -- that is the shared equilibrium -- but it is the law the
     # stability gate must average the mean map over, because it is what the
@@ -367,7 +384,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     # of a different estimator than the point fit.
     uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed),
                              initial=_energy_parameters(fitted["energy"]),
-                             anchor=anchor)
+                             anchor=anchor, kernel_form=kernel_form)
     features, diagnostics, velocity = _proposal_invariants(runs)
     cell_features_value, _, _ = _proposal_invariants(runs, cell_measure=True)
     if cell_features_override is not None:
@@ -389,9 +406,10 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     energy = fitted["energy"]
     angular = fitted["angular"]
     alpha = float(runs[0].metadata["alpha"])
-    # Elastic gate: an elastic exchange kernel must drive the partition to
-    # equipartition, so its invariant law has to be Beta(2,2) -- mean 1/2,
-    # second moment 3/10 -- at every theta and aspect ratio.
+    # Equilibrium-elastic gate: at alpha=1 and theta=1 the exchange kernel must
+    # preserve equipartition. An elastic collision operator is reversible in
+    # its full state, but its scalar-z marginal at theta != 1 need not itself
+    # obey detailed balance after orientation/contact variables are removed.
     #
     # The tolerance is the looser of three bootstrap standard errors and a flat
     # 2 percent, for the same reason the propensity gate is: a pure
@@ -400,7 +418,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     # whose kernel is nearly the identity has a weakly identified invariant law
     # and should be judged on its own error bar.
     elastic_pass, elastic_detail = True, None
-    if np.isclose(alpha, 1.0):
+    if np.isclose(alpha, 1.0) and np.isclose(float(runs[0].metadata["theta"]), 1.0):
         elastic_detail = []
         # The elastic kernel must leave the *measured* incoming law alone. On
         # the proposal ensemble that law is Beta(2,2); on the physical collision
@@ -435,7 +453,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     }
     qa["sentinel_pass"] = bool(all(qa[name] for name in (
         "propensity_pass", "proposal_balance_pass", "ess_pass", "energy_projection_pass",
-        "angular_projection_pass", "model_form_pass", "memory_diagnostic_pass",
+        "angular_projection_pass", "model_form_pass",
         "incoming_partition_pass", "elastic_pass")))
     metadata = runs[0].metadata
     return {

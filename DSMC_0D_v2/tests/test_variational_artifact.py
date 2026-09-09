@@ -116,6 +116,47 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertAlmostEqual(closure.mean_energy(state, z_in, 0.0),
                                    expected_mean, places=13)
 
+    def test_bounded_logit_kernel_loads_and_uses_nonlinear_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            count = len(data["surface_coordinates"])
+            coefficients = np.tile([3.0, -1.0, 0.5], (count, 1))
+            center = np.zeros(count)
+            scale = np.ones(count)
+            z = np.linspace(1.0e-9, 1.0 - 1.0e-9, 2049)
+            x = np.tanh(np.log(z / (1.0 - z)) / 2.0)
+            shift = coefficients[0, 0] * x + coefficients[0, 1] * x**2 \
+                + coefficients[0, 2] * x**3
+            ep = np.zeros((count, 4)); ep[:, 1] = -1.1
+            a_grid = np.tile(np.linspace(shift.min() - 0.1, shift.max() + 0.1, 129),
+                             (count, 1))
+            probability = data["quantile_probability"]
+            tables = np.array([
+                energy_quantile_table(0.0, row[1], grid, probability,
+                                      kernel_form="conditional_logit_cubic_v3")
+                for row, grid in zip(ep, a_grid)])
+            data.update(
+                p_exch=np.full(count, -0.05),
+                energy_parameters=ep,
+                energy_a_grid=a_grid,
+                energy_quantiles=tables,
+                kernel_form=np.array("conditional_logit_cubic_v3"),
+                energy_kernel_forms=np.full(count, "conditional_logit_cubic_v3"),
+                energy_memory_coefficients=coefficients,
+                energy_memory_center=center,
+                energy_memory_scale=scale,
+            )
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.8, 0.1, 1.5,
+                                         np.zeros(len(FEATURE_NAMES)))
+            self.assertLess(state["p_exch"], 0.0)
+            low = closure.mean_energy(state, 0.02, 0.0)
+            high = closure.mean_energy(state, 0.98, 0.0)
+            self.assertGreater(high - low, 0.1)
+
     def test_refuses_an_artifact_without_the_collision_measure(self):
         """Fail closed. A missing enhancement silently reverts the runtime to
         the orientation-isotropic proposal ensemble -- the exact bug the table

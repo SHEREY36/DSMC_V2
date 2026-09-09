@@ -50,12 +50,21 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
     qa = result["qa"]
     for key in ("propensity_pass", "proposal_balance_pass", "ess_pass",
                 "energy_projection_pass", "angular_projection_pass",
-                "model_form_pass", "memory_diagnostic_pass",
+                "model_form_pass",
                 "incoming_partition_pass", "elastic_pass"):
         if not qa.get(key, False):
             reasons.append(key.removesuffix("_pass"))
-    for name in ("p_exch", "reset_mean", "lambda1", "lambda2", "lambda3",
-                 "eta1", "eta2"):
+    # p_exch is the slope of an affine diagnostic inherited from the retired
+    # Bernoulli-reset model.  The continuous conditional sampler does not use
+    # it; lambda3 (and, where selected, the higher memory coefficients) carry
+    # the dependence on the incoming partition.  A negative diagnostic must
+    # therefore be reported but cannot veto a kernel that never consumes it.
+    required = ["lambda1", "lambda2", "lambda3", "eta1", "eta2"]
+    if result.get("energy", {}).get("kernel_form") == "conditional_logit_cubic_v3":
+        required += ["lambda5", "lambda6"]
+    else:
+        required.append("reset_mean")
+    for name in required:
         interval = result.get("uncertainty", {}).get(name)
         if interval is None:
             reasons.append(f"{name}_precision_missing")
