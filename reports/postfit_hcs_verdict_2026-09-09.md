@@ -60,38 +60,38 @@ to excitation without hiding transfer failures in other domains.
 
 ## Next Negishi operation
 
-After pulling the repair commit, run one command:
+Build and inspect the deployable artifact first:
 
 ```bash
 cd /scratch/negishi/mgbolase/DSMC_V2
 git pull
-bash hpc/submit_postfit_hcs.sh
+bash hpc/submit_postfit_artifact.sh
 ```
 
-This performs, in dependency order:
+This performs only:
 
-1. a fresh fail-closed check of the 144 existing estimates;
-2. artifact construction only (no CTC and no closure refits);
-3. a 12-task HCS array to 10 collisions per particle with 1,000 particles;
-4. generation of `results/hcs_validation/hcs_theta_attraction.png` and
-   `results/hcs_validation/summary.json`.
+1. a fresh fail-closed check of the 144 existing estimates; and
+2. artifact construction (no HCS, CTC, or closure refits).
 
-The local smoke benchmark implies roughly 36 single-core hours for HCS, or
-about three to four hours elapsed if all 12 array tasks run concurrently.
-Artifact construction uses one 20-core node and is the only other compute-heavy
-step. This is deliberately a decision screen: rerun only borderline cases with
-2,003 particles, rather than spending that cost on the entire grid up front.
+A representative local benchmark took 17.76 seconds for 1,000 particles and
+0.2 collisions per particle, with 3.45% of wall time in closure evaluation.
+Linear extrapolation gives about 15 minutes per 10-collision trajectory, or
+roughly three core-hours for all 12 HCS cases. Negishi timing can differ, but
+this is consistent with an O(N) Bird-NTC implementation rather than an all-pairs
+O(N^2) algorithm.
 
-When all jobs finish, inspect:
+When the artifact job finishes, inspect it before submitting HCS:
 
 ```bash
-jq '{physics_gate_pass, production_gate_pass, cases}' \
-  results/hcs_validation/summary.json
-ls -lh models/microscopic_closure_v2/{closure_v2.npz,manifest.json} \
-       results/hcs_validation/hcs_theta_attraction.png
+jq '{schema_version,n_nodes,n_baseline_nodes,stability_pass,kernel_forms,
+     maximum_quantile_moment_error}' \
+  models/microscopic_closure_v2/manifest.json
+ls -lh models/microscopic_closure_v2/{closure_v2.npz,manifest.json}
 ```
 
-Proceed to the isotropic HCS excitation responses when `physics_gate_pass` is
+Only after that artifact passes inspection, submit the HCS gate with
+`hpc/submit_hcs_validation.sh`. Proceed to the isotropic HCS excitation
+responses when `physics_gate_pass` is
 true. `production_gate_pass` additionally enforces the 5% runtime-overhead goal;
 it is an optimization gate, not a statement about the collision physics. If
 only diagnostic cases fail, proceed on the passing AR/alpha domain and record
