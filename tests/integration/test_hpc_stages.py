@@ -2,6 +2,7 @@ import sys
 import subprocess
 import tempfile
 import unittest
+import csv
 from pathlib import Path
 
 
@@ -54,6 +55,27 @@ class HPCStageTests(unittest.TestCase):
             text = job.read_text()
             self.assertIn("#SBATCH -A morri353", text, job.name)
             self.assertIn("#SBATCH -p cpu", text, job.name)
+
+    def test_artifact_job_uses_submission_directory_not_slurm_spool(self):
+        script = (ROOT / "hpc" / "aggregate.slurm").read_text()
+        self.assertIn("SLURM_SUBMIT_DIR", script)
+
+    def test_hcs_gate_has_two_initial_conditions_and_known_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "hcs.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts" / "make_hcs_validation_manifest.py"),
+                "--output", str(manifest), "--results", str(Path(temporary) / "results"),
+            ], check=True, capture_output=True, text=True)
+            with manifest.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 12)
+            ar2_alpha95 = [row for row in rows
+                           if float(row["alpha"]) == 0.95
+                           and float(row["aspect_ratio"]) == 2.0]
+            self.assertEqual({float(row["theta0"]) for row in ar2_alpha95}, {0.75, 1.25})
+            self.assertEqual({float(row["target_theta"]) for row in ar2_alpha95}, {0.9792})
 
 
 if __name__ == "__main__":

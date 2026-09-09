@@ -14,7 +14,9 @@ set -euo pipefail
 MANIFEST=${1:-manifests/artifact_grid.csv}
 ESTIMATES=${2:-results/closure_estimates/artifact_grid}
 OUTPUT=${3:-models/microscopic_closure_v2}
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# Slurm executes a copied script from /var/spool/slurm, so $0 does not point
+# into the checkout.  sbatch records the submission directory explicitly.
+ROOT=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 "$ROOT/hpc/python.sh" "$ROOT/Coll_Models_v2/scripts/build_artifact.py" \
