@@ -36,8 +36,10 @@ ARTIFACT_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
 ARTIFACT_JOB=${ARTIFACT_RAW%%;*}
 hpc/python.sh DSMC_0D_v2/scripts/make_hcs_validation_manifest.py --output "$HCS_MANIFEST"
 ROWS=$(( $(wc -l < "$HCS_MANIFEST") - 1 ))
+HCS_CONCURRENT=$ROWS
+(( HCS_CONCURRENT > ${HCS_MAX_CORES:-256} )) && HCS_CONCURRENT=${HCS_MAX_CORES:-256}
 HCS_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
-  --dependency="afterok:$ARTIFACT_JOB" --array="0-$((ROWS - 1))%20" \
+  --dependency="afterok:$ARTIFACT_JOB" --array="0-$((ROWS - 1))%$HCS_CONCURRENT" \
   hpc/hcs_validation_array.slurm "$HCS_MANIFEST" "$ARTIFACT_DIR/closure_v2.npz")
 HCS_JOB=${HCS_RAW%%;*}
 PLOT_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \

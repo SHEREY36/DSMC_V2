@@ -69,6 +69,7 @@ def main() -> None:
     diagnostics["validation_case"] = {
         "tier": row["tier"], "alpha": alpha, "aspect_ratio": ar,
         "theta0": theta0,
+        "replicate": int(row.get("replicate", 0)),
         "target_theta": None if not row["target_theta"] else float(row["target_theta"]),
     }
     path = Path(str(prefix) + ".json")

@@ -29,6 +29,8 @@ def runtime_gate_status(diagnostics: dict) -> dict:
         reasons.append("out_of_domain_fraction_not_below_0.001")
     if float(diagnostics["closure_overhead_fraction"]) >= 0.05:
         reasons.append("closure_overhead_fraction_not_below_0.05")
+    if int(diagnostics.get("energy_axis_clamps", 0)) != 0:
+        reasons.append("energy_axis_clamps_not_zero")
     return {
         "pass": not reasons,
         "reasons": reasons,
@@ -36,6 +38,7 @@ def runtime_gate_status(diagnostics: dict) -> dict:
             "negative_energy_repairs": 0,
             "out_of_domain_fraction_exclusive_maximum": 1.0e-3,
             "closure_overhead_fraction_exclusive_maximum": 0.05,
+            "energy_axis_clamps": 0,
         },
     }
 
@@ -305,6 +308,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "closure_overhead_fraction": closure_seconds / max(total_seconds, 1.0e-30),
         "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
                                     else closure.out_of_domain_fraction),
+        "energy_axis_clamps": (0 if not isinstance(closure, VariationalClosure)
+                                else closure.energy_axis_clamps),
+        "energy_axis_clamp_fraction": (
+            0.0 if not isinstance(closure, VariationalClosure)
+            else closure.energy_axis_clamps / max(collisions, 1)),
         "energy_interpolation": (None if not isinstance(closure, VariationalClosure)
                                  else closure.energy_interpolation),
         "output": str(output_path),

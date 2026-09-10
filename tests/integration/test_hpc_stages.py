@@ -1,3 +1,4 @@
+import os
 import sys
 import subprocess
 import tempfile
@@ -86,12 +87,36 @@ class HPCStageTests(unittest.TestCase):
             ], check=True, capture_output=True, text=True)
             with manifest.open(newline="") as handle:
                 rows = list(csv.DictReader(handle))
-            self.assertEqual(len(rows), 12)
+            self.assertEqual(len(rows), 36)
             ar2_alpha95 = [row for row in rows
                            if float(row["alpha"]) == 0.95
                            and float(row["aspect_ratio"]) == 2.0]
             self.assertEqual({float(row["theta0"]) for row in ar2_alpha95}, {0.75, 1.25})
             self.assertEqual({float(row["target_theta"]) for row in ar2_alpha95}, {0.9792})
+            self.assertEqual({int(row["replicate"]) for row in ar2_alpha95}, {0, 1, 2})
+
+    def test_excitation_pilots_are_bounded_and_parallel(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode, expected in (("hcs-pilot", 96), ("full-pilot", 72)):
+                manifest = Path(temporary) / f"{mode}.csv"
+                subprocess.run([
+                    sys.executable, str(ROOT / "hpc" / "make_excitation_manifest.py"),
+                    "--mode", mode, "--grid", str(ROOT / "manifests" / "artifact_grid.csv"),
+                    "--estimates", str(ROOT / "results" / "closure_estimates" / "artifact_grid"),
+                    "--output", str(manifest), "--results", str(Path(temporary) / mode),
+                ], check=True, capture_output=True, text=True,
+                   env={**os.environ, "PYTHONPATH": str(ROOT / "contracts" / "python")
+                        + ":" + str(ROOT / "Coll_Models_v2" / "src")})
+                with manifest.open(newline="") as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(len(rows), expected)
+                self.assertGreaterEqual(min(float(row["eta"]) for row in rows), -0.5)
+                self.assertLessEqual(max(float(row["eta"]) for row in rows), 0.5)
+        worker = (ROOT / "hpc" / "excitation_fit_stride.slurm").read_text()
+        submitter = (ROOT / "hpc" / "submit_excitation_campaign.sh").read_text()
+        self.assertIn("#SBATCH --cpus-per-task=1", worker)
+        self.assertIn("EXCITATION_MAX_CORES:-256", submitter)
+        self.assertIn("require_hcs_pass.py", submitter)
 
 
 if __name__ == "__main__":

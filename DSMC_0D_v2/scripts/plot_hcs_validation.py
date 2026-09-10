@@ -31,18 +31,30 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
     span = float(x[-1] - x[0]) if len(x) > 1 else 0.0
     drift = abs(slope) * span / max(abs(mean), 1.0e-12)
     target = None if not row["target_theta"] else float(row["target_theta"])
+    alpha = float(row["alpha"])
+    total_change = float(total[-1] / total[0] - 1.0)
+    # Inelastic HCS cools forever; elastic HCS conserves total energy.  Asking
+    # alpha=1 to cool would reject the exact physical limit for the wrong
+    # reason.  Two percent is far above roundoff yet tight enough to catch a
+    # genuinely dissipative elastic implementation.
+    energy_behavior_pass = (
+        abs(total_change) <= 0.02 if np.isclose(alpha, 1.0)
+        else total_change < 0.0)
     result = {
         "task_id": int(row["task_id"]), "tier": row["tier"],
-        "alpha": float(row["alpha"]), "aspect_ratio": float(row["aspect_ratio"]),
+        "alpha": alpha, "aspect_ratio": float(row["aspect_ratio"]),
         "theta0": float(row["theta0"]), "target_theta": target,
+        "replicate": int(row.get("replicate", 0)),
         "late_theta_mean": mean,
         "late_theta_std": float(np.std(y, ddof=1)) if len(y) > 1 else 0.0,
         "late_relative_drift": drift,
         "relative_target_error": None if target is None else abs(mean - target) / target,
-        "temperature_cools": bool(total[-1] < total[0] and np.all(total > 0.0)),
+        "relative_total_energy_change": total_change,
+        "energy_behavior_pass": bool(energy_behavior_pass and np.all(total > 0.0)),
         "bounded": bool(np.all(np.isfinite(theta)) and np.all(theta > 0.0)
                         and np.max(theta) < 10.0),
         "negative_energy_repairs": int(diagnostics["negative_energy_repairs"]),
+        "energy_axis_clamps": int(diagnostics.get("energy_axis_clamps", 0)),
         "out_of_domain_fraction": float(diagnostics["out_of_domain_fraction"]),
         "closure_overhead_fraction": float(diagnostics["closure_overhead_fraction"]),
         "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.05,
@@ -78,11 +90,22 @@ def main() -> None:
     for (alpha, ar), items in sorted(grouped.items()):
         means = np.array([item["late_theta_mean"] for item in items])
         target = items[0]["target_theta"]
-        convergence = ((float(np.ptp(means)) / max(float(np.mean(means)), 1.0e-12))
-                       if len(means) > 1 else None)
-        physics_pass = (len(means) > 1 and convergence <= 0.10
-                        and all(item["bounded"] and item["temperature_cools"]
+        by_start = defaultdict(list)
+        for item in items:
+            by_start[item["theta0"]].append(item["late_theta_mean"])
+        start_means = np.array([np.mean(by_start[start]) for start in sorted(by_start)])
+        convergence = ((float(np.ptp(start_means))
+                        / max(float(np.mean(start_means)), 1.0e-12))
+                       if len(start_means) > 1 else None)
+        replicate_cv = max(
+            (float(np.std(values, ddof=1) / max(abs(np.mean(values)), 1.0e-12))
+             if len(values) > 1 else 0.0)
+            for values in by_start.values())
+        physics_pass = (len(start_means) > 1 and convergence <= 0.10
+                        and replicate_cv <= 0.10
+                        and all(item["bounded"] and item["energy_behavior_pass"]
                                 and item["negative_energy_repairs"] == 0
+                                and item["energy_axis_clamps"] == 0
                                 and item["out_of_domain_fraction"] < 1.0e-3
                                 and item["late_relative_drift"] <= 0.10 for item in items)
                         and (target is None
@@ -92,12 +115,16 @@ def main() -> None:
         cases.append({"alpha": alpha, "aspect_ratio": ar, "tier": items[0]["tier"],
                       "target_theta": target, "mean_theta": float(np.mean(means)),
                       "initial_condition_spread": convergence,
+                      "replicate_coefficient_of_variation": replicate_cv,
                       "physics_pass": bool(physics_pass),
                       "production_pass": bool(production_pass)})
 
     summary = {"criteria": {"target_relative_error_max": 0.10,
                              "late_relative_drift_max": 0.10,
-                             "initial_condition_spread_max": 0.10},
+                             "initial_condition_spread_max": 0.10,
+                             "replicate_coefficient_of_variation_max": 0.10,
+                             "elastic_total_energy_relative_change_max": 0.02,
+                             "energy_axis_clamps": 0},
                "runs": records, "cases": cases,
                "physics_gate_pass": all(case["physics_pass"] for case in cases
                                         if case["tier"] == "gate"),
@@ -118,10 +145,20 @@ def main() -> None:
         alpha, ar = key
         matching = [(row, values) for row, values in series
                     if float(row["alpha"]) == alpha and float(row["aspect_ratio"]) == ar]
-        for row, values in matching:
-            theta0 = float(row["theta0"])
-            ax.plot(values[:, 0], values[:, 1], color=colors[theta0], lw=1.4,
+        for theta0 in sorted(colors):
+            replicates = [values for row, values in matching
+                          if float(row["theta0"]) == theta0]
+            if not replicates:
+                continue
+            length = min(len(values) for values in replicates)
+            tau = replicates[0][:length, 0]
+            stack = np.array([values[:length, 1] for values in replicates])
+            mean, spread = np.mean(stack, axis=0), np.std(stack, axis=0)
+            ax.plot(tau, mean, color=colors[theta0], lw=1.6,
                     label=fr"$\theta_0={theta0:g}$")
+            if len(replicates) > 1:
+                ax.fill_between(tau, mean - spread, mean + spread,
+                                color=colors[theta0], alpha=0.14, linewidth=0)
         target_text = matching[0][0]["target_theta"] if matching else ""
         if target_text:
             target = float(target_text)

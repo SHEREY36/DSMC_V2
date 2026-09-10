@@ -7,6 +7,7 @@ import pytest
 
 from coll_models_v2.excitation import (
     MINIMUM_ESS, ONE_SIDED, UNIDENTIFIABLE, _normal_score, excite,
+    particle_scores,
 )
 from dsmc_v2_contracts.io import AI, ATTEMPT_DTYPE
 
@@ -83,3 +84,12 @@ def test_corrected_scores_reach_scalar_spin_and_signed_cross_invariants():
     assert opposed["features"]["PiQ"] < -0.005
     assert min(row["ess_fraction"] for row in
                (negative_acu, positive_acu, spin, parallel, opposed)) > MINIMUM_ESS
+
+
+def test_selecting_one_score_does_not_change_its_definition():
+    run = _maxwellian_attempt_run(2000)
+    all_scores = particle_scores(run)[0]
+    selected = particle_scores(run, ("PiQ_opposed",))[0]
+    assert list(selected) == ["PiQ_opposed"]
+    np.testing.assert_array_equal(selected["PiQ_opposed"],
+                                  all_scores["PiQ_opposed"])

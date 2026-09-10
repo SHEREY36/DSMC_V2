@@ -49,6 +49,12 @@ UNIDENTIFIABLE = ()
 # invariant's own property, not a limitation of the tilt.
 ONE_SIDED = ("PiPi", "QQ", "RtRt", "qtr2", "qrot2", "W2")
 
+EXCITATION_FAMILIES = (
+    "a2_tr", "a2_rot", "a11", "A_cu", "PiPi", "QQ", "RtRt",
+    "PiQ", "PiQ_opposed", "PiRt", "PiRt_opposed", "QRt", "QRt_opposed",
+    "qtr2", "qrot2", "qtr_qrot", "qtr_qrot_opposed", "W2",
+)
+
 
 def _normal_score(values: np.ndarray) -> np.ndarray:
     """Rank-to-normal transform: same ordering, tails light enough to tilt."""
@@ -57,13 +63,17 @@ def _normal_score(values: np.ndarray) -> np.ndarray:
     return ndtri((order + 0.5) / len(values))
 
 
-def particle_scores(run) -> dict[str, np.ndarray]:
+def particle_scores(run, families=None) -> dict[str, np.ndarray]:
     """Per-particle scores whose tilts move each invariant family.
 
     Scalar families tilt radial quantities; the tensor and vector families tilt
     a COMPONENT and let the invariant follow, because tilting on the invariant
     itself (which is quadratic) cannot change its sign.
     """
+    requested = set(EXCITATION_FAMILIES if families is None else families)
+    unknown = requested - set(EXCITATION_FAMILIES)
+    if unknown:
+        raise ValueError(f"unknown excitation score families {sorted(unknown)}")
     values = np.asarray(run.attempts["values"])
     c1, c2 = _vec(values, AI, "c1"), _vec(values, AI, "c2")
     w1, w2 = _vec(values, AI, "omega1"), _vec(values, AI, "omega2")
@@ -88,39 +98,47 @@ def particle_scores(run) -> dict[str, np.ndarray]:
     qtr = 0.8 * c[:, 0] * (speed2 - 2.5)
     qrot = 2.0 * c[:, 0] * (spin2 - 1.0)
 
-    def coupled(left, right, sign=1.0):
+    normal_cache = {}
+
+    def normal(name, values):
+        if name not in normal_cache:
+            normal_cache[name] = _normal_score(values)
+        return normal_cache[name]
+
+    def coupled(left_name, left, right_name, right, sign=1.0):
         # Equalise the marginal score scales before forming parallel/opposed
         # perturbations. Otherwise the larger-variance field silently owns the
         # supposed cross-invariant excitation.
-        return (_normal_score(left) + sign * _normal_score(right)) / np.sqrt(2.0)
+        return (normal(left_name, left) + sign * normal(right_name, right)) \
+            / np.sqrt(2.0)
 
-    return {
-        "a2_tr": speed2,
-        "a2_rot": spin2,
-        "a11": (speed2 - np.mean(speed2)) * (spin2 - np.mean(spin2)),
-        "A_cu": np.einsum("ni,ni->n", c, axis) ** 2 - speed2 / 3.0,
-        # stress: a component, not the contraction
-        "PiPi": pi,
-        "QQ": qq,
-        "RtRt": rt,
-        # Parallel and opposed component tilts are both required: changing the
-        # sign of eta flips both fields and leaves their cross contraction's
-        # sign unchanged.
-        "PiQ": coupled(pi, qq),
-        "PiQ_opposed": coupled(pi, qq, -1.0),
-        "PiRt": coupled(pi, rt),
-        "PiRt_opposed": coupled(pi, rt, -1.0),
-        "QRt": coupled(qq, rt),
-        "QRt_opposed": coupled(qq, rt, -1.0),
-        # heat flux: an odd moment, so the sign of eta is meaningful
-        "qtr2": qtr,
-        "qrot2": qrot,
-        "qtr_qrot": coupled(qtr, qrot),
-        "qtr_qrot_opposed": coupled(qtr, qrot, -1.0),
+    raw = {
+        "a2_tr": lambda: speed2,
+        "a2_rot": lambda: spin2,
+        "a11": lambda: ((speed2 - np.mean(speed2))
+                         * (spin2 - np.mean(spin2))),
+        "A_cu": lambda: np.einsum("ni,ni->n", c, axis) ** 2 - speed2 / 3.0,
+        # Tensor families tilt a signed component; their invariant contraction
+        # is measured only after reweighting the cell.
+        "PiPi": lambda: pi,
+        "QQ": lambda: qq,
+        "RtRt": lambda: rt,
+        "PiQ": lambda: coupled("pi", pi, "qq", qq),
+        "PiQ_opposed": lambda: coupled("pi", pi, "qq", qq, -1.0),
+        "PiRt": lambda: coupled("pi", pi, "rt", rt),
+        "PiRt_opposed": lambda: coupled("pi", pi, "rt", rt, -1.0),
+        "QRt": lambda: coupled("qq", qq, "rt", rt),
+        "QRt_opposed": lambda: coupled("qq", qq, "rt", rt, -1.0),
+        "qtr2": lambda: qtr,
+        "qrot2": lambda: qrot,
+        "qtr_qrot": lambda: coupled("qtr", qtr, "qrot", qrot),
+        "qtr_qrot_opposed": lambda: coupled("qtr", qtr, "qrot", qrot, -1.0),
         # Mean lab-frame spin, compatible with the smooth-rod tangent
         # constraint.  The former axial score (omega.u)^2 was identically zero.
-        "W2": w[:, 0],
-    }, velocity, omega, axis
+        "W2": lambda: w[:, 0],
+    }
+    return {family: raw[family]() for family in EXCITATION_FAMILIES
+            if family in requested}, velocity, omega, axis
 
 
 def excite(run, family: str, eta: float,
@@ -150,11 +168,10 @@ def excite_runs(runs, family: str, eta: float,
     runs = list(runs)
     if not runs:
         raise ValueError("at least one baseline run is required")
-    parts = [particle_scores(run) for run in runs]
-    available = set(parts[0][0])
-    if family not in available or any(set(part[0]) != available for part in parts):
-        raise ValueError(f"no common excitation score for {family!r}; "
-                         f"have {sorted(available)}")
+    if family not in EXCITATION_FAMILIES:
+        raise ValueError(f"no excitation score for {family!r}; "
+                         f"have {list(EXCITATION_FAMILIES)}")
+    parts = [particle_scores(run, (family,)) for run in runs]
     masses = {float(run.metadata["mass"]) for run in runs}
     inertias = {float(run.metadata["moi_perpendicular"]) for run in runs}
     if len(masses) != 1 or len(inertias) != 1:
@@ -223,7 +240,9 @@ def excite_runs(runs, family: str, eta: float,
 def estimate_excitation(run_directories, family: str, eta: float,
                         ensemble_id: int, anchor: tuple,
                         n_bootstrap: int = 200,
-                        propensity_offsets: int | None = 128) -> dict:
+                        propensity_offsets: int | None = 128,
+                        bootstrap_seed: int = 20260902,
+                        kernel_form: str = "sinkhorn_bridge_v2") -> dict:
     """Fit a virtual excited node directly from baseline CTC shards."""
     from .estimate import estimate_node
     from .pipeline import precision_status
@@ -244,7 +263,8 @@ def estimate_excitation(run_directories, family: str, eta: float,
         attempt_weights=excited["attempt_weights"],
         cell_features_override=np.array([
             excited["features"][name] for name in FEATURE_NAMES]),
-        ensemble_id_override=int(ensemble_id), excitation=metadata)
+        ensemble_id_override=int(ensemble_id), excitation=metadata,
+        bootstrap_seed=int(bootstrap_seed), kernel_form=kernel_form)
     passed, reasons = precision_status(result)
     result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
     return result
