@@ -68,6 +68,8 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("ARTIFACT_MAX_CORES:-256", submitter)
         self.assertIn("afterok:$PRE_JOB", submitter)
         self.assertIn("artifact_precompute_stride.slurm", submitter)
+        self.assertNotIn("{print $3; exit}", submitter)
+        self.assertIn("|| MAX_ARRAY=1000", submitter)
 
     def test_artifact_aggregation_consumes_parallel_precompute_payloads(self):
         script = (ROOT / "hpc" / "aggregate.slurm").read_text()

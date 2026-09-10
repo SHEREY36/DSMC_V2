@@ -30,7 +30,8 @@ QA_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
   hpc/validate_artifact_estimates.slurm "$GRID" "$ESTIMATES" "$REPAIR_REPORT")
 QA_JOB=${QA_JOB_RAW%%;*}
 ARTIFACT_ROWS=$(( $(wc -l < "$GRID") - 1 ))
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 PRE_TASKS=$ARTIFACT_ROWS
 (( PRE_TASKS > MAX_ARRAY )) && PRE_TASKS=$MAX_ARRAY

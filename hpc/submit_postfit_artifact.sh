@@ -17,7 +17,8 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
   --require-current-estimates --require-pass
 
 ROWS=$(( $(wc -l < "$GRID") - 1 ))
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 MAX_CORES=${ARTIFACT_MAX_CORES:-256}
 CPUS_PER_TASK=2
@@ -30,6 +31,8 @@ if (( ARRAY_TASKS < 1 || CONCURRENT < 1 )); then
   exit 2
 fi
 
+echo "Submitting $ROWS artifact nodes as $ARRAY_TASKS array work queues "\
+"($CONCURRENT simultaneous x $CPUS_PER_TASK cores; MaxArraySize=$MAX_ARRAY)"
 PRE_RAW=$(sbatch --parsable --array="0-$((ARRAY_TASKS - 1))%$CONCURRENT" \
   hpc/artifact_precompute_stride.slurm "$GRID" "$ESTIMATES" "$WORK" "$ROWS")
 PRE_JOB=${PRE_RAW%%;*}

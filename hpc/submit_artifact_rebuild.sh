@@ -31,7 +31,8 @@ QA_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
   --dependency="afterok:$FIT_JOB" \
   hpc/validate_artifact_grid.slurm "$MANIFEST" "$ESTIMATES" "$REPORT")
 QA_JOB=${QA_JOB_RAW%%;*}
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 PRE_TASKS=$ROWS
 (( PRE_TASKS > MAX_ARRAY )) && PRE_TASKS=$MAX_ARRAY

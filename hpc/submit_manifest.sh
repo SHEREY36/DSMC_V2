@@ -4,7 +4,8 @@ MANIFEST=${1:?usage: submit_manifest.sh MANIFEST.csv}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 mkdir -p logs manifests/split
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 MAX_CONCURRENT=${CTC_MAX_CONCURRENT:-12}
 if (( MAX_CONCURRENT < 1 )); then

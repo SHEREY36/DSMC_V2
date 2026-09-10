@@ -18,7 +18,8 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
   --require-current-estimates --require-pass
 
 ARTIFACT_ROWS=$(( $(wc -l < "$GRID") - 1 ))
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 MAX_CORES=${ARTIFACT_MAX_CORES:-256}
 PRE_TASKS=$ARTIFACT_ROWS

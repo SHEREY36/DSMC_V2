@@ -8,7 +8,8 @@ OUTPUT=${2:?usage: submit_closure_fits.sh MANIFEST.csv OUTPUT_DIR}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 mkdir -p logs manifests/split "$OUTPUT"
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=$(scontrol show config 2>/dev/null \
+  | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 # MaxArraySize is the exclusive upper bound on the index, so the largest usable
 # array is 0..MAX_ARRAY-1.
