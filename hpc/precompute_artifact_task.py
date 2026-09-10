@@ -13,7 +13,7 @@ from coll_models_v2.legacy_bl import LegacyBL
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--node-estimates", required=True)
+    parser.add_argument("--node-estimates", required=True, nargs="+")
     parser.add_argument("--output", required=True)
     parser.add_argument("--index", required=True, type=int)
     parser.add_argument("--workers", type=int, default=1)

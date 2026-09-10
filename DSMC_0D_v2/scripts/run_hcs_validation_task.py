@@ -29,6 +29,7 @@ def main() -> None:
     parser.add_argument("--task", type=int, required=True)
     parser.add_argument("--config", default="DSMC_0D_v2/config/default.yaml")
     parser.add_argument("--artifact", default="models/microscopic_closure_v2/closure_v2.npz")
+    parser.add_argument("--enable-invariant-corrections", action="store_true")
     args = parser.parse_args()
 
     row = row_at(Path(args.manifest), args.task)
@@ -59,7 +60,8 @@ def main() -> None:
     config["flow"] = {"mode": "hcs", "shear_rate": 0.0}
     config["microscopic_closure"].update({
         "routing": "variational_v2", "angular": "variational_v2",
-        "artifact": args.artifact, "invariant_corrections": False,
+        "artifact": args.artifact,
+        "invariant_corrections": bool(args.enable_invariant_corrections),
     })
     config.setdefault("diagnostics", {})["collision_audit"] = True
 

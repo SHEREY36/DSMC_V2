@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from dsmc_v2_contracts import FEATURE_NAMES
+from coll_models_v2.response import fit_response
 
 
 PARAMETERS = (
@@ -84,9 +85,6 @@ def main() -> None:
                 continue
             y = np.array([result[section][name] - baseline[section][name]
                           for _, result in items])
-            beta, *_ = np.linalg.lstsq(x, y, rcond=None)
-            residual = y - x @ beta
-            scale_y = max(float(np.ptp(y)), 1.0e-12)
             standardised = []
             base_se = baseline.get("uncertainty", {}).get(name, {}).get("standard_error")
             for (_, result), delta in zip(items, y):
@@ -94,12 +92,15 @@ def main() -> None:
                 if base_se is not None and excited_se is not None:
                     standardised.append(abs(float(delta)) /
                                         max(np.hypot(base_se, excited_se), 1.0e-30))
-            response[name] = {
-                "coefficients": dict(zip(design_names, beta.tolist())),
-                "relative_linear_rmse": float(np.sqrt(np.mean(residual ** 2)) / scale_y),
+            fitted = fit_response(baseline, [result for _, result in items],
+                                  design_names, section, name)
+            fitted.update({
                 "maximum_standardized_shift": (max(standardised) if standardised else None),
                 "material_response": bool(standardised and max(standardised) >= 3.0),
-            }
+                "linearity_pass": bool(fitted["validation_relative_rmse"] is not None
+                                       and fitted["validation_relative_rmse"] <= 0.15),
+            })
+            response[name] = fitted
         ess = [result["excitation"]["ess_fraction"] for _, result in items]
         share = [result["excitation"]["max_weight_share"] for _, result in items]
         precision = [result.get("qa", {}).get("precision_pass", False)
@@ -114,30 +115,53 @@ def main() -> None:
             "minimum_ess_fraction": float(min(ess)),
             "maximum_weight_share": float(max(share)),
             "all_sentinel_pass": bool(all(sentinel)),
+            "all_pointwise_precision_pass": bool(all(precision)),
+            # Compatibility alias. Pointwise precision is reported, but it is
+            # no longer confused with a response-model release decision.
             "all_precision_pass": bool(all(precision)),
             "parameter_response": response,
         }
         node["screening_pass"] = bool(
             rank == expected_rank and min(ess) >= 0.5 and max(share) <= 0.01
             and all(sentinel))
+        lambda1 = response.get("lambda1", {})
+        node["response_linearity_pass"] = bool(lambda1.get("linearity_pass", False))
+        node["response_fit_ready"] = bool(
+            node["screening_pass"] and node["response_linearity_pass"]
+            and node["condition_number_scaled"] <= 100.0)
         nodes.append(node)
 
+    screening_pass = bool(not failures and nodes
+                          and all(node["screening_pass"] for node in nodes))
+    response_fit_ready = bool(not failures and nodes
+                              and all(node["response_fit_ready"] for node in nodes))
+    mode = rows[0]["mode"] if rows else None
+    blockers = ["pilot_does_not_modify_artifact",
+                "corrected_dynamics_not_validated",
+                "independent_direct_ctc_validation_missing"]
+    if mode == "hcs-pilot":
+        blockers.insert(1, "full_14_feature_basis_not_sampled")
     payload = {
         "manifest": args.manifest, "n_tasks": len(rows), "n_failures": len(failures),
         "failures": failures, "nodes": nodes,
-        "screening_pass": bool(not failures and nodes
-                               and all(node["screening_pass"] for node in nodes)),
-        "deployment_ready": bool(not failures and nodes
-                                  and all(node["screening_pass"]
-                                          and node["all_precision_pass"] for node in nodes)),
-        "decision": ("inspect parameter_response before choosing the deployed "
-                     "natural-parameter correction; this pilot never modifies the artifact"),
+        "screening_pass": screening_pass,
+        "pointwise_precision_pass": bool(nodes and all(
+            node["all_pointwise_precision_pass"] for node in nodes)),
+        "response_fit_ready": response_fit_ready,
+        # Deployment needs a rebuilt candidate artifact followed by corrected
+        # HCS and direct-CTC validation. A pilot can never satisfy those gates.
+        "deployment_ready": False,
+        "deployment_blockers": blockers,
+        "decision": ("proceed to the next staged excitation campaign only when "
+                     "response_fit_ready is true; do not buy smaller per-point "
+                     "error bars by blindly increasing bootstrap replicates"),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(json.dumps({key: payload[key] for key in
-                      ("n_tasks", "n_failures", "screening_pass", "deployment_ready")},
+                      ("n_tasks", "n_failures", "screening_pass",
+                       "response_fit_ready", "deployment_ready")},
                      indent=2, sort_keys=True))
 
 

@@ -12,6 +12,8 @@
 
 set -euo pipefail
 MANIFEST=${1:-manifests/hcs_validation.csv}
+FIGURE=${2:-results/hcs_validation/hcs_theta_attraction.png}
+SUMMARY=${3:-results/hcs_validation/summary.json}
 ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 cd "$ROOT"
 export MPLBACKEND=Agg
@@ -19,5 +21,5 @@ export MPLCONFIGDIR="${TMPDIR:-/tmp}/dsmc-v2-matplotlib-$SLURM_JOB_ID"
 mkdir -p "$MPLCONFIGDIR"
 hpc/python.sh DSMC_0D_v2/scripts/plot_hcs_validation.py \
   --manifest "$MANIFEST" \
-  --figure results/hcs_validation/hcs_theta_attraction.png \
-  --summary results/hcs_validation/summary.json
+  --figure "$FIGURE" \
+  --summary "$SUMMARY"

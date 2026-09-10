@@ -49,6 +49,28 @@ class ArtifactInputTests(unittest.TestCase):
                 root, {(0.8, 1.0, 2.0, 0): [shard]})
             self.assertEqual([row["ensemble_id"] for row in loaded], [0, 1])
 
+    def test_virtual_node_uses_sentinel_not_pointwise_precision_gate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shard = root / "baseline_shard"
+            shard.mkdir()
+            common = {
+                "alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
+                "source_runs": [str(shard)],
+                "estimator_contract": NODE_ESTIMATE_CONTRACT,
+                "cell_features": {}, "incoming_law": {}, "incoming_law_energy": {},
+            }
+            baseline = dict(common, ensemble_id=0, qa={"precision_pass": True})
+            virtual = dict(common, ensemble_id=1,
+                           excitation={"family": "A_cu", "eta": 0.25,
+                                       "usable": True},
+                           excitation_status="pass",
+                           qa={"precision_pass": False, "sentinel_pass": True})
+            (root / "alpha_base.json").write_text(json.dumps(baseline))
+            (root / "alpha_virtual.json").write_text(json.dumps(virtual))
+            loaded = _load_node_estimates(root, {(0.8, 1.0, 2.0, 0): [shard]})
+            self.assertEqual(len(loaded), 2)
+
     def test_old_schema_22_estimate_is_not_mistaken_for_current_semantics(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -228,6 +228,11 @@ class VariationalClosure:
         self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
         self.beta = np.asarray(data["beta"], dtype=float)
         self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
+        self.beta_feature_center = np.asarray(
+            data["beta_feature_center"] if "beta_feature_center" in data.files
+            else np.zeros_like(self.beta), dtype=float)
+        if self.beta_feature_center.shape != self.beta.shape:
+            raise ValueError("beta_feature_center must have the same shape as beta")
         self.feature_lower = np.asarray(data["feature_lower"], dtype=float)
         self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
         self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
@@ -262,6 +267,8 @@ class VariationalClosure:
         if len(self.beta_coordinates) >= 4:
             self._interpolators["beta"] = LinearNDInterpolator(
                 self.beta_coordinates, self.beta)
+            self._interpolators["beta_feature_center"] = LinearNDInterpolator(
+                self.beta_coordinates, self.beta_feature_center)
         if len(self.beta_coordinates):
             self._interpolators["beta_mask"] = NearestNDInterpolator(
                 self.beta_coordinates, self.beta_deployed.astype(float))
@@ -405,6 +412,10 @@ class VariationalClosure:
             beta = self._interpolate(self.beta_coordinates, self.beta,
                                      query, "lambda1 coefficients",
                                      self._interpolators.get("beta")).astype(float)
+            feature_center = self._interpolate(
+                self.beta_coordinates, self.beta_feature_center, query,
+                "lambda1 feature centre",
+                self._interpolators.get("beta_feature_center")).astype(float)
             exact_beta = self._exact(self.beta_coordinates, query)
             if len(exact_beta):
                 deployed = self.beta_deployed[exact_beta[0]]
@@ -412,10 +423,11 @@ class VariationalClosure:
                 deployed = np.asarray(
                     self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
             beta *= deployed
-            correction = float(beta @ features)
+            correction = float(beta @ (features - feature_center))
             eparams[0] += correction
         else:
             correction = 0.0
+            feature_center = np.zeros(len(FEATURE_NAMES))
         exact = self._exact(self.coordinates, query)
         joint = bool(len(exact) and self.joint_deployed[exact[0]])
         joint_parameters = self.joint_parameters[exact[0]].copy() if joint else None
@@ -435,6 +447,7 @@ class VariationalClosure:
                 "energy_anchor": anchor, "xi_enhancement": curve,
                 "angular_parameters": aparams,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
+                "beta_feature_center": feature_center,
                 "energy_corrected": correction != 0.0,
                 "joint_deployed": joint, "joint_parameters": joint_parameters}
         if key is not None:

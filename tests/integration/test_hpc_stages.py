@@ -129,7 +129,9 @@ class HPCStageTests(unittest.TestCase):
 
     def test_excitation_pilots_are_bounded_and_parallel(self):
         with tempfile.TemporaryDirectory() as temporary:
-            for mode, expected in (("hcs-pilot", 96), ("full-pilot", 72)):
+            for mode, expected in (("hcs-pilot", 96), ("full-pilot", 72),
+                                   ("correction-grid", 1296),
+                                   ("production-grid", 10368)):
                 manifest = Path(temporary) / f"{mode}.csv"
                 subprocess.run([
                     sys.executable, str(ROOT / "hpc" / "make_excitation_manifest.py"),
@@ -149,6 +151,7 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("#SBATCH --cpus-per-task=1", worker)
         self.assertIn("EXCITATION_MAX_CORES:-256", submitter)
         self.assertIn("require_hcs_pass.py", submitter)
+        self.assertIn("require_excitation_pass.py", submitter)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,20 @@ class VariationalArtifactTests(unittest.TestCase):
                               if joint else np.full((len(coordinates), 3), np.nan)),
         )
 
+    def test_correction_is_relative_to_the_fitted_baseline_feature_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            center = np.zeros_like(data["beta"])
+            center[:, 0] = 0.04
+            data["beta_feature_center"] = center
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.10
+            state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertAlmostEqual(state["energy_correction"], 0.2 * (0.10 - 0.04))
+
     def test_load_interpolate_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"

@@ -126,7 +126,8 @@ def _runtime_routing_loss_ceiling(row: dict, bl) -> float:
     return raw_ceiling
 
 
-def _energy_table_for_node(row: dict, bl, probability: np.ndarray
+def _energy_table_for_node(row: dict, bl, probability: np.ndarray,
+                           correction_bounds=(0.0, 0.0)
                            ) -> tuple[np.ndarray, np.ndarray, float]:
     """Compile one node's exact runtime-reachable adaptive energy table."""
     energy = row["energy"]
@@ -136,10 +137,10 @@ def _energy_table_for_node(row: dict, bl, probability: np.ndarray
     lambda4 = float(energy["lambda4"])
     loss_ceiling = _runtime_routing_loss_ceiling(row, bl)
     reach = np.array([
-        lambda1 + float(np.min(memory)),
-        lambda1 + float(np.max(memory)),
-        lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
-        lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling,
+        lambda1 + memory_value + lambda4 * loss_value + correction
+        for memory_value in (float(np.min(memory)), float(np.max(memory)))
+        for loss_value in (0.0, loss_ceiling)
+        for correction in tuple(float(value) for value in correction_bounds)
     ])
     lower, upper = float(np.min(reach)), float(np.max(reach))
     pad = max(0.05 * (upper - lower), 1.0e-6)
@@ -154,6 +155,49 @@ def _energy_table_for_node(row: dict, bl, probability: np.ndarray
 
 def _estimate_digest(row: dict) -> str:
     return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+
+
+def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
+    rows = []
+    grouped = defaultdict(list)
+    for node in nodes:
+        grouped[(node["alpha"], node["theta"], node["aspect_ratio"])].append(node)
+    for key, group in sorted(grouped.items()):
+        if len(group) <= 1:
+            continue
+        fitted = fit_lambda1_coefficients(group)
+        if not fitted["identifiable"]:
+            raise ValueError(f"excitation design is rank deficient at {key}")
+        if not fitted["linearity_pass"]:
+            raise ValueError(f"lambda1 response is nonlinear at held-out amplitude at {key}")
+        fitted["coordinates"] = list(key)
+        rows.append(fitted)
+    expected = {(node["alpha"], node["theta"], node["aspect_ratio"])
+                for node in nodes if int(node["ensemble_id"]) != 0}
+    if expected and len(rows) != len(expected):
+        raise ValueError("not every excitation node produced an identifiable coefficient fit")
+    return rows
+
+
+def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
+    """Return a conservative artifact-wide correction interval and digest."""
+    if not coefficient_rows:
+        return (0.0, 0.0), "baseline-no-corrections"
+    features = np.array([
+        [(node.get("cell_features") or node["proposal_features"])[name]
+         for name in FEATURE_NAMES] for node in nodes
+    ], dtype=float)
+    lower, upper = np.min(features, axis=0), np.max(features, axis=0)
+    bounds = [0.0]
+    for row in coefficient_rows:
+        beta = np.asarray(row["beta"], dtype=float) * np.asarray(
+            row["beta_deployed"], dtype=bool)
+        center = np.asarray(row["feature_center"], dtype=float)
+        lo = np.where(beta >= 0.0, lower - center, upper - center)
+        hi = np.where(beta >= 0.0, upper - center, lower - center)
+        bounds.extend((float(beta @ lo), float(beta @ hi)))
+    payload = json.dumps(coefficient_rows, sort_keys=True).encode()
+    return (float(min(bounds)), float(max(bounds))), _sha256_bytes(payload)
 
 
 def _atomic_savez(path: Path, **arrays) -> None:
@@ -184,6 +228,8 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     for path in paths:
         grouped[_path_key(path)].append(path)
     nodes = _load_node_estimates(node_estimates, grouped)
+    coefficient_rows = _fit_coefficient_rows(nodes)
+    correction_bounds, correction_digest = _correction_spec(nodes, coefficient_rows)
     baseline = sorted(
         (node for node in nodes if int(node["ensemble_id"]) == 0),
         key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
@@ -203,7 +249,7 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     enhancement = _measure_enhancement(shards, propensity_offsets)
     probability = np.linspace(0.0, 1.0, 513)
     a_grid, quantiles, interpolation_error = _energy_table_for_node(
-        row, bl, probability)
+        row, bl, probability, correction_bounds)
     target = Path(output_directory) / f"node_{int(index):04d}.npz"
     _atomic_savez(
         target,
@@ -211,6 +257,7 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
         coordinate=np.array([row["alpha"], row["theta"], row["aspect_ratio"]],
                             dtype=float),
         estimate_digest=np.array(_estimate_digest(row)),
+        correction_digest=np.array(correction_digest),
         propensity_offsets=np.array(int(propensity_offsets)),
         quantile_probability=probability,
         energy_a_grid=a_grid,
@@ -223,7 +270,8 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
 
 
 def _load_precomputed_node(directory: Path, index: int, row: dict,
-                           probability: np.ndarray, propensity_offsets: int):
+                           probability: np.ndarray, propensity_offsets: int,
+                           correction_digest: str = "baseline-no-corrections"):
     path = directory / f"node_{index:04d}.npz"
     if not path.is_file():
         raise FileNotFoundError(f"missing artifact precompute payload {path}")
@@ -235,6 +283,11 @@ def _load_precomputed_node(directory: Path, index: int, row: dict,
             raise ValueError(f"precompute coordinate mismatch in {path}")
         if str(data["estimate_digest"]) != _estimate_digest(row):
             raise ValueError(f"precompute estimate digest mismatch in {path}")
+        cached_correction = (str(data["correction_digest"])
+                             if "correction_digest" in data.files
+                             else "baseline-no-corrections")
+        if cached_correction != correction_digest:
+            raise ValueError(f"precompute correction-fit digest mismatch in {path}")
         if int(data["propensity_offsets"]) != int(propensity_offsets):
             raise ValueError(f"precompute propensity resolution mismatch in {path}")
         if not np.array_equal(data["quantile_probability"], probability) \
@@ -270,7 +323,11 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
         (key if len(key) == 4 else (*key, 0)): value
         for key, value in expected_groups.items()
     }
-    nodes = [json.loads(path.read_text()) for path in sorted(Path(directory).glob("alpha_*.json"))]
+    directories = ([directory] if isinstance(directory, (str, os.PathLike))
+                   else list(directory))
+    paths = [path for item in directories
+             for path in sorted(Path(item).glob("alpha_*.json"))]
+    nodes = [json.loads(path.read_text()) for path in paths]
     keys = {_node_key(node) for node in nodes}
     if len(nodes) != len(keys):
         raise ValueError("precomputed node estimates contain duplicate grid/ensemble keys")
@@ -310,7 +367,18 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
             raise ValueError(
                 f"stale node estimate for {_node_key(node)}: "
                 f"expected shards {sorted(expected)}, got {sorted(actual)}")
-        if not node.get("qa", {}).get("precision_pass", node.get("qa", {}).get("sentinel_pass", False)):
+        qa = node.get("qa", {})
+        if int(node.get("ensemble_id", 0)) == 0:
+            passed = qa.get("precision_pass", qa.get("sentinel_pass", False))
+        else:
+            # A virtual excitation is a response-design point. Its individual
+            # lambda1 half-width need not meet the production baseline target;
+            # overlap, all physical sentinels, and the held-out response fit
+            # are the relevant gates.
+            passed = (node.get("excitation_status", "pass") == "pass"
+                      and node.get("excitation", {}).get("usable", True)
+                      and qa.get("sentinel_pass", qa.get("precision_pass", False)))
+        if not passed:
             raise ValueError(f"node {_node_key(node)} has not passed closure QA")
     return sorted(nodes, key=_node_key)
 
@@ -533,6 +601,8 @@ def build_artifact(run_directories, output_directory, bl=None,
     if not baseline:
         raise ValueError("artifact requires baseline ensemble_id=0 nodes")
     baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
+    coefficient_rows = _fit_coefficient_rows(nodes)
+    correction_bounds, correction_digest = _correction_spec(nodes, coefficient_rows)
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
     # 513 nodes reproduce the kernel's first two moments to ~1e-5, and the
@@ -558,10 +628,11 @@ def build_artifact(run_directories, output_directory, bl=None,
     for index, row in enumerate(baseline):
         if precomputed is not None:
             grid, quantile, curve, interpolation_error = _load_precomputed_node(
-                precomputed, index, row, probability, propensity_offsets)
+                precomputed, index, row, probability, propensity_offsets,
+                correction_digest)
         else:
             grid, quantile, interpolation_error = _energy_table_for_node(
-                row, bl, probability)
+                row, bl, probability, correction_bounds)
             shards = dict(grouped).get(_node_key(row))
             if not shards:
                 raise ValueError(f"no shards for node {_node_key(row)}; cannot "
@@ -616,24 +687,6 @@ def build_artifact(run_directories, output_directory, bl=None,
     if sampler_error >= 1.0e-3:
         raise ValueError(f"quantile sampler moment error {sampler_error:.3e} exceeds 1e-3")
 
-    coefficient_rows = []
-    by_physical_node = defaultdict(list)
-    for node in nodes:
-        by_physical_node[(node["alpha"], node["theta"], node["aspect_ratio"])].append(node)
-    for key, group in sorted(by_physical_node.items()):
-        if len(group) <= 1:
-            continue
-        fitted = fit_lambda1_coefficients(group)
-        if not fitted["identifiable"]:
-            raise ValueError(f"excitation design is rank deficient at {key}")
-        fitted["coordinates"] = list(key)
-        coefficient_rows.append(fitted)
-    expected_coefficient_nodes = {
-        (node["alpha"], node["theta"], node["aspect_ratio"])
-        for node in nodes if int(node["ensemble_id"]) != 0
-    }
-    if expected_coefficient_nodes and len(coefficient_rows) != len(expected_coefficient_nodes):
-        raise ValueError("not every excitation node produced an identifiable coefficient fit")
     beta_coordinates = np.array([row["coordinates"] for row in coefficient_rows], dtype=float) \
         if coefficient_rows else np.empty((0, 3))
     beta = np.array([row["beta"] for row in coefficient_rows], dtype=float) \
@@ -642,6 +695,9 @@ def build_artifact(run_directories, output_directory, bl=None,
         if coefficient_rows else np.empty_like(beta)
     beta_deployed = np.array([row["beta_deployed"] for row in coefficient_rows], dtype=bool) \
         if coefficient_rows else np.empty_like(beta, dtype=bool)
+    beta_feature_center = np.array([row["feature_center"] for row in coefficient_rows],
+                                   dtype=float) \
+        if coefficient_rows else np.empty_like(beta)
     # Runtime features are cell moments.  Collision-attempt moments are flux
     # weighted (a Maxwellian reports a2_tr ~= -0.032 there), so using them as
     # the runtime hull makes every real cell out of domain even at startup.
@@ -735,7 +791,7 @@ def build_artifact(run_directories, output_directory, bl=None,
         energy_memory_scale=np.array([
             row["energy"].get("memory_scale", 1.0) for row in baseline], dtype=float),
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
-        beta_deployed=beta_deployed,
+        beta_deployed=beta_deployed, beta_feature_center=beta_feature_center,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
         diagnostic_lower=np.min(diagnostic_values, axis=0),
         diagnostic_upper=np.max(diagnostic_values, axis=0),
@@ -756,6 +812,12 @@ def build_artifact(run_directories, output_directory, bl=None,
         "diagnostics": list(DIAGNOSTIC_NAMES),
         "n_runs": len(paths), "n_nodes": len(nodes), "n_baseline_nodes": len(baseline),
         "n_coefficient_nodes": len(coefficient_rows),
+        "coefficient_fit": "shared_baseline_gls_central_amplitudes_v1",
+        "correction_bounds": list(correction_bounds),
+        "correction_digest": correction_digest,
+        "coefficient_validation_relative_rmse_max": (
+            max(row["validation_relative_rmse"] for row in coefficient_rows)
+            if coefficient_rows else None),
         "preserved": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_runtime_mode"],
         "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
         "loss_hash": loss_hash, "clock_hash": clock_hash,

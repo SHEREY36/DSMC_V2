@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--bootstrap", type=int, default=2000)
     parser.add_argument("--gamma-max-table", required=True)
     parser.add_argument("--one-hit-table", required=True)
-    parser.add_argument("--node-estimates",
+    parser.add_argument("--node-estimates", nargs="+",
                         help="directory of QA-passed per-node estimator JSON files")
     parser.add_argument("--precomputed-directory",
                         help="validated per-node geometry/sampler payloads from the "

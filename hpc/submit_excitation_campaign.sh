@@ -12,6 +12,25 @@ SUMMARY=${5:-results/closure_estimates/excitation_${MODE}_summary.json}
 
 mkdir -p logs "$RESULTS" "$(dirname "$SUMMARY")"
 hpc/python.sh hpc/require_hcs_pass.py "$HCS_SUMMARY"
+case "$MODE" in
+  hcs-pilot) ;;
+  full-pilot)
+    hpc/python.sh hpc/require_excitation_pass.py \
+      results/closure_estimates/excitation_hcs-pilot_summary.json \
+      --expected-mode hcs-pilot
+    ;;
+  correction-grid)
+    hpc/python.sh hpc/require_excitation_pass.py \
+      results/closure_estimates/excitation_full-pilot_summary.json \
+      --expected-mode full-pilot
+    ;;
+  production-grid)
+    hpc/python.sh hpc/require_excitation_pass.py \
+      results/closure_estimates/excitation_correction-grid_summary.json \
+      --expected-mode correction-grid
+    ;;
+  *) echo "unknown excitation mode: $MODE" >&2; exit 2 ;;
+esac
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
   hpc/python.sh hpc/make_excitation_manifest.py \
     --mode "$MODE" --output "$MANIFEST" --results "$RESULTS"
@@ -37,5 +56,5 @@ QA_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
 QA_JOB=${QA_RAW%%;*}
 echo "excitation_fit_job=$FIT_JOB ($ROWS virtual ensembles; concurrency=$CONCURRENT)"
 echo "excitation_qa_job=$QA_JOB (afterok:$FIT_JOB)"
-echo "No CTC trajectories and no deployable artifact rebuild were submitted."
+echo "No CTC trajectories and no artifact rebuild were submitted."
 echo "After completion inspect $SUMMARY"

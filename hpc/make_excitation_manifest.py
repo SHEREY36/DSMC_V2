@@ -26,7 +26,8 @@ def coordinate(row) -> tuple[float, float, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("hcs-pilot", "full-pilot"),
+    parser.add_argument("--mode", choices=("hcs-pilot", "full-pilot",
+                                            "correction-grid", "production-grid"),
                         default="hcs-pilot")
     parser.add_argument("--grid", default="manifests/artifact_grid.csv")
     parser.add_argument("--estimates", default="results/closure_estimates/artifact_grid")
@@ -38,14 +39,30 @@ def main() -> None:
         requested = {(alpha, 1.0, ar)
                      for alpha in (0.80, 0.95, 1.00) for ar in (2.0, 3.0)}
         families = HCS_FAMILIES
-    else:
+    elif args.mode == "full-pilot":
         # One representative USF-domain node first.  This is deliberately a
         # rank/overlap/model-response pilot, not a premature 3-D campaign.
         requested = {(0.95, 1.0, 2.0)}
         families = EXCITATION_FAMILIES
+    elif args.mode == "correction-grid":
+        # Small 3-D tensor grid spanning the six truth-backed HCS points and
+        # two off-equilibrium theta planes. It is the candidate-artifact gate,
+        # not yet the full production surface.
+        requested = {(alpha, theta, ar)
+                     for alpha in (0.80, 0.95, 1.00)
+                     for theta in (0.20, 1.00, 2.00)
+                     for ar in (2.0, 3.0)}
+        families = EXCITATION_FAMILIES
+    else:
+        # Final surface: only justified after the small correction grid passes
+        # corrected HCS and direct-CTC validation.
+        requested = None
+        families = EXCITATION_FAMILIES
 
     with open(args.grid, newline="") as handle:
         grid = list(csv.DictReader(handle))
+    if requested is None:
+        requested = {coordinate(row) for row in grid}
     selected = {coordinate(row): row for row in grid if coordinate(row) in requested}
     missing = sorted(requested - set(selected))
     if missing:

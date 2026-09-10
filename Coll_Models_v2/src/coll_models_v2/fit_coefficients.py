@@ -6,6 +6,8 @@ import numpy as np
 
 from dsmc_v2_contracts import FEATURE_NAMES
 
+from .response import fit_response
+
 
 def fit_lambda1_coefficients(nodes: list[dict]) -> dict:
     """Fit lambda1=lambda1,0+beta dot X at one coarse grid node."""
@@ -16,54 +18,28 @@ def fit_lambda1_coefficients(nodes: list[dict]) -> dict:
     excited = [node for node in nodes if int(node.get("ensemble_id", 0)) != 0]
     if len(excited) < len(FEATURE_NAMES):
         raise ValueError("fewer excitation ensembles than production coefficients")
-    # Both sides are differences from the baseline node. The response already
-    # was; the design must be too, or the fit carries the baseline's own
-    # invariant offset as a spurious intercept. And the features must be the
-    # CELL measure -- the collision-attempt marginal is flux weighted and
-    # reports a2_tr = -0.0322 where the gas is Maxwellian.
-    def _design(node):
-        source = node.get("cell_features") or node["proposal_features"]
-        return [source[name] for name in FEATURE_NAMES]
-
-    base_design = np.array(_design(baseline))
-    x = np.array([_design(node) for node in excited]) - base_design
-    y = np.array([node["energy"]["lambda1"] - baseline["energy"]["lambda1"]
-                  for node in excited])
-    se = np.array([node.get("uncertainty", {}).get("lambda1", {}).get(
-        "standard_error", np.nan) for node in excited], dtype=float)
-    finite = se[np.isfinite(se) & (se > 0.0)]
-    floor = 0.1 * np.median(finite) if len(finite) else 1.0
-    se = np.maximum(np.where(np.isfinite(se), se, floor), floor)
-    weight = 1.0 / (se * se)
-    # Deterministic five-fold CV over a conservative ridge grid.
-    ridges = np.logspace(-8, 1, 24)
-    folds = np.arange(len(x)) % min(5, len(x))
-    errors = []
-    for ridge in ridges:
-        fold_error = 0.0
-        for fold in np.unique(folds):
-            train, test = folds != fold, folds == fold
-            lhs = (x[train] * weight[train, None]).T @ x[train] + ridge * np.eye(x.shape[1])
-            beta = np.linalg.solve(lhs, (x[train] * weight[train, None]).T @ y[train])
-            fold_error += float(np.sum(weight[test] * (y[test] - x[test] @ beta) ** 2))
-        errors.append(fold_error)
-    ridge = float(ridges[int(np.argmin(errors))])
-    lhs = (x * weight[:, None]).T @ x + ridge * np.eye(x.shape[1])
-    beta = np.linalg.solve(lhs, (x * weight[:, None]).T @ y)
-    covariance = np.linalg.inv(lhs)
-    beta_se = np.sqrt(np.maximum(np.diag(covariance), 0.0))
-    max_contribution_halfwidth = 1.96 * beta_se * np.max(np.abs(x), axis=0)
-    deployed = (np.abs(beta) > 1.96 * beta_se) & (max_contribution_halfwidth <= 0.005)
-    rank = int(np.linalg.matrix_rank(x))
+    fitted = fit_response(baseline, excited, FEATURE_NAMES, "energy", "lambda1")
+    beta = np.array([fitted["coefficients"][name] for name in FEATURE_NAMES])
+    beta_se = np.array([fitted["coefficient_standard_errors"][name]
+                        for name in FEATURE_NAMES])
+    deployed = np.array([fitted["coefficient_deployed"][name]
+                         for name in FEATURE_NAMES], dtype=bool)
+    rank = fitted["design_rank"]
     return {
         "feature_order": list(FEATURE_NAMES),
+        "feature_center": fitted["feature_center"],
         "lambda1_baseline": float(baseline["energy"]["lambda1"]),
         "beta": beta.tolist(),
         "beta_se": beta_se.tolist(),
         "beta_deployed": deployed.tolist(),
-        "ridge": ridge,
+        "fit_method": "shared_baseline_gls_central_amplitudes_v1",
         "design_rank": rank,
-        "condition_number": float(np.linalg.cond(x)),
+        "condition_number": fitted["condition_number_scaled"],
         "identifiable": bool(rank == len(FEATURE_NAMES)),
-        "maximum_contribution_halfwidth": max_contribution_halfwidth.tolist(),
+        "maximum_contribution_halfwidth": [
+            fitted["maximum_contribution_halfwidth"][name] for name in FEATURE_NAMES],
+        "training_relative_rmse": fitted["training_relative_rmse"],
+        "validation_relative_rmse": fitted["validation_relative_rmse"],
+        "linearity_pass": bool(fitted["validation_relative_rmse"] is not None
+                               and fitted["validation_relative_rmse"] <= 0.15),
     }
