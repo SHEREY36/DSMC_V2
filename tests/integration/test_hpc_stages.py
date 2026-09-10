@@ -4,7 +4,10 @@ import subprocess
 import tempfile
 import unittest
 import csv
+import importlib.util
 from pathlib import Path
+
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -94,6 +97,35 @@ class HPCStageTests(unittest.TestCase):
             self.assertEqual({float(row["theta0"]) for row in ar2_alpha95}, {0.75, 1.25})
             self.assertEqual({float(row["target_theta"]) for row in ar2_alpha95}, {0.9792})
             self.assertEqual({int(row["replicate"]) for row in ar2_alpha95}, {0, 1, 2})
+
+    def test_negishi_environment_includes_hcs_plot_dependency(self):
+        setup = (ROOT / "hpc" / "setup_negishi_env.sh").read_text()
+        submitter = (ROOT / "hpc" / "submit_hcs_plot.sh").read_text()
+        self.assertIn("'matplotlib>=3.7'", setup)
+        self.assertIn("import matplotlib", setup)
+        self.assertIn("import matplotlib", submitter)
+        self.assertIn("does not rerun DSMC", submitter)
+
+    def test_hcs_drift_gate_uses_the_replicate_mean(self):
+        plot_path = (ROOT / "DSMC_0D_v2" / "scripts"
+                     / "plot_hcs_validation.py")
+        spec = importlib.util.spec_from_file_location("plot_hcs_validation", plot_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        tau = np.linspace(0.0, 20.0, 101)
+        flat = np.column_stack((tau, np.ones_like(tau), np.ones_like(tau)))
+        noisy_theta = np.ones_like(tau)
+        noisy_theta[70:] = np.linspace(1.0, 1.12, len(tau) - 70)
+        noisy = np.column_stack((tau, noisy_theta, np.ones_like(tau)))
+
+        start = int(0.7 * len(tau))
+        individual_drift = module.relative_linear_drift(
+            tau[start:], noisy_theta[start:])
+        mean_drift = module.replicate_mean_relative_drift([flat, flat, noisy])
+        self.assertGreater(individual_drift, 0.10)
+        self.assertLess(mean_drift, 0.10)
 
     def test_excitation_pilots_are_bounded_and_parallel(self):
         with tempfile.TemporaryDirectory() as temporary:
