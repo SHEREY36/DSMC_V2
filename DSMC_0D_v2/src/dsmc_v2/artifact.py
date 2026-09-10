@@ -127,8 +127,27 @@ class VariationalClosure:
         # the incoming pair arrives as
         # a = lambda1 + memory(z_in) + lambda4 eps, so the sampler interpolates
         # in a as well as in the uniform draw.
-        self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
-        self.energy_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
+        stored_tables = np.asarray(data["energy_quantiles"], dtype=float)
+        stored_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
+        if "energy_a_offsets" in data.files:
+            offsets = np.asarray(data["energy_a_offsets"], dtype=np.int64)
+            if offsets.shape != (len(self.coordinates) + 1,) \
+                    or offsets[0] != 0 or offsets[-1] != len(stored_a_grid) \
+                    or np.any(np.diff(offsets) < 2) \
+                    or stored_a_grid.ndim != 1 \
+                    or stored_tables.shape != (len(stored_a_grid), len(self.probability)):
+                raise ValueError("packed adaptive energy table layout is invalid")
+            self.energy_a_grid = [stored_a_grid[offsets[i]:offsets[i + 1]]
+                                  for i in range(len(self.coordinates))]
+            self.energy_tables = [stored_tables[offsets[i]:offsets[i + 1]]
+                                  for i in range(len(self.coordinates))]
+            self.energy_table_layout = "packed_adaptive_v1"
+        else:
+            # Backward-compatible reader for already deployed rectangular
+            # schema-2.3 artifacts.
+            self.energy_tables = stored_tables
+            self.energy_a_grid = stored_a_grid
+            self.energy_table_layout = "rectangular_v1"
         self.kernel_form = str(data["kernel_form"])
         self.energy_kernel_forms = (
             np.asarray(data["energy_kernel_forms"]).astype(str)
@@ -189,10 +208,14 @@ class VariationalClosure:
                 or self.xi_enhancement.shape[1] != len(self.xi_grid):
             raise ValueError("xi_enhancement must be (node, len(xi_grid)): the "
                              "curve depends on aspect ratio and on theta")
-        if self.energy_tables.ndim != 3 \
-                or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
-            raise ValueError("energy quantile table must be (node, a, u)")
-        if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
+        if self.energy_table_layout == "rectangular_v1":
+            if self.energy_tables.ndim != 3 \
+                    or self.energy_tables.shape[0] != len(self.coordinates) \
+                    or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
+                raise ValueError("energy quantile table must be (node, a, u)")
+            if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
+                raise ValueError("energy a-grid must be strictly increasing per node")
+        elif any(not np.all(np.diff(grid) > 0.0) for grid in self.energy_a_grid):
             raise ValueError("energy a-grid must be strictly increasing per node")
         self.energy_axis_clamps = 0
         # In a 0-D run alpha and aspect ratio are fixed and theta drifts slowly,

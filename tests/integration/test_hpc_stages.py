@@ -60,6 +60,20 @@ class HPCStageTests(unittest.TestCase):
         script = (ROOT / "hpc" / "aggregate.slurm").read_text()
         self.assertIn("SLURM_SUBMIT_DIR", script)
 
+    def test_artifact_precompute_fills_256_core_account_without_oversubscription(self):
+        worker = (ROOT / "hpc" / "artifact_precompute_stride.slurm").read_text()
+        submitter = (ROOT / "hpc" / "submit_postfit_artifact.sh").read_text()
+        self.assertIn("#SBATCH --cpus-per-task=2", worker)
+        self.assertIn("OPENBLAS_NUM_THREADS=1", worker)
+        self.assertIn("ARTIFACT_MAX_CORES:-256", submitter)
+        self.assertIn("afterok:$PRE_JOB", submitter)
+        self.assertIn("artifact_precompute_stride.slurm", submitter)
+
+    def test_artifact_aggregation_consumes_parallel_precompute_payloads(self):
+        script = (ROOT / "hpc" / "aggregate.slurm").read_text()
+        self.assertIn("--precomputed-directory", script)
+        self.assertIn("OPENBLAS_NUM_THREADS=1", script)
+
     def test_hcs_gate_has_two_initial_conditions_and_known_targets(self):
         with tempfile.TemporaryDirectory() as temporary:
             manifest = Path(temporary) / "hcs.csv"

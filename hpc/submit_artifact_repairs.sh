@@ -10,6 +10,9 @@ OUTPUT=${3:-models/microscopic_closure_v2}
 SOURCE_REPORT=${4:-results/closure_estimates/artifact_grid_validation.json}
 REPAIRS=${5:-manifests/artifact_grid_repairs.csv}
 REPAIR_REPORT=${6:-results/closure_estimates/artifact_grid_repair_validation.json}
+WORK=${7:-results/closure_estimates/artifact_precompute}
+
+mkdir -p logs "$WORK"
 
 hpc/python.sh hpc/make_artifact_repair_manifest.py \
   --grid "$GRID" --validation "$SOURCE_REPORT" --output "$REPAIRS"
@@ -26,12 +29,26 @@ QA_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
   --dependency="afterok:$FIT_JOB" \
   hpc/validate_artifact_estimates.slurm "$GRID" "$ESTIMATES" "$REPAIR_REPORT")
 QA_JOB=${QA_JOB_RAW%%;*}
-BUILD_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
+ARTIFACT_ROWS=$(( $(wc -l < "$GRID") - 1 ))
+MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '/MaxArraySize/ {print $3; exit}')
+MAX_ARRAY=${MAX_ARRAY:-1000}
+PRE_TASKS=$ARTIFACT_ROWS
+(( PRE_TASKS > MAX_ARRAY )) && PRE_TASKS=$MAX_ARRAY
+PRE_CONCURRENT=$(( ${ARTIFACT_MAX_CORES:-256} / 2 ))
+(( PRE_CONCURRENT > PRE_TASKS )) && PRE_CONCURRENT=$PRE_TASKS
+PRE_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
   --dependency="afterok:$QA_JOB" \
-  hpc/aggregate.slurm "$GRID" "$ESTIMATES" "$OUTPUT")
+  --array="0-$((PRE_TASKS - 1))%$PRE_CONCURRENT" \
+  hpc/artifact_precompute_stride.slurm \
+  "$GRID" "$ESTIMATES" "$WORK" "$ARTIFACT_ROWS")
+PRE_JOB=${PRE_JOB_RAW%%;*}
+BUILD_JOB_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
+  --dependency="afterok:$PRE_JOB" \
+  hpc/aggregate.slurm "$GRID" "$ESTIMATES" "$OUTPUT" "$WORK")
 BUILD_JOB=${BUILD_JOB_RAW%%;*}
 
 echo "repair_fit_job=$FIT_JOB"
 echo "estimate_qa_job=$QA_JOB"
+echo "precompute_job=$PRE_JOB (${PRE_TASKS} work queues; ${PRE_CONCURRENT} simultaneous x 2 cores)"
 echo "artifact_job=$BUILD_JOB"
 echo "Only the nodes rejected by the copied validation report are refitted."

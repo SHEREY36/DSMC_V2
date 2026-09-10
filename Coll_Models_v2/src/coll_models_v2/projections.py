@@ -748,6 +748,75 @@ def energy_quantile_table(memory: float, lambda2: float, a_grid: np.ndarray,
     return np.array([np.interp(probabilities, row, z) for row in cdf])
 
 
+def adaptive_energy_quantile_table(memory: float, lambda2: float,
+                                   lower: float, upper: float,
+                                   probabilities: np.ndarray,
+                                   kernel_form: str = "sinkhorn_bridge_v2",
+                                   quadrature: int = 256,
+                                   grid_size: int = 4097,
+                                   anchor: tuple = (0.0, 0.0),
+                                   tolerance: float = 2.0e-4,
+                                   max_nodes: int = 8193
+                                   ) -> tuple[np.ndarray, np.ndarray, float]:
+    """Adaptively tabulate ``z'(a, u)`` with a certified midpoint error.
+
+    A uniform ``a`` grid is wasteful because the conditional quantiles change
+    rapidly only through a narrow transition region and saturate in the tails.
+    The former artifact builder nevertheless assigned the *largest* node's
+    uniform grid length to every node.  On the 144-node production grid that
+    requested 1.21 billion density evaluations while still hitting its hard
+    resolution cap at the low-theta nodes.
+
+    This routine bisects only intervals whose exact midpoint quantile differs
+    from linear interpolation by more than ``tolerance``.  Every accepted leaf
+    interval is therefore checked against the same interpolation operation the
+    DSMC runtime uses.  The returned scalar is the largest error among the
+    final leaf intervals.
+    """
+    lower, upper = float(lower), float(upper)
+    if not np.isfinite(lower) or not np.isfinite(upper) or not lower < upper:
+        raise ValueError("adaptive energy bounds must be finite and increasing")
+    if tolerance <= 0.0 or max_nodes < 3:
+        raise ValueError("adaptive energy tolerance/max_nodes are invalid")
+
+    probability = np.asarray(probabilities, dtype=float)
+    values: dict[float, np.ndarray] = {}
+
+    def evaluate(points) -> None:
+        missing = sorted({float(point) for point in points if float(point) not in values})
+        if not missing:
+            return
+        table = energy_quantile_table(
+            memory, lambda2, np.asarray(missing), probability,
+            kernel_form=kernel_form, quadrature=quadrature,
+            grid_size=grid_size, anchor=anchor)
+        values.update(zip(missing, table))
+
+    evaluate((lower, upper))
+    active = [(lower, upper)]
+    final_error = 0.0
+    while active:
+        midpoints = [0.5 * (left + right) for left, right in active]
+        if len(values) + len(set(midpoints) - values.keys()) > max_nodes:
+            raise RuntimeError(
+                f"adaptive energy table exceeded {max_nodes} nodes; "
+                "the conditional kernel requires a finer deployable representation")
+        evaluate(midpoints)
+        split = []
+        for (left, right), midpoint in zip(active, midpoints):
+            interpolated = 0.5 * (values[left] + values[right])
+            error = float(np.max(np.abs(values[midpoint] - interpolated)))
+            if error > tolerance:
+                split.extend(((left, midpoint), (midpoint, right)))
+            else:
+                final_error = max(final_error, error)
+        active = split
+
+    grid = np.asarray(sorted(values), dtype=float)
+    table = np.asarray([values[point] for point in grid], dtype=float)
+    return grid, table, final_error
+
+
 def angular_quantiles(parameters: np.ndarray, probabilities: np.ndarray,
                       grid_size: int = 16385) -> np.ndarray:
     probabilities = np.asarray(probabilities, dtype=float)

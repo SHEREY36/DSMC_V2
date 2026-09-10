@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -94,7 +96,8 @@ PROPENSITY_CACHE = Path("results/closure_estimates/.propensity_cache")
 
 
 def _run_propensity(run, offsets: int | None,
-                    cache: Path | None = PROPENSITY_CACHE) -> np.ndarray | None:
+                    cache: Path | None = PROPENSITY_CACHE,
+                    workers: int = 1) -> np.ndarray | None:
     """Acceptance probability per proposal, or None to keep the static weight.
 
     The integral is deterministic given the shard and the offset count, and it
@@ -109,13 +112,26 @@ def _run_propensity(run, offsets: int | None,
         size = (directory / "attempts_v2.bin").stat().st_size
         key = cache / f"{directory.name}_{size}_{int(offsets)}.npy"
         if key.is_file():
-            stored = np.load(key)
-            if len(stored) == len(run.attempts):
+            try:
+                stored = np.load(key)
+            except (OSError, ValueError):
+                stored = None
+            if stored is not None and len(stored) == len(run.attempts) \
+                    and np.all(np.isfinite(stored)):
                 return stored
-    value = kinematic_propensity(run, offsets=int(offsets))
+    value = kinematic_propensity(run, offsets=int(offsets), workers=workers)
     if key is not None:
         key.parent.mkdir(parents=True, exist_ok=True)
-        np.save(key, value)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{key.name}.", suffix=".npy", dir=key.parent)
+        os.close(descriptor)
+        try:
+            with open(temporary, "wb") as handle:
+                np.save(handle, value)
+            os.replace(temporary, key)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return value
 
 

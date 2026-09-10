@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.2.0",
+  "schema_version": "2.3.0",
   "artifact_type": "bl_variational_closure",
   "required_files": ["manifest.json", "closure_v2.npz"],
   "feature_order": [
@@ -7,7 +7,12 @@
     "PiQ", "PiRt", "QRt", "qtr2", "qrot2", "qtr_qrot", "W2"
   ],
   "diagnostics": ["Acw2", "vx2"],
-  "production_changes": ["energy_partition_kernel", "angular_scattering"],
+  "production_changes": [
+    "collision_measure_enhancement",
+    "energy_partition_kernel",
+    "angular_scattering"
+  ],
+  "energy_table_layout": "packed_adaptive_v1",
   "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
   "preserved_runtime": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_mode"]
 }

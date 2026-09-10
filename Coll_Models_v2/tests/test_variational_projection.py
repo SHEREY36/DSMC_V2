@@ -5,7 +5,9 @@ import numpy as np
 from coll_models_v2.fit_exchange import fit_exchange_kernel
 from coll_models_v2.artifact import _incoming_partition_mean
 from coll_models_v2.projections import (
+    adaptive_energy_quantile_table,
     angular_quantiles,
+    energy_quantile_table,
     energy_quantiles,
     fit_angular_projection,
     fit_energy_projection,
@@ -41,6 +43,25 @@ class VariationalProjectionTests(unittest.TestCase):
         sample = np.interp(rng.random(250000), probability, table)
         self.assertAlmostEqual(np.mean(sample), 0.63, delta=0.002)
         self.assertAlmostEqual(np.mean(sample * sample), 0.43, delta=0.002)
+
+    def test_adaptive_energy_table_matches_dense_runtime_interpolation(self):
+        probability = np.linspace(0.0, 1.0, 257)
+        grid, table, certified = adaptive_energy_quantile_table(
+            0.0, -12.0, -80.0, 120.0, probability,
+            kernel_form="conditional_iprojection_v2", tolerance=2.0e-4)
+        self.assertLessEqual(certified, 2.0e-4)
+        # A uniform 0.15 grid would need 1,335 rows. Saturated tails should
+        # require far fewer without changing the runtime's linear interpolant.
+        self.assertLess(len(grid), 300)
+        for a in np.linspace(-79.0, 119.0, 29):
+            exact = energy_quantile_table(
+                0.0, -12.0, np.array([a]), probability,
+                kernel_form="conditional_iprojection_v2")[0]
+            interpolated = np.array([
+                np.interp(a, grid, table[:, column])
+                for column in range(len(probability))
+            ])
+            self.assertLess(np.max(np.abs(exact - interpolated)), 3.0e-4)
 
     def test_angular_quantile_sampler_reproduces_projection(self):
         fit = fit_angular_projection(-0.21, 0.08)

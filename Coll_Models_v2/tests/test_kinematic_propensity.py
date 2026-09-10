@@ -119,6 +119,17 @@ def test_rotation_can_only_enlarge_the_effective_area():
         assert np.mean(turning) > np.mean(still)
 
 
+def test_threaded_encounter_is_bitwise_identical_to_serial():
+    """Parallel blocks must accelerate, never change, the geometric integral."""
+    ghat, speed, director, spin = _sample(80, 0.7)
+    arguments = (ghat, speed, director, spin, DIAMETER, LENGTH, STAGING)
+    serial = encounter_propensity(
+        *arguments, offsets=24, steps=64, block=64 * 24, workers=1)
+    threaded = encounter_propensity(
+        *arguments, offsets=24, steps=64, block=64 * 24, workers=2)
+    np.testing.assert_array_equal(threaded, serial)
+
+
 def test_debiased_inverse_removes_the_leading_monte_carlo_inflation():
     rng = np.random.default_rng(3)
     offsets, truth = 128, 0.25

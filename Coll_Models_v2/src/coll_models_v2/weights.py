@@ -20,6 +20,8 @@ onto the DSMC's orientation-blind collision measure.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from dsmc_v2_contracts.io import (AI, OI, RunDataV2, _vec, attempt_energy,
@@ -106,7 +108,8 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
                          director: list[np.ndarray], spin_vector: list[np.ndarray],
                          diameter: float, length: float, staging: float,
                          offsets: int = DEFAULT_OFFSETS, steps: int | None = None,
-                         seed: int = 20260902, block: int = 4194304) -> np.ndarray:
+                         seed: int = 20260902, block: int = 4194304,
+                         workers: int = 1) -> np.ndarray:
     """Acceptance probability of a force-free spherocylinder encounter.
 
     The pair starts at longitudinal separation ``staging`` with a transverse
@@ -117,6 +120,9 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
     half_length, reach = 0.5 * length, length + diameter
     if staging < reach:
         raise ValueError("staging distance must exceed the contact reach L + D")
+    workers = int(workers)
+    if workers < 1:
+        raise ValueError("encounter propensity workers must be positive")
     count = len(speed)
     if np.any(speed <= 1.0e-30):
         raise ValueError("zero relative speed in CTC proposals")
@@ -141,6 +147,7 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
     struck = np.empty(count)
     budget = max(block, MINIMUM_STEPS * offsets)
 
+    blocks = []
     start = 0
     while start < count:
         span = 1
@@ -152,6 +159,11 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
         stop = start + span
         cut = order[start:stop]
         block_steps = int(np.max(per_event_steps[cut]))
+        blocks.append((cut, block_steps))
+        start = stop
+
+    def evaluate_block(spec):
+        cut, block_steps = spec
         cosine = np.cos(phase[cut])[:, None]
         sine = np.sin(phase[cut])[:, None]
         local_x = reach * (lattice_x[None, :] * cosine - lattice_y[None, :] * sine)
@@ -182,8 +194,21 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
                 separation, turned[0], turned[1], half_length) >= diameter * diameter
             if not missing.any():
                 break
-        struck[cut] = (~missing).reshape(stop - start, offsets).mean(axis=1)
-        start = stop
+        return cut, (~missing).reshape(len(cut), offsets).mean(axis=1)
+
+    # Blocks use disjoint events and all random phases were generated before
+    # dispatch, so thread scheduling cannot change a single numerical result.
+    # NumPy releases the GIL in the vector kernels that dominate this routine;
+    # two workers let each Slurm array task use its two allocated Negishi cores
+    # without copying a 100-MB run into separate processes.
+    if workers == 1:
+        results = map(evaluate_block, blocks)
+        for cut, values in results:
+            struck[cut] = values
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for cut, values in executor.map(evaluate_block, blocks):
+                struck[cut] = values
 
     # The lattice covers the disc of radius L+D; nothing outside it can touch.
     return struck * (np.pi * reach * reach) / (4.0 * staging * staging)
@@ -192,7 +217,8 @@ def encounter_propensity(ghat: np.ndarray, speed: np.ndarray,
 def kinematic_propensity(run: RunDataV2, offsets: int = DEFAULT_OFFSETS,
                          steps: int | None = None, seed: int = 20260902,
                          block: int = 4194304,
-                         indices: np.ndarray | None = None) -> np.ndarray:
+                         indices: np.ndarray | None = None,
+                         workers: int = 1) -> np.ndarray:
     """Probability that a stored proposal is accepted by the generator.
 
     Integrates the force-free encounter over the impact-parameter plane. The
@@ -216,7 +242,7 @@ def kinematic_propensity(run: RunDataV2, offsets: int = DEFAULT_OFFSETS,
         [_vec(values, AI, "u1"), _vec(values, AI, "u2")],
         [_vec(values, AI, "omega1"), _vec(values, AI, "omega2")],
         diameter, length, STAGING_FACTOR * (length + diameter),
-        offsets=offsets, steps=steps, seed=seed, block=block)
+        offsets=offsets, steps=steps, seed=seed, block=block, workers=workers)
 
 
 def debiased_inverse(propensity: np.ndarray, offsets: int) -> np.ndarray:

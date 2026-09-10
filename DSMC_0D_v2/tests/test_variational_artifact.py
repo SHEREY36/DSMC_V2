@@ -75,6 +75,32 @@ class VariationalArtifactTests(unittest.TestCase):
                             for _ in range(20000)])
             self.assertGreater(high - low, 0.05)
 
+    def test_packed_adaptive_energy_tables_match_rectangular_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            rectangular_path = Path(temporary) / "rectangular.npz"
+            packed_path = Path(temporary) / "packed.npz"
+            self._write(rectangular_path)
+            data = dict(np.load(rectangular_path, allow_pickle=False))
+            grids = data["energy_a_grid"]
+            tables = data["energy_quantiles"]
+            offsets = np.r_[0, np.cumsum([len(grid) for grid in grids])]
+            data["energy_a_grid"] = np.concatenate(list(grids))
+            data["energy_quantiles"] = np.concatenate(list(tables), axis=0)
+            data["energy_a_offsets"] = offsets
+            np.savez_compressed(packed_path, **data)
+
+            rectangular = VariationalClosure(
+                rectangular_path, corrections_enabled=False)
+            packed = VariationalClosure(packed_path, corrections_enabled=False)
+            features = np.zeros(len(FEATURE_NAMES))
+            state_r = rectangular.kernel_state(0.9, 0.75, 1.75, features)
+            state_p = packed.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertEqual(packed.energy_table_layout, "packed_adaptive_v1")
+            for z_in in (0.05, 0.4, 0.95):
+                self.assertAlmostEqual(
+                    packed.mean_energy(state_p, z_in, 0.0),
+                    rectangular.mean_energy(state_r, z_in, 0.0), places=14)
+
     def test_physical_interpolation_preserves_exact_grid_planes(self):
         """An exact sampled alpha must not borrow a neighbouring alpha plane.
 

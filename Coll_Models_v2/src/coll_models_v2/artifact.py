@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -23,26 +25,22 @@ from .fit_coefficients import fit_lambda1_coefficients
 from .projections import (
     _legendre_nodes,
     _bridge_spline,
+    adaptive_energy_quantile_table,
     angular_quantiles,
     bridge_mean_map,
-    energy_quantile_table,
     incoming_partition_density,
 )
 
 
 SCHEMA_VERSION = "2.3.0"
-# Resolution of the a-axis of the energy sampler. The tilt varies on a scale
-# of order one in a, so the grid is sized by span rather than fixed: at the low
-# aspect ratios lambda3 reaches ~350 and a fixed 65 nodes would leave gaps of
-# five units on a kernel that turns over in one.
 # Fixed Xi axis for the collision-measure enhancement. Shared by every node so
 # the runtime can interpolate the curve like any other surface.
 XI_GRID = np.geomspace(0.05, 40.0, 32)
 XI_BINS = 24
-ENERGY_A_STEP = 0.15
-ENERGY_A_MIN_NODES = 65
-ENERGY_A_MAX_NODES = 2049
+ENERGY_A_INTERPOLATION_TOLERANCE = 2.0e-4
+ENERGY_A_MAX_NODES = 8193
 ARTIFACT_TYPE = "bl_variational_closure"
+PRECOMPUTE_SCHEMA = "artifact-node-v1"
 
 
 def _node_memory_shift(energy: dict, z_in) -> np.ndarray:
@@ -104,6 +102,156 @@ def _measure_enhancement(run_directories, offsets: int = 128) -> np.ndarray:
     curve = np.interp(XI_GRID, centres, medians)
     applied = np.interp(xi, XI_GRID, curve)
     return curve / (float(np.mean(area * applied)) / float(np.mean(area)))
+
+
+def _runtime_routing_loss_ceiling(row: dict, bl) -> float:
+    """Largest loss covariate that the runtime can hand to this fitted node.
+
+    The BL draw is bounded by ``gamma_max * one_hit_probability``.  Before the
+    loss enters lambda4, the runtime rescales it by fitted_mean/runtime_mean.
+    Using the largest gamma_max in the *entire* BL table, as the old builder
+    did, creates unreachable a-values at nearly elastic nodes and was the main
+    reason their tables became both enormous and under-resolved.
+    """
+    energy = row["energy"]
+    if bl is None or float(row["alpha"]) >= 1.0 \
+            or not energy.get("loss_covariate_deployed", False):
+        return 0.0
+    loss = bl.parameters(float(row["alpha"]), float(row["aspect_ratio"]))
+    raw_ceiling = float(loss["gamma_max"] * loss["one_hit_probability"])
+    runtime_mean = float(loss["mean_loss_fraction"])
+    fitted_mean = float(energy["mean_fractional_loss"])
+    if runtime_mean > 0.0 and fitted_mean > 0.0:
+        raw_ceiling *= fitted_mean / runtime_mean
+    return raw_ceiling
+
+
+def _energy_table_for_node(row: dict, bl, probability: np.ndarray
+                           ) -> tuple[np.ndarray, np.ndarray, float]:
+    """Compile one node's exact runtime-reachable adaptive energy table."""
+    energy = row["energy"]
+    memory_grid = np.linspace(1.0e-9, 1.0 - 1.0e-9, 2049)
+    memory = _node_memory_shift(energy, memory_grid)
+    lambda1 = float(energy["lambda1"])
+    lambda4 = float(energy["lambda4"])
+    loss_ceiling = _runtime_routing_loss_ceiling(row, bl)
+    reach = np.array([
+        lambda1 + float(np.min(memory)),
+        lambda1 + float(np.max(memory)),
+        lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
+        lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling,
+    ])
+    lower, upper = float(np.min(reach)), float(np.max(reach))
+    pad = max(0.05 * (upper - lower), 1.0e-6)
+    return adaptive_energy_quantile_table(
+        float(energy["lambda3"]), float(energy["lambda2"]),
+        lower - pad, upper + pad, probability,
+        kernel_form=energy.get("kernel_form", "conditional_iprojection_v2"),
+        anchor=(energy.get("anchor_c1", 0.0), energy.get("anchor_c2", 0.0)),
+        tolerance=ENERGY_A_INTERPOLATION_TOLERANCE,
+        max_nodes=ENERGY_A_MAX_NODES)
+
+
+def _estimate_digest(row: dict) -> str:
+    return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+
+
+def _atomic_savez(path: Path, **arrays) -> None:
+    """Publish a complete cache entry atomically on the shared filesystem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".npz", dir=path.parent)
+    os.close(descriptor)
+    try:
+        np.savez_compressed(temporary, **arrays)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def precompute_artifact_node(run_directories, node_estimates, output_directory,
+                             index: int, bl, propensity_offsets: int = 128,
+                             propensity_workers: int = 1) -> Path:
+    """Build the independent geometry and sampler payload for one node.
+
+    This is the unit executed by the Negishi Slurm array.  The final aggregator
+    verifies the node coordinate and estimate digest before consuming it, so a
+    stale partial from an earlier fit cannot enter the deployed artifact.
+    """
+    paths = [Path(path) for path in run_directories]
+    grouped = defaultdict(list)
+    for path in paths:
+        grouped[_path_key(path)].append(path)
+    nodes = _load_node_estimates(node_estimates, grouped)
+    baseline = sorted(
+        (node for node in nodes if int(node["ensemble_id"]) == 0),
+        key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
+    if not 0 <= int(index) < len(baseline):
+        raise IndexError(f"artifact node index {index} outside 0..{len(baseline) - 1}")
+    row = baseline[int(index)]
+    shards = grouped.get(_node_key(row))
+    if not shards:
+        raise ValueError(f"no shards for artifact node {_node_key(row)}")
+
+    # Populate the expensive cache using all CPUs assigned to this array task.
+    from .estimate import _run_propensity
+    from dsmc_v2_contracts.io import load_run
+    for shard in shards:
+        run = load_run(shard)
+        _run_propensity(run, propensity_offsets, workers=propensity_workers)
+    enhancement = _measure_enhancement(shards, propensity_offsets)
+    probability = np.linspace(0.0, 1.0, 513)
+    a_grid, quantiles, interpolation_error = _energy_table_for_node(
+        row, bl, probability)
+    target = Path(output_directory) / f"node_{int(index):04d}.npz"
+    _atomic_savez(
+        target,
+        precompute_schema=np.array(PRECOMPUTE_SCHEMA),
+        coordinate=np.array([row["alpha"], row["theta"], row["aspect_ratio"]],
+                            dtype=float),
+        estimate_digest=np.array(_estimate_digest(row)),
+        propensity_offsets=np.array(int(propensity_offsets)),
+        quantile_probability=probability,
+        energy_a_grid=a_grid,
+        energy_quantiles=quantiles,
+        energy_interpolation_error=np.array(interpolation_error),
+        xi_grid=XI_GRID,
+        xi_enhancement=enhancement,
+    )
+    return target
+
+
+def _load_precomputed_node(directory: Path, index: int, row: dict,
+                           probability: np.ndarray, propensity_offsets: int):
+    path = directory / f"node_{index:04d}.npz"
+    if not path.is_file():
+        raise FileNotFoundError(f"missing artifact precompute payload {path}")
+    with np.load(path, allow_pickle=False) as data:
+        if str(data["precompute_schema"]) != PRECOMPUTE_SCHEMA:
+            raise ValueError(f"stale precompute schema in {path}")
+        expected = np.array([row["alpha"], row["theta"], row["aspect_ratio"]])
+        if not np.allclose(data["coordinate"], expected, atol=1.0e-12, rtol=0.0):
+            raise ValueError(f"precompute coordinate mismatch in {path}")
+        if str(data["estimate_digest"]) != _estimate_digest(row):
+            raise ValueError(f"precompute estimate digest mismatch in {path}")
+        if int(data["propensity_offsets"]) != int(propensity_offsets):
+            raise ValueError(f"precompute propensity resolution mismatch in {path}")
+        if not np.array_equal(data["quantile_probability"], probability) \
+                or not np.array_equal(data["xi_grid"], XI_GRID):
+            raise ValueError(f"precompute grid mismatch in {path}")
+        grid = np.asarray(data["energy_a_grid"], dtype=float)
+        quantiles = np.asarray(data["energy_quantiles"], dtype=float)
+        enhancement = np.asarray(data["xi_enhancement"], dtype=float)
+        error = float(data["energy_interpolation_error"])
+    if grid.ndim != 1 or quantiles.shape != (len(grid), len(probability)) \
+            or enhancement.shape != XI_GRID.shape \
+            or not np.all(np.diff(grid) > 0.0) \
+            or not np.all(np.diff(quantiles, axis=1) >= 0.0):
+        raise ValueError(f"invalid precompute array shapes/order in {path}")
+    if not np.isfinite(error) or error > ENERGY_A_INTERPOLATION_TOLERANCE:
+        raise ValueError(f"energy interpolation error {error:.3e} in {path}")
+    return grid, quantiles, enhancement, error
 
 
 def _node_key(values) -> tuple[float, float, float, int]:
@@ -363,7 +511,8 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
 
 def build_artifact(run_directories, output_directory, bl=None,
                    n_bootstrap: int = 200, node_estimates=None,
-                   propensity_offsets: int = 128) -> dict:
+                   propensity_offsets: int = 128,
+                   precomputed_directory=None) -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -401,59 +550,28 @@ def build_artifact(run_directories, output_directory, bl=None,
     ])
     kernel_form_label = (str(kernel_forms[0]) if len(set(kernel_forms.tolist())) == 1
                          else "nodewise_mixed_v1")
-    loss_ceiling = float(max(getattr(bl, "gamma_max", {}).values() or [0.0])) \
-        if isinstance(getattr(bl, "gamma_max", {}), dict) else float(getattr(bl, "gamma_max", 0.0))
-
     eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"],
                          row["energy"]["lambda3"], row["energy"]["lambda4"]]
                         for row in baseline], dtype=float)
-    # One a-axis LENGTH for every node so the tables stack, but each node keeps
-    # its own span. The length is set by the widest span present: at AR 1.1
-    # lambda3 reaches ~350, and a grid coarse enough for that node would leave
-    # gaps of several units on a kernel that turns over in one.
-    spans = []
-    memory_grid = np.linspace(1.0e-9, 1.0 - 1.0e-9, 2049)
-    for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
-        memory = _node_memory_shift(row["energy"], memory_grid)
-        reach = [lambda1 + float(np.min(memory)), lambda1 + float(np.max(memory)),
-                 lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
-                 lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling]
-        spans.append(max(reach) - min(reach))
-    a_nodes = int(np.clip(np.ceil(max(spans) * 1.1 / ENERGY_A_STEP) + 1,
-                          ENERGY_A_MIN_NODES, ENERGY_A_MAX_NODES))
-
-    a_grids, equant = [], []
-    for (lambda1, lambda2, lambda3, lambda4), row in zip(eparams, baseline):
-        memory = _node_memory_shift(row["energy"], memory_grid)
-        reach = [lambda1 + float(np.min(memory)), lambda1 + float(np.max(memory)),
-                 lambda1 + float(np.min(memory)) + lambda4 * loss_ceiling,
-                 lambda1 + float(np.max(memory)) + lambda4 * loss_ceiling]
-        low, high = min(reach), max(reach)
-        pad = max(0.05 * (high - low), 1.0e-6)
-        grid = np.linspace(low - pad, high + pad, a_nodes)
+    a_grids, equant, enhancement, interpolation_errors = [], [], [], []
+    precomputed = None if precomputed_directory is None else Path(precomputed_directory)
+    for index, row in enumerate(baseline):
+        if precomputed is not None:
+            grid, quantile, curve, interpolation_error = _load_precomputed_node(
+                precomputed, index, row, probability, propensity_offsets)
+        else:
+            grid, quantile, interpolation_error = _energy_table_for_node(
+                row, bl, probability)
+            shards = dict(grouped).get(_node_key(row))
+            if not shards:
+                raise ValueError(f"no shards for node {_node_key(row)}; cannot "
+                                 "measure its collision-measure enhancement")
+            curve = _measure_enhancement(shards, propensity_offsets)
         a_grids.append(grid)
-        equant.append(energy_quantile_table(
-            lambda3, lambda2, grid, probability,
-            kernel_form=row["energy"].get("kernel_form", "conditional_iprojection_v2"),
-            anchor=(row["energy"].get("anchor_c1", 0.0),
-                    row["energy"].get("anchor_c2", 0.0))))
-    a_grids = np.array(a_grids)
-    equant = np.array(equant)
-
-    # --- collision-measure enhancement g(Xi), per node --------------------
-    # Measured per node, not once: it depends on aspect ratio (an AR 3 curve
-    # used at AR 1.1 misses the selected <z> by the whole size of the effect)
-    # and each curve is divided by its OWN rate multiplier, because "mean one"
-    # holds only on the sample it was fitted on and the Xi distribution moves
-    # with theta.
-    enhancement = []
-    for row in baseline:
-        shards = dict(grouped).get(_node_key(row))
-        if not shards:
-            raise ValueError(f"no shards for node {_node_key(row)}; cannot "
-                             "measure its collision-measure enhancement")
-        enhancement.append(_measure_enhancement(shards, propensity_offsets))
-    enhancement = np.array(enhancement)
+        equant.append(quantile)
+        enhancement.append(curve)
+        interpolation_errors.append(interpolation_error)
+    enhancement = np.asarray(enhancement)
 
     aparams = np.array([[row["angular"]["eta1"], row["angular"]["eta2"]]
                         for row in baseline])
@@ -482,8 +600,8 @@ def build_artifact(run_directories, output_directory, bl=None,
             mass = _trapezoid(weight, quad)
             exact = (_trapezoid(weight * quad, quad) / mass,
                      _trapezoid(weight * quad * quad, quad) / mass)
-            table = np.array([np.interp(a, grid, equant[index, :, j])
-                              for j in range(equant.shape[2])])
+            table = np.array([np.interp(a, grid, equant[index][:, j])
+                              for j in range(len(probability))])
             energy_errors.extend((abs(_trapezoid(table, probability) - exact[0]),
                                   abs(_trapezoid(table * table, probability) - exact[1])))
     for row, quantile in zip(baseline, aquant):
@@ -492,7 +610,9 @@ def build_artifact(run_directories, output_directory, bl=None,
             abs(_trapezoid(0.5 * (3.0 * quantile * quantile - 1.0), probability)
                 - row["angular"]["mean_p2"]),
         ))
-    sampler_error = max(energy_errors + angular_errors)
+    energy_sampler_error = max(energy_errors)
+    angular_sampler_error = max(angular_errors)
+    sampler_error = max(energy_sampler_error, angular_sampler_error)
     if sampler_error >= 1.0e-3:
         raise ValueError(f"quantile sampler moment error {sampler_error:.3e} exceeds 1e-3")
 
@@ -580,6 +700,9 @@ def build_artifact(run_directories, output_directory, bl=None,
         raise ValueError("closure has no unique stable temperature ratio -- "
                          + "; ".join(detail or ["no nodes to test"]))
     artifact_path = output / "closure_v2.npz"
+    energy_offsets = np.r_[0, np.cumsum([len(grid) for grid in a_grids])].astype(np.int64)
+    energy_a_packed = np.concatenate(a_grids)
+    energy_quantiles_packed = np.concatenate(equant, axis=0)
     np.savez_compressed(
         artifact_path,
         schema_version=np.array(SCHEMA_VERSION), artifact_type=np.array(ARTIFACT_TYPE),
@@ -593,8 +716,8 @@ def build_artifact(run_directories, output_directory, bl=None,
         uncertainty_names=np.array(uncertainty_names),
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
         xi_grid=XI_GRID, xi_enhancement=enhancement,
-        quantile_probability=probability, energy_quantiles=equant,
-        energy_a_grid=a_grids,
+        quantile_probability=probability, energy_quantiles=energy_quantiles_packed,
+        energy_a_grid=energy_a_packed, energy_a_offsets=energy_offsets,
         energy_anchor=np.array([[row["energy"].get("anchor_c1", 0.0),
                                  row["energy"].get("anchor_c2", 0.0)]
                                 for row in baseline], dtype=float),
@@ -641,6 +764,11 @@ def build_artifact(run_directories, output_directory, bl=None,
         "joint_energy_angle_nodes": int(np.sum(joint_deployed)),
         "kernel_forms": sorted(set(kernel_forms.tolist())),
         "maximum_quantile_moment_error": float(sampler_error),
+        "maximum_energy_quantile_moment_error": float(energy_sampler_error),
+        "maximum_angular_quantile_moment_error": float(angular_sampler_error),
+        "energy_table_layout": "packed_adaptive_v1",
+        "energy_table_rows": int(len(energy_a_packed)),
+        "maximum_energy_interpolation_error": float(max(interpolation_errors)),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return manifest
