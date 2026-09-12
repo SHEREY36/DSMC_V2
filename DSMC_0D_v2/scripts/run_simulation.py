@@ -16,11 +16,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int)
     parser.add_argument("--output")
     parser.add_argument("--pressure-output")
+    parser.add_argument("--orientation-output")
     args = parser.parse_args()
     config = yaml.safe_load(Path(args.config).read_text())
     seed = int(args.seed if args.seed is not None else config["simulation"]["seeds"][0])
     output = args.output or str(Path(config["simulation"]["output_dir"]) / "hcs_v2.txt")
-    print(json.dumps(run_simulation(config, seed, output, args.pressure_output),
+    print(json.dumps(run_simulation(config, seed, output, args.pressure_output,
+                                    args.orientation_output),
                      indent=2, sort_keys=True))
 
 

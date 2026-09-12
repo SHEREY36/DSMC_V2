@@ -4,7 +4,9 @@ import subprocess
 import tempfile
 import unittest
 import csv
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import numpy as np
@@ -131,6 +133,7 @@ class HPCStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             for mode, expected in (("hcs-pilot", 96), ("full-pilot", 72),
                                    ("correction-grid", 1296),
+                                   ("usf-extension", 1296),
                                    ("production-grid", 10368),
                                    ("independent-holdout", 36)):
                 manifest = Path(temporary) / f"{mode}.csv"
@@ -147,6 +150,13 @@ class HPCStageTests(unittest.TestCase):
                 self.assertEqual(len(rows), expected)
                 self.assertGreaterEqual(min(float(row["eta"]) for row in rows), -0.5)
                 self.assertLessEqual(max(float(row["eta"]) for row in rows), 0.5)
+                if mode == "usf-extension":
+                    coordinates = {
+                        (float(row["alpha"]), float(row["theta"]),
+                         float(row["aspect_ratio"])) for row in rows}
+                    self.assertEqual(len(coordinates), 18)
+                    self.assertEqual(min(item[0] for item in coordinates), 0.5)
+                    self.assertEqual(min(item[2] for item in coordinates), 1.5)
         worker = (ROOT / "hpc" / "excitation_fit_stride.slurm").read_text()
         submitter = (ROOT / "hpc" / "submit_excitation_campaign.sh").read_text()
         self.assertIn("#SBATCH --cpus-per-task=1", worker)
@@ -177,6 +187,62 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("--array=0-35%36", submitter)
         self.assertIn("EXCITATION_BOOTSTRAP=0", submitter)
         self.assertIn("CLOSURE_PROPENSITY_WORKERS=20", submitter)
+
+    def test_usf_candidate_pipeline_caches_then_fits_and_gates(self):
+        submitter = (ROOT / "hpc" / "submit_usf_candidate_pipeline.sh").read_text()
+        propensity = (ROOT / "hpc" / "excitation_propensity_array.slurm").read_text()
+        self.assertIn("--cpus-per-task=12", propensity)
+        self.assertIn("EXCITATION_OFFSETS:-128", propensity)
+        self.assertIn('dependency="afterok:$PROP_JOB"', submitter)
+        self.assertIn('dependency="afterok:$EXT_QA_JOB"', submitter)
+        self.assertIn('dependency="afterok:$HCS_PLOT_JOB:$HOLDOUT_JOB"', submitter)
+        self.assertIn("check_usf_candidate.slurm", submitter)
+        self.assertIn("paired_usf_pilot_job", submitter)
+
+    def test_usf_manifests_are_paired_pilot_and_corrected_full_grid(self):
+        script = ROOT / "DSMC_0D_v2" / "scripts" / "make_usf_validation_manifest.py"
+        with tempfile.TemporaryDirectory() as temporary:
+            for mode, expected, arms in (
+                    ("pilot", 24, {"corrected", "uncorrected"}),
+                    ("full", 160, {"corrected"})):
+                manifest = Path(temporary) / f"{mode}.csv"
+                subprocess.run([
+                    sys.executable, str(script), "--mode", mode,
+                    "--output", str(manifest),
+                    "--results", str(Path(temporary) / mode),
+                ], check=True, capture_output=True, text=True)
+                with manifest.open(newline="") as handle:
+                    rows = list(csv.DictReader(handle))
+                self.assertEqual(len(rows), expected)
+                self.assertEqual({row["arm"] for row in rows}, arms)
+                if mode == "pilot":
+                    pairs = {(row["alpha"], row["aspect_ratio"], row["replicate"])
+                             for row in rows}
+                    self.assertTrue(all(sum(
+                        (candidate["alpha"], candidate["aspect_ratio"],
+                         candidate["replicate"]) == pair for candidate in rows) == 2
+                        for pair in pairs))
+
+    def test_usf_preflight_is_bound_to_exact_artifact_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "candidate.npz"
+            artifact.write_bytes(b"candidate-a")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            hcs = root / "hcs.json"
+            holdout = root / "holdout.json"
+            hcs.write_text(json.dumps({
+                "physics_gate_pass": True, "artifact_sha256": digest}))
+            holdout.write_text(json.dumps({
+                "validation_pass": True, "artifact_sha256": digest}))
+            command = [
+                sys.executable, str(ROOT / "hpc" / "require_usf_prerequisites.py"),
+                "--hcs", str(hcs), "--holdout", str(holdout),
+                "--artifact", str(artifact),
+            ]
+            self.assertEqual(subprocess.run(command).returncode, 0)
+            artifact.write_bytes(b"candidate-b")
+            self.assertNotEqual(subprocess.run(command).returncode, 0)
 
 
 if __name__ == "__main__":

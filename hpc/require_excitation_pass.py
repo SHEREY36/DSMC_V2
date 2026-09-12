@@ -25,9 +25,9 @@ def main() -> None:
         raise SystemExit("prerequisite excitation screening did not pass")
     if not payload.get("response_fit_ready", False):
         raise SystemExit("prerequisite response fit/held-out linearity did not pass")
-    if args.expected_mode == "correction-grid" \
+    if args.expected_mode in ("correction-grid", "usf-extension") \
             and not payload.get("candidate_artifact_ready", False):
-        raise SystemExit("correction grid is not ready to build a candidate artifact")
+        raise SystemExit("excitation grid is not ready to build a candidate artifact")
     print(f"excitation prerequisite passed: {path}")
 
 

@@ -50,17 +50,26 @@ class ParticleState:
 
     def advance_axes(self, dt: float) -> None:
         """Rodrigues update for du/dt=omega cross u; no scalar state changes."""
-        for i in range(self.count):
-            speed = np.linalg.norm(self.omega[i])
-            angle = speed * float(dt)
-            if angle <= 1.0e-14:
-                continue
-            direction = self.omega[i] / speed
-            axis = self.axis[i]
-            self.axis[i] = (axis * np.cos(angle)
-                            + np.cross(direction, axis) * np.sin(angle)
-                            + direction * np.dot(direction, axis) * (1.0 - np.cos(angle)))
+        speed = np.linalg.norm(self.omega, axis=1)
+        active = speed * float(dt) > 1.0e-14
+        if np.any(active):
+            direction = self.omega[active] / speed[active, None]
+            axis = self.axis[active]
+            angle = speed[active] * float(dt)
+            cosine = np.cos(angle)[:, None]
+            sine = np.sin(angle)[:, None]
+            projection = np.einsum("ni,ni->n", direction, axis)[:, None]
+            self.axis[active] = (
+                axis * cosine
+                + np.cross(direction, axis) * sine
+                + direction * projection * (1.0 - cosine)
+            )
         self.axis /= np.linalg.norm(self.axis, axis=1)[:, None]
+
+    def orientation_tensor(self) -> np.ndarray:
+        """Return the traceless nematic tensor Q=<uu>-I/3."""
+        second_moment = self.axis.T @ self.axis / float(self.count)
+        return second_moment - np.eye(3) / 3.0
 
     def temperatures(self, mass: float) -> tuple[float, float, float]:
         n = self.count

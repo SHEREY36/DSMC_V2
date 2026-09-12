@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -13,6 +14,14 @@ import yaml
 
 from dsmc_v2.particle import particle_parameters
 from dsmc_v2.simulation import run_simulation
+
+
+def sha256(path: str | Path) -> str:
+    checksum = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
 
 
 def row_at(path: Path, index: int) -> dict[str, str]:
@@ -68,6 +77,8 @@ def main() -> None:
     prefix = Path(row["output_prefix"])
     trajectory_path = Path(str(prefix) + ".txt")
     diagnostics = run_simulation(config, int(row["seed"]), trajectory_path)
+    diagnostics["artifact"] = str(Path(args.artifact))
+    diagnostics["artifact_sha256"] = sha256(args.artifact)
     diagnostics["validation_case"] = {
         "tier": row["tier"], "alpha": alpha, "aspect_ratio": ar,
         "theta0": theta0,

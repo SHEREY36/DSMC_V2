@@ -95,7 +95,8 @@ def _pair_modal_energies(state, p1: int, p2: int, v1: np.ndarray,
 
 
 def run_simulation(config: dict, seed: int, output_path: str | Path,
-                   pressure_path: str | Path | None = None) -> dict:
+                   pressure_path: str | Path | None = None,
+                   orientation_path: str | Path | None = None) -> dict:
     """Run one realization while preserving the v1 clock and scalar kernel."""
     flow = config.get("flow", {})
     flow_mode = flow.get("mode", "hcs")
@@ -155,6 +156,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         pressure_path = output_path.with_name(output_path.stem + "_pressure.txt")
     if pressure_path is not None:
         pressure_path.parent.mkdir(parents=True, exist_ok=True)
+    orientation_path = (Path(orientation_path)
+                        if orientation_path is not None else None)
+    if flow_mode == "usf" and orientation_path is None:
+        orientation_path = output_path.with_name(
+            output_path.stem + "_orientation.txt")
+    if orientation_path is not None:
+        orientation_path.parent.mkdir(parents=True, exist_ok=True)
     pressure_accumulator = np.zeros((3, 3)) if flow_mode == "usf" else None
     last_pressure_time = 0.0
     audit_enabled = bool(config.get("diagnostics", {}).get("collision_audit", False))
@@ -176,7 +184,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     domain_feature_min = np.full(feature_sum.shape, np.inf)
     domain_feature_max = np.full(feature_sum.shape, -np.inf)
     pressure_context = pressure_path.open("w", buffering=65536) if pressure_path else nullcontext(None)
-    with output_path.open("w", buffering=65536) as handle, pressure_context as pressure_handle:
+    orientation_context = (orientation_path.open("w", buffering=65536)
+                           if orientation_path else nullcontext(None))
+    with (output_path.open("w", buffering=65536) as handle,
+          pressure_context as pressure_handle,
+          orientation_context as orientation_handle):
         while time < end_time and (tau_end is None or collisions / count < tau_end
                                    or collisions / count >= output_index * dtau):
             tau = collisions / float(count)
@@ -194,6 +206,14 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                           + " ".join(f"{value:13.6f}" for value in values) + "\n")
                     pressure_accumulator[:] = 0.0
                     last_pressure_time = time
+                if orientation_handle is not None:
+                    q = state.orientation_tensor()
+                    values = [q[0, 0], q[0, 1], q[0, 2],
+                              q[1, 1], q[1, 2], q[2, 2]]
+                    orientation_handle.write(
+                        f"{time:13.6f} {tau:13.6f} "
+                        + " ".join(f"{value:13.6f}" for value in values)
+                        + "\n")
                 output_index += 1
             if flow_mode == "usf":
                 state.velocity[:, 0] -= shear_rate * state.velocity[:, 1] * dt
@@ -318,11 +338,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     diagnostics = {
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
+        "volume": volume, "number_density": count / volume,
         "routing": routing, "angular": angular, "flow": flow_mode,
         "minimum_Ftr": None if not np.isfinite(minimum_ftr) else minimum_ftr,
         "maximum_Ftr": None if not np.isfinite(maximum_ftr) else maximum_ftr,
         "negative_energy_repairs": 0 if kernel is None else kernel.negative_energy_repairs,
         "closure_seconds": closure_seconds,
+        "runtime_seconds": total_seconds,
         "closure_overhead_fraction": closure_seconds / max(total_seconds, 1.0e-30),
         "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
                                     else closure.out_of_domain_fraction),
@@ -351,6 +373,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                  else closure.energy_interpolation),
         "output": str(output_path),
         "pressure_output": None if pressure_path is None else str(pressure_path),
+        "orientation_output": (None if orientation_path is None
+                               else str(orientation_path)),
     }
     if audit_enabled:
         accepted = int(audit["accepted_pairs"])

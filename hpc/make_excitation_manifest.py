@@ -28,7 +28,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("hcs-pilot", "full-pilot",
                                             "correction-grid", "production-grid",
-                                            "independent-holdout"),
+                                            "independent-holdout", "usf-extension"),
                         default="hcs-pilot")
     parser.add_argument("--grid", default="manifests/artifact_grid.csv")
     parser.add_argument("--estimates", default="results/closure_estimates/artifact_grid")
@@ -53,6 +53,19 @@ def main() -> None:
                      for alpha in (0.80, 0.95, 1.00)
                      for theta in (0.20, 1.00, 2.00)
                      for ar in (2.0, 3.0)}
+        families = EXCITATION_FAMILIES
+    elif args.mode == "usf-extension":
+        # Minimal union of exact artifact-grid planes needed to enlarge the
+        # correction hull from alpha >= 0.8, AR >= 2 to the held-out USF
+        # domain alpha >= 0.5, AR >= 1.5.  AR=2.5 and intermediate alpha
+        # values are then interpolation points, not additional fit nodes.
+        requested = (
+            {(0.50, theta, ar)
+             for theta in (0.20, 1.00, 2.00) for ar in (2.00, 3.00)}
+            | {(alpha, theta, 1.50)
+               for alpha in (0.50, 0.80, 0.95, 1.00)
+               for theta in (0.20, 1.00, 2.00)}
+        )
         families = EXCITATION_FAMILIES
     elif args.mode == "independent-holdout":
         # A fresh CTC shard at this representative inelastic node is not used

@@ -23,6 +23,14 @@ def digest(payload: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def file_digest(path: str | Path) -> str:
+    checksum = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(block)
+    return checksum.hexdigest()
+
+
 def parameter_vector(node: dict) -> np.ndarray:
     return np.array([
         *(float(node["energy"][name]) for name in PARAMETERS[:4]),
@@ -157,6 +165,7 @@ def main() -> None:
         "schema_version": "independent_ctc_holdout_v1",
         "physical_node": physical.tolist(),
         "artifact": str(Path(args.artifact)),
+        "artifact_sha256": file_digest(args.artifact),
         "baseline_estimate": str(Path(args.baseline_estimate)),
         "baseline_source_runs": baseline.get("source_runs", []),
         "n_expected": expected, "n_valid": len(observations),

@@ -20,7 +20,8 @@ MANIFEST=${1:?manifest path is required}
 ESTIMATES=${2:?node-estimate directory is required}
 WORK=${3:?precompute output directory is required}
 ROWS=${4:?baseline node count is required}
-EXCITATIONS=${5:-}
+shift 4
+NODE_ESTIMATES=("$ESTIMATES" "$@")
 ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 cd "$ROOT"
 
@@ -31,13 +32,9 @@ STRIDE=$(( ${SLURM_ARRAY_TASK_MAX:?} - ${SLURM_ARRAY_TASK_MIN:?} + 1 ))
 INDEX=${SLURM_ARRAY_TASK_ID:?}
 
 while (( INDEX < ROWS )); do
-  ESTIMATE_ARGS=(--node-estimates "$ESTIMATES")
-  if [[ -n "$EXCITATIONS" ]]; then
-    ESTIMATE_ARGS+=("$EXCITATIONS")
-  fi
   PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/precompute_artifact_task.py \
-      --manifest "$MANIFEST" "${ESTIMATE_ARGS[@]}" \
+      --manifest "$MANIFEST" --node-estimates "${NODE_ESTIMATES[@]}" \
       --output "$WORK" --index "$INDEX" \
       --workers "${SLURM_CPUS_PER_TASK:-2}" --propensity-offsets 128 \
       --gamma-max-table Coll_Models_v2/models/legacy_bl/gamma_max_table.json \

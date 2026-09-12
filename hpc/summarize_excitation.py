@@ -166,7 +166,8 @@ def main() -> None:
     mode = rows[0]["mode"] if rows else None
     heldout_sentinel_pass = bool(nodes and all(
         node["heldout_sentinel_pass"] for node in nodes))
-    candidate_artifact_ready = bool(mode == "correction-grid" and response_fit_ready)
+    candidate_artifact_ready = bool(
+        mode in ("correction-grid", "usf-extension") and response_fit_ready)
     blockers = ["pilot_does_not_modify_artifact",
                 "corrected_dynamics_not_validated",
                 "independent_direct_ctc_validation_missing"]

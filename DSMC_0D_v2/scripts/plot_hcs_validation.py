@@ -86,6 +86,8 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
         "sampling_excursion_fraction_by_feature": diagnostics.get(
             "sampling_excursion_fraction_by_feature", {}),
         "closure_overhead_fraction": float(diagnostics["closure_overhead_fraction"]),
+        "artifact": diagnostics.get("artifact"),
+        "artifact_sha256": diagnostics.get("artifact_sha256"),
         "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.05,
     }
     return result, np.column_stack((tau, theta, total / total[0]))
@@ -170,6 +172,11 @@ def main() -> None:
                       "production_pass": bool(production_pass)})
 
     overhead = np.array([record["closure_overhead_fraction"] for record in records])
+    artifact_digests = {record["artifact_sha256"] for record in records
+                        if record.get("artifact_sha256")}
+    artifact_consistent = bool(len(artifact_digests) == 1
+                               and all(record.get("artifact_sha256")
+                                       for record in records))
     summary = {"criteria": {"target_relative_error_max": 0.10,
                              "replicate_mean_relative_drift_max": 0.10,
                              "initial_condition_spread_max": 0.10,
@@ -183,11 +190,16 @@ def main() -> None:
                    "campaign_maximum_closure_overhead_fraction": float(np.max(overhead)),
                    "n_run_failures": int(np.count_nonzero(overhead >= 0.05)),
                },
+               "artifact_sha256": (next(iter(artifact_digests))
+                                   if artifact_consistent else None),
+               "artifact_consistent": artifact_consistent,
                "runs": records, "cases": cases,
-               "physics_gate_pass": all(case["physics_pass"] for case in cases
-                                        if case["tier"] == "gate"),
-               "production_gate_pass": all(case["production_pass"] for case in cases
-                                           if case["tier"] == "gate")}
+               "physics_gate_pass": bool(artifact_consistent and all(
+                   case["physics_pass"] for case in cases
+                   if case["tier"] == "gate")),
+               "production_gate_pass": bool(artifact_consistent and all(
+                   case["production_pass"] for case in cases
+                   if case["tier"] == "gate"))}
     summary_path = Path(args.summary)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
