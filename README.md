@@ -86,8 +86,19 @@ I-projection theorem, removes the atom, and makes the dual strictly convex on
 sample moments, so the infeasible-moment branch cannot occur. The rotational
 collision number survives as the derived lag-one slope of the mean map, and
 `lambda4` lets the runtime evaluate the kernel at its own frozen BL loss
-instead of inheriting the CTC's. State corrections still act in the natural
-parameter, `lambda1 = lambda1_0 + beta dot X`.
+instead of inheriting the CTC's. State corrections act on the complete
+natural-parameter vector,
+
+```text
+(delta lambda1, ..., delta lambda4, delta eta1, delta eta2) = B (X - X0).
+```
+
+The central excitation amplitudes fit `B`; the large amplitudes are held out.
+Energy-table changes from `lambda2` and the non-affine part of `lambda3` are
+carried as logit-quantile tangent surfaces. The existing `a` axis represents
+the `lambda1`, `lambda3 z`, and `lambda4 eps` shifts exactly. At `alpha=1`,
+detailed balance structurally fixes the `lambda1`, `lambda2`, and `lambda4`
+correction rows to zero.
 
 `reset_mean` and `reset_second_moment` keep their names in the node estimates
 and the artifact, but now report the first two moments of the kernel's

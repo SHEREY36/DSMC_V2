@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -21,18 +22,22 @@ from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
 
 from .estimate import NODE_ESTIMATE_CONTRACT, estimate_node
 from .fit_exchange import LOGIT_CUBIC_KERNEL, logit_memory_basis
-from .fit_coefficients import fit_lambda1_coefficients
+from .fit_coefficients import (
+    CORRECTION_PARAMETER_NAMES,
+    fit_correction_coefficients,
+)
 from .projections import (
     _legendre_nodes,
     _bridge_spline,
     adaptive_energy_quantile_table,
     angular_quantiles,
     bridge_mean_map,
+    energy_quantile_table,
     incoming_partition_density,
 )
 
 
-SCHEMA_VERSION = "2.3.0"
+SCHEMA_VERSION = "2.4.0"
 # Fixed Xi axis for the collision-measure enhancement. Shared by every node so
 # the runtime can interpolate the curve like any other surface.
 XI_GRID = np.geomspace(0.05, 40.0, 32)
@@ -40,7 +45,8 @@ XI_BINS = 24
 ENERGY_A_INTERPOLATION_TOLERANCE = 2.0e-4
 ENERGY_A_MAX_NODES = 8193
 ARTIFACT_TYPE = "bl_variational_closure"
-PRECOMPUTE_SCHEMA = "artifact-node-v1"
+PRECOMPUTE_SCHEMA = "artifact-node-v2-multivariate"
+ENERGY_SENSITIVITY_PARAMETERS = ("lambda2", "lambda3")
 
 
 def _node_memory_shift(energy: dict, z_in) -> np.ndarray:
@@ -165,11 +171,12 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
     for key, group in sorted(grouped.items()):
         if len(group) <= 1:
             continue
-        fitted = fit_lambda1_coefficients(group)
+        fitted = fit_correction_coefficients(group)
         if not fitted["identifiable"]:
             raise ValueError(f"excitation design is rank deficient at {key}")
         if not fitted["linearity_pass"]:
-            raise ValueError(f"lambda1 response is nonlinear at held-out amplitude at {key}")
+            raise ValueError(
+                f"multivariate natural-parameter response is nonlinear at {key}")
         fitted["coordinates"] = list(key)
         rows.append(fitted)
     expected = {(node["alpha"], node["theta"], node["aspect_ratio"])
@@ -193,11 +200,71 @@ def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
         beta = np.asarray(row["beta"], dtype=float) * np.asarray(
             row["beta_deployed"], dtype=bool)
         center = np.asarray(row["feature_center"], dtype=float)
-        lo = np.where(beta >= 0.0, lower - center, upper - center)
-        hi = np.where(beta >= 0.0, upper - center, lower - center)
-        bounds.extend((float(beta @ lo), float(beta @ hi)))
+        component_bounds = []
+        for component in beta:
+            lo = np.where(component >= 0.0, lower - center, upper - center)
+            hi = np.where(component >= 0.0, upper - center, lower - center)
+            component_bounds.append((float(component @ lo), float(component @ hi)))
+        # The table axis contains lambda1 + lambda3*z_in + lambda4*loss.  A
+        # conservative unit interval for both covariates bounds every runtime
+        # shift without assuming their correlation.
+        for z_in in (0.0, 1.0):
+            for loss in (0.0, 1.0):
+                bounds.extend((component_bounds[0][0]
+                               + z_in * component_bounds[2][0]
+                               + loss * component_bounds[3][0],
+                               component_bounds[0][1]
+                               + z_in * component_bounds[2][1]
+                               + loss * component_bounds[3][1]))
     payload = json.dumps(coefficient_rows, sort_keys=True).encode()
     return (float(min(bounds)), float(max(bounds))), _sha256_bytes(payload)
+
+
+def _energy_logit_sensitivities(row: dict, a_grid: np.ndarray,
+                                probability: np.ndarray,
+                                workers: int = 1) -> np.ndarray:
+    """Central differences of logit quantiles at fixed ``a``.
+
+    Changes in lambda1/lambda4 and the ``lambda3*z_in`` part are represented
+    exactly by the existing a-axis. These two surfaces represent the remaining
+    changes of distribution shape: lambda2 curvature and the Sinkhorn bridge
+    potential's lambda3 dependence.
+    """
+    energy = row["energy"]
+    form = energy.get("kernel_form", "conditional_iprojection_v2")
+    anchor = (energy.get("anchor_c1", 0.0), energy.get("anchor_c2", 0.0))
+    def derivative_for(name: str) -> np.ndarray:
+        if name == "lambda3" and form != "sinkhorn_bridge_v2":
+            return np.zeros((len(a_grid), len(probability)))
+        base = float(energy[name])
+        step = max(1.0e-4, 1.0e-3 * (1.0 + abs(base)))
+        low_memory = base - step if name == "lambda3" else float(energy["lambda3"])
+        high_memory = base + step if name == "lambda3" else float(energy["lambda3"])
+        low_lambda2 = base - step if name == "lambda2" else float(energy["lambda2"])
+        high_lambda2 = base + step if name == "lambda2" else float(energy["lambda2"])
+        low = energy_quantile_table(
+            low_memory, low_lambda2, a_grid, probability,
+            kernel_form=form, anchor=anchor)
+        high = energy_quantile_table(
+            high_memory, high_lambda2, a_grid, probability,
+            kernel_form=form, anchor=anchor)
+        eps = 1.0e-8
+        low_logit = np.log(np.clip(low, eps, 1.0 - eps)
+                           / (1.0 - np.clip(low, eps, 1.0 - eps)))
+        high_logit = np.log(np.clip(high, eps, 1.0 - eps)
+                            / (1.0 - np.clip(high, eps, 1.0 - eps)))
+        derivative = (high_logit - low_logit) / (2.0 * step)
+        derivative[:, (0, -1)] = 0.0
+        return derivative
+
+    count = max(1, min(int(workers), len(ENERGY_SENSITIVITY_PARAMETERS)))
+    if count == 1:
+        values = [derivative_for(name) for name in ENERGY_SENSITIVITY_PARAMETERS]
+    else:
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            values = list(executor.map(derivative_for,
+                                       ENERGY_SENSITIVITY_PARAMETERS))
+    return np.asarray(values)
 
 
 def _atomic_savez(path: Path, **arrays) -> None:
@@ -250,6 +317,8 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     probability = np.linspace(0.0, 1.0, 513)
     a_grid, quantiles, interpolation_error = _energy_table_for_node(
         row, bl, probability, correction_bounds)
+    sensitivities = _energy_logit_sensitivities(
+        row, a_grid, probability, workers=propensity_workers)
     target = Path(output_directory) / f"node_{int(index):04d}.npz"
     _atomic_savez(
         target,
@@ -262,6 +331,7 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
         quantile_probability=probability,
         energy_a_grid=a_grid,
         energy_quantiles=quantiles,
+        energy_logit_sensitivities=sensitivities,
         energy_interpolation_error=np.array(interpolation_error),
         xi_grid=XI_GRID,
         xi_enhancement=enhancement,
@@ -295,16 +365,19 @@ def _load_precomputed_node(directory: Path, index: int, row: dict,
             raise ValueError(f"precompute grid mismatch in {path}")
         grid = np.asarray(data["energy_a_grid"], dtype=float)
         quantiles = np.asarray(data["energy_quantiles"], dtype=float)
+        sensitivities = np.asarray(data["energy_logit_sensitivities"], dtype=float)
         enhancement = np.asarray(data["xi_enhancement"], dtype=float)
         error = float(data["energy_interpolation_error"])
     if grid.ndim != 1 or quantiles.shape != (len(grid), len(probability)) \
+            or sensitivities.shape != (len(ENERGY_SENSITIVITY_PARAMETERS),
+                                       len(grid), len(probability)) \
             or enhancement.shape != XI_GRID.shape \
             or not np.all(np.diff(grid) > 0.0) \
             or not np.all(np.diff(quantiles, axis=1) >= 0.0):
         raise ValueError(f"invalid precompute array shapes/order in {path}")
     if not np.isfinite(error) or error > ENERGY_A_INTERPOLATION_TOLERANCE:
         raise ValueError(f"energy interpolation error {error:.3e} in {path}")
-    return grid, quantiles, enhancement, error
+    return grid, quantiles, sensitivities, enhancement, error
 
 
 def _node_key(values) -> tuple[float, float, float, int]:
@@ -375,9 +448,19 @@ def _load_node_estimates(directory, expected_groups) -> list[dict]:
             # lambda1 half-width need not meet the production baseline target;
             # overlap, all physical sentinels, and the held-out response fit
             # are the relevant gates.
+            amplitude = abs(float(node.get("excitation", {}).get("eta", 0.0)))
+            heldout_model_form_only = (
+                amplitude > 0.25 + 1.0e-12
+                and set(qa.get("continuation_reasons", [])) == {"model_form"}
+                and all(qa.get(name, False) for name in (
+                    "angular_projection_pass", "elastic_pass",
+                    "energy_projection_pass", "ess_pass",
+                    "incoming_partition_pass", "memory_diagnostic_pass",
+                    "propensity_pass", "proposal_balance_pass")))
             passed = (node.get("excitation_status", "pass") == "pass"
                       and node.get("excitation", {}).get("usable", True)
-                      and qa.get("sentinel_pass", qa.get("precision_pass", False)))
+                      and (qa.get("sentinel_pass", qa.get("precision_pass", False))
+                           or heldout_model_form_only))
         if not passed:
             raise ValueError(f"node {_node_key(node)} has not passed closure QA")
     return sorted(nodes, key=_node_key)
@@ -623,16 +706,18 @@ def build_artifact(run_directories, output_directory, bl=None,
     eparams = np.array([[row["energy"]["lambda1"], row["energy"]["lambda2"],
                          row["energy"]["lambda3"], row["energy"]["lambda4"]]
                         for row in baseline], dtype=float)
-    a_grids, equant, enhancement, interpolation_errors = [], [], [], []
+    a_grids, equant, energy_sensitivities = [], [], []
+    enhancement, interpolation_errors = [], []
     precomputed = None if precomputed_directory is None else Path(precomputed_directory)
     for index, row in enumerate(baseline):
         if precomputed is not None:
-            grid, quantile, curve, interpolation_error = _load_precomputed_node(
+            grid, quantile, sensitivity, curve, interpolation_error = _load_precomputed_node(
                 precomputed, index, row, probability, propensity_offsets,
                 correction_digest)
         else:
             grid, quantile, interpolation_error = _energy_table_for_node(
                 row, bl, probability, correction_bounds)
+            sensitivity = _energy_logit_sensitivities(row, grid, probability)
             shards = dict(grouped).get(_node_key(row))
             if not shards:
                 raise ValueError(f"no shards for node {_node_key(row)}; cannot "
@@ -640,6 +725,7 @@ def build_artifact(run_directories, output_directory, bl=None,
             curve = _measure_enhancement(shards, propensity_offsets)
         a_grids.append(grid)
         equant.append(quantile)
+        energy_sensitivities.append(sensitivity)
         enhancement.append(curve)
         interpolation_errors.append(interpolation_error)
     enhancement = np.asarray(enhancement)
@@ -690,14 +776,15 @@ def build_artifact(run_directories, output_directory, bl=None,
     beta_coordinates = np.array([row["coordinates"] for row in coefficient_rows], dtype=float) \
         if coefficient_rows else np.empty((0, 3))
     beta = np.array([row["beta"] for row in coefficient_rows], dtype=float) \
-        if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
+        if coefficient_rows else np.empty((0, len(CORRECTION_PARAMETER_NAMES),
+                                            len(FEATURE_NAMES)))
     beta_se = np.array([row["beta_se"] for row in coefficient_rows], dtype=float) \
         if coefficient_rows else np.empty_like(beta)
     beta_deployed = np.array([row["beta_deployed"] for row in coefficient_rows], dtype=bool) \
         if coefficient_rows else np.empty_like(beta, dtype=bool)
     beta_feature_center = np.array([row["feature_center"] for row in coefficient_rows],
                                    dtype=float) \
-        if coefficient_rows else np.empty_like(beta)
+        if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
     # Runtime features are cell moments.  Collision-attempt moments are flux
     # weighted (a Maxwellian reports a2_tr ~= -0.032 there), so using them as
     # the runtime hull makes every real cell out of domain even at startup.
@@ -759,6 +846,8 @@ def build_artifact(run_directories, output_directory, bl=None,
     energy_offsets = np.r_[0, np.cumsum([len(grid) for grid in a_grids])].astype(np.int64)
     energy_a_packed = np.concatenate(a_grids)
     energy_quantiles_packed = np.concatenate(equant, axis=0)
+    energy_sensitivities_packed = np.concatenate(
+        [np.moveaxis(value, 0, 1) for value in energy_sensitivities], axis=0)
     np.savez_compressed(
         artifact_path,
         schema_version=np.array(SCHEMA_VERSION), artifact_type=np.array(ARTIFACT_TYPE),
@@ -773,6 +862,8 @@ def build_artifact(run_directories, output_directory, bl=None,
         joint_deployed=joint_deployed, joint_parameters=joint_parameters,
         xi_grid=XI_GRID, xi_enhancement=enhancement,
         quantile_probability=probability, energy_quantiles=energy_quantiles_packed,
+        energy_logit_sensitivities=energy_sensitivities_packed,
+        energy_sensitivity_parameter_names=np.array(ENERGY_SENSITIVITY_PARAMETERS),
         energy_a_grid=energy_a_packed, energy_a_offsets=energy_offsets,
         energy_anchor=np.array([[row["energy"].get("anchor_c1", 0.0),
                                  row["energy"].get("anchor_c2", 0.0)]
@@ -790,6 +881,7 @@ def build_artifact(run_directories, output_directory, bl=None,
             row["energy"].get("memory_center", 0.0) for row in baseline], dtype=float),
         energy_memory_scale=np.array([
             row["energy"].get("memory_scale", 1.0) for row in baseline], dtype=float),
+        correction_parameter_names=np.array(CORRECTION_PARAMETER_NAMES),
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed, beta_feature_center=beta_feature_center,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
@@ -812,11 +904,12 @@ def build_artifact(run_directories, output_directory, bl=None,
         "diagnostics": list(DIAGNOSTIC_NAMES),
         "n_runs": len(paths), "n_nodes": len(nodes), "n_baseline_nodes": len(baseline),
         "n_coefficient_nodes": len(coefficient_rows),
-        "coefficient_fit": "shared_baseline_gls_central_amplitudes_v1",
+        "coefficient_fit": "shared_baseline_gls_central_amplitudes_multivariate_v2",
+        "correction_parameters": list(CORRECTION_PARAMETER_NAMES),
         "correction_bounds": list(correction_bounds),
         "correction_digest": correction_digest,
         "coefficient_validation_relative_rmse_max": (
-            max(row["validation_relative_rmse"] for row in coefficient_rows)
+            max(row["maximum_validation_relative_rmse"] for row in coefficient_rows)
             if coefficient_rows else None),
         "preserved": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_runtime_mode"],
         "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
@@ -830,6 +923,7 @@ def build_artifact(run_directories, output_directory, bl=None,
         "maximum_angular_quantile_moment_error": float(angular_sampler_error),
         "energy_table_layout": "packed_adaptive_v1",
         "energy_table_rows": int(len(energy_a_packed)),
+        "energy_shape_response": "logit_quantile_tangent_lambda2_lambda3_v1",
         "maximum_energy_interpolation_error": float(max(interpolation_errors)),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

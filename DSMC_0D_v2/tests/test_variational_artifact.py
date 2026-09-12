@@ -64,6 +64,34 @@ class VariationalArtifactTests(unittest.TestCase):
             state = closure.kernel_state(0.9, 0.75, 1.75, features)
             self.assertAlmostEqual(state["energy_correction"], 0.2 * (0.10 - 0.04))
 
+    def test_multivariate_corrections_reach_energy_and_angular_parameters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path, joint=True)
+            data = dict(np.load(path, allow_pickle=False))
+            count = len(data["surface_coordinates"])
+            beta = np.zeros((count, 6, len(FEATURE_NAMES)))
+            beta[:, :, 0] = np.array([0.2, 0.3, 0.4, 0.5, 0.6, -0.2])
+            data["beta"] = beta
+            data["beta_se"] = np.zeros_like(beta)
+            data["beta_deployed"] = np.ones_like(beta, dtype=bool)
+            data["beta_feature_center"] = np.zeros((count, len(FEATURE_NAMES)))
+            data["correction_parameter_names"] = np.array(
+                ["lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2"])
+            a_count = data["energy_a_grid"].shape[1]
+            data["energy_logit_sensitivities"] = np.zeros(
+                (count, a_count, 2, len(data["quantile_probability"])))
+            data["energy_sensitivity_parameter_names"] = np.array(
+                ["lambda2", "lambda3"])
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
+            state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            np.testing.assert_allclose(
+                state["energy_parameters"], [0.02, 0.03, 5.04, 0.05])
+            np.testing.assert_allclose(state["angular_parameters"], [0.06, -0.02])
+            np.testing.assert_allclose(state["joint_parameters"], [0.16, -0.12, 0.3])
+
     def test_load_interpolate_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
@@ -274,9 +302,10 @@ class VariationalArtifactTests(unittest.TestCase):
             "out_of_domain_fraction": 0.001,
             "closure_overhead_fraction": 0.05,
             "energy_axis_clamps": 1,
+            "energy_monotonic_repairs": 1,
         })
         self.assertFalse(rejected["pass"])
-        self.assertEqual(len(rejected["reasons"]), 4)
+        self.assertEqual(len(rejected["reasons"]), 5)
 
     def test_variational_loss_loader_has_no_gmm_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:

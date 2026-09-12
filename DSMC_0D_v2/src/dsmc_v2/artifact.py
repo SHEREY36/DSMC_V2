@@ -110,9 +110,9 @@ class VariationalClosure:
 
     def __init__(self, path: str | Path, corrections_enabled: bool = True):
         data = np.load(path, allow_pickle=False)
-        if str(data["schema_version"]) != "2.3.0" \
+        if str(data["schema_version"]) not in ("2.3.0", "2.4.0") \
                 or str(data["artifact_type"]) != "bl_variational_closure":
-            raise ValueError("not a schema-2.3 BL variational closure artifact")
+            raise ValueError("not a supported BL variational closure artifact")
         if list(data["feature_names"].astype(str)) != list(FEATURE_NAMES):
             raise ValueError("variational feature ordering differs from runtime contract")
         self.coordinates = np.asarray(data["surface_coordinates"], dtype=float)
@@ -141,6 +141,18 @@ class VariationalClosure:
                                   for i in range(len(self.coordinates))]
             self.energy_tables = [stored_tables[offsets[i]:offsets[i + 1]]
                                   for i in range(len(self.coordinates))]
+            if "energy_logit_sensitivities" in data.files:
+                packed_sensitivity = np.asarray(
+                    data["energy_logit_sensitivities"], dtype=float)
+                if packed_sensitivity.shape[:1] != stored_tables.shape[:1] \
+                        or packed_sensitivity.ndim != 3 \
+                        or packed_sensitivity.shape[2] != len(self.probability):
+                    raise ValueError("packed energy sensitivity layout is invalid")
+                self.energy_logit_sensitivities = [
+                    packed_sensitivity[offsets[i]:offsets[i + 1]]
+                    for i in range(len(self.coordinates))]
+            else:
+                self.energy_logit_sensitivities = None
             self.energy_table_layout = "packed_adaptive_v1"
         else:
             # Backward-compatible reader for already deployed rectangular
@@ -148,6 +160,12 @@ class VariationalClosure:
             self.energy_tables = stored_tables
             self.energy_a_grid = stored_a_grid
             self.energy_table_layout = "rectangular_v1"
+            self.energy_logit_sensitivities = (
+                np.asarray(data["energy_logit_sensitivities"], dtype=float)
+                if "energy_logit_sensitivities" in data.files else None)
+        self.energy_sensitivity_parameter_names = tuple(
+            data["energy_sensitivity_parameter_names"].astype(str)
+            if "energy_sensitivity_parameter_names" in data.files else ())
         self.kernel_form = str(data["kernel_form"])
         self.energy_kernel_forms = (
             np.asarray(data["energy_kernel_forms"]).astype(str)
@@ -198,7 +216,7 @@ class VariationalClosure:
         # one so installing it changes WHICH pairs collide, not how many.
         if "xi_grid" not in data.files or "xi_enhancement" not in data.files:
             raise ValueError(
-                "artifact carries no collision-measure enhancement; a schema-2.3 "
+                "artifact carries no collision-measure enhancement; a variational "
                 "artifact must ship xi_grid and xi_enhancement or the runtime "
                 "silently samples the wrong collision ensemble")
         self.xi_grid = np.asarray(data["xi_grid"], dtype=float)
@@ -218,6 +236,8 @@ class VariationalClosure:
         elif any(not np.all(np.diff(grid) > 0.0) for grid in self.energy_a_grid):
             raise ValueError("energy a-grid must be strictly increasing per node")
         self.energy_axis_clamps = 0
+        self.energy_monotonic_repairs = 0
+        self.maximum_energy_monotonic_repair = 0.0
         # In a 0-D run alpha and aspect ratio are fixed and theta drifts slowly,
         # so the same interpolation stencil and angular state recur thousands
         # of times. Cache the small state on a rounded key. Energy tables stay
@@ -228,11 +248,31 @@ class VariationalClosure:
         self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
         self.beta = np.asarray(data["beta"], dtype=float)
         self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
+        self.correction_parameter_names = tuple(
+            data["correction_parameter_names"].astype(str)
+            if "correction_parameter_names" in data.files else ("lambda1",))
+        # Read legacy scalar-response artifacts as a one-parameter tensor.
+        if self.beta.ndim == 2:
+            self.beta = self.beta[:, None, :]
+            self.beta_deployed = self.beta_deployed[:, None, :]
         self.beta_feature_center = np.asarray(
             data["beta_feature_center"] if "beta_feature_center" in data.files
-            else np.zeros_like(self.beta), dtype=float)
-        if self.beta_feature_center.shape != self.beta.shape:
-            raise ValueError("beta_feature_center must have the same shape as beta")
+            else np.zeros((len(self.beta_coordinates), len(FEATURE_NAMES))), dtype=float)
+        if self.beta.shape != (len(self.beta_coordinates),
+                               len(self.correction_parameter_names),
+                               len(FEATURE_NAMES)) \
+                or self.beta_deployed.shape != self.beta.shape:
+            raise ValueError("natural-parameter response tensor has invalid shape")
+        if self.beta_feature_center.shape != (len(self.beta_coordinates),
+                                               len(FEATURE_NAMES)):
+            raise ValueError("beta_feature_center must be (coefficient node, feature)")
+        if len(self.correction_parameter_names) > 1:
+            expected = ("lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2")
+            if self.correction_parameter_names != expected:
+                raise ValueError("unsupported natural-parameter correction ordering")
+            if self.energy_logit_sensitivities is None \
+                    or self.energy_sensitivity_parameter_names != ("lambda2", "lambda3"):
+                raise ValueError("multivariate corrections require energy shape sensitivities")
         self.feature_lower = np.asarray(data["feature_lower"], dtype=float)
         self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
         self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
@@ -407,14 +447,15 @@ class VariationalClosure:
             self.energy_mean_loss, vertex_indices, vertex_weights))
         atable = self._weighted(
             self.angular_tables, vertex_indices, vertex_weights).astype(float)
-        beta = np.zeros(len(FEATURE_NAMES))
+        beta = np.zeros((len(self.correction_parameter_names), len(FEATURE_NAMES)))
+        parameter_correction = np.zeros(len(self.correction_parameter_names))
         if self.corrections_enabled:
             beta = self._interpolate(self.beta_coordinates, self.beta,
-                                     query, "lambda1 coefficients",
+                                     query, "natural-parameter coefficients",
                                      self._interpolators.get("beta")).astype(float)
             feature_center = self._interpolate(
                 self.beta_coordinates, self.beta_feature_center, query,
-                "lambda1 feature centre",
+                "correction feature centre",
                 self._interpolators.get("beta_feature_center")).astype(float)
             exact_beta = self._exact(self.beta_coordinates, query)
             if len(exact_beta):
@@ -423,10 +464,17 @@ class VariationalClosure:
                 deployed = np.asarray(
                     self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
             beta *= deployed
-            correction = float(beta @ (features - feature_center))
-            eparams[0] += correction
+            parameter_correction = beta @ (features - feature_center)
+            correction = dict(zip(self.correction_parameter_names,
+                                  parameter_correction.tolist()))
+            for index, name in enumerate(("lambda1", "lambda2", "lambda3", "lambda4")):
+                if name in correction:
+                    eparams[index] += correction[name]
+            for index, name in enumerate(("eta1", "eta2")):
+                if name in correction:
+                    aparams[index] += correction[name]
         else:
-            correction = 0.0
+            correction = {name: 0.0 for name in self.correction_parameter_names}
             feature_center = np.zeros(len(FEATURE_NAMES))
         exact = self._exact(self.coordinates, query)
         joint = bool(len(exact) and self.joint_deployed[exact[0]])
@@ -439,16 +487,25 @@ class VariationalClosure:
                     self._interpolators["joint_parameters"](query[None, :]))[0]
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
+        if joint and self.corrections_enabled:
+            # eta1 and eta2 multiply the same sufficient statistics in the
+            # conditional joint law. Their increments therefore add directly;
+            # the measured z*cosine coupling is deliberately left unchanged.
+            joint_parameters[0] += correction.get("eta1", 0.0)
+            joint_parameters[1] += correction.get("eta2", 0.0)
         state = {"p_exch": p_exch, "energy_parameters": eparams,
                 "energy_vertex_indices": vertex_indices,
                 "energy_vertex_weights": vertex_weights,
-                "energy_correction": correction,
+                "parameter_correction": correction,
+                "energy_correction": correction.get("lambda1", 0.0),
                 "fitted_mean_loss": fitted_loss,
                 "energy_anchor": anchor, "xi_enhancement": curve,
                 "angular_parameters": aparams,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "beta_feature_center": feature_center,
-                "energy_corrected": correction != 0.0,
+                "energy_corrected": any(abs(correction.get(name, 0.0)) > 0.0
+                                        for name in ("lambda1", "lambda2",
+                                                     "lambda3", "lambda4")),
                 "joint_deployed": joint, "joint_parameters": joint_parameters}
         if key is not None:
             if len(self._state_cache) >= self.STATE_CACHE_LIMIT:
@@ -469,7 +526,11 @@ class VariationalClosure:
         """
         indices = np.asarray(state["energy_vertex_indices"], dtype=int)
         weights = np.asarray(state["energy_vertex_weights"], dtype=float)
-        correction = float(state.get("energy_correction", 0.0))
+        correction = state.get("parameter_correction", {})
+        delta1 = float(correction.get("lambda1", state.get("energy_correction", 0.0)))
+        delta2 = float(correction.get("lambda2", 0.0))
+        delta3 = float(correction.get("lambda3", 0.0))
+        delta4 = float(correction.get("lambda4", 0.0))
         result = np.zeros_like(self.probability, dtype=float)
         clamped = False
         for index, physical_weight in zip(indices, weights):
@@ -488,7 +549,12 @@ class VariationalClosure:
                 memory = float(coefficients @ np.array([x, x * x, x * x * x]))
             else:
                 memory = float(coefficients[0] * float(z_in))
-            a = float(lambda1 + correction + memory + lambda4 * covariate)
+            if abs(delta3) > 0.0:
+                if self.energy_kernel_forms[index] != "sinkhorn_bridge_v2":
+                    raise ValueError(
+                        "lambda3 correction reached a non-Sinkhorn energy node")
+                memory += delta3 * float(z_in)
+            a = float(lambda1 + delta1 + memory + (lambda4 + delta4) * covariate)
             grid = self.energy_a_grid[index]
             if a < grid[0] or a > grid[-1]:
                 clamped = True
@@ -498,8 +564,25 @@ class VariationalClosure:
             span = grid[upper] - grid[lower]
             blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
             table = self.energy_tables[index]
-            result += physical_weight * (
-                (1.0 - blend) * table[lower] + blend * table[upper])
+            row = (1.0 - blend) * table[lower] + blend * table[upper]
+            if self.energy_logit_sensitivities is not None \
+                    and (abs(delta2) > 0.0 or abs(delta3) > 0.0):
+                sensitivity_table = self.energy_logit_sensitivities[index]
+                sensitivity = ((1.0 - blend) * sensitivity_table[lower]
+                               + blend * sensitivity_table[upper])
+                q = np.clip(row, 1.0e-8, 1.0 - 1.0e-8)
+                logit = np.log(q / (1.0 - q))
+                logit += delta2 * sensitivity[0] + delta3 * sensitivity[1]
+                row = 1.0 / (1.0 + np.exp(-np.clip(logit, -50.0, 50.0)))
+                row[0], row[-1] = 0.0, 1.0
+                monotone = np.maximum.accumulate(row)
+                repair = float(np.max(monotone - row))
+                if repair > 1.0e-12:
+                    self.energy_monotonic_repairs += 1
+                    self.maximum_energy_monotonic_repair = max(
+                        self.maximum_energy_monotonic_repair, repair)
+                    row = monotone
+            result += physical_weight * row
         self.energy_axis_clamps += int(clamped)
         return result
 
@@ -547,6 +630,23 @@ class VariationalClosure:
                     break
             else:
                 raise RuntimeError("coupled angular rejection sampler failed")
+        elif any(abs(state.get("parameter_correction", {}).get(name, 0.0)) > 0.0
+                 for name in ("eta1", "eta2")):
+            linear, quadratic = state["angular_parameters"]
+            candidates = [-1.0, 1.0]
+            if quadratic < 0.0:
+                vertex = -linear / (3.0 * quadratic)
+                if -1.0 < vertex < 1.0:
+                    candidates.append(vertex)
+            maximum = max(linear * c + quadratic * 0.5 * (3.0 * c * c - 1.0)
+                          for c in candidates)
+            for _ in range(10000):
+                cosine = 2.0 * rng.random() - 1.0
+                exponent = linear * cosine + quadratic * 0.5 * (3.0 * cosine**2 - 1.0)
+                if rng.random() <= np.exp(exponent - maximum):
+                    break
+            else:
+                raise RuntimeError("corrected angular rejection sampler failed")
         else:
             cosine = float(np.interp(rng.random(), self.probability, table))
         trial = np.array([1.0, 0.0, 0.0]) if abs(ghat[0]) < 0.9 else np.array([0.0, 1.0, 0.0])

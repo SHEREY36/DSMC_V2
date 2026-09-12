@@ -20,10 +20,14 @@ def main() -> None:
     modes = {node.get("mode") for node in payload.get("nodes", [])}
     if args.expected_mode and modes != {args.expected_mode}:
         raise SystemExit(f"expected {args.expected_mode} summary, found modes {sorted(modes)}")
-    if not payload.get("screening_pass", False):
+    if not payload.get("training_screening_pass",
+                       payload.get("screening_pass", False)):
         raise SystemExit("prerequisite excitation screening did not pass")
     if not payload.get("response_fit_ready", False):
         raise SystemExit("prerequisite response fit/held-out linearity did not pass")
+    if args.expected_mode == "correction-grid" \
+            and not payload.get("candidate_artifact_ready", False):
+        raise SystemExit("correction grid is not ready to build a candidate artifact")
     print(f"excitation prerequisite passed: {path}")
 
 

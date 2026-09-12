@@ -23,6 +23,7 @@ PARAMETERS = (
     ("energy", "lambda6"), ("angular", "eta1"),
     ("angular", "eta2"), ("angular", "rho_z_cosine"),
 )
+CORRECTION_PARAMETERS = ("lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2")
 
 
 def digest(payload: dict) -> str:
@@ -107,6 +108,24 @@ def main() -> None:
                      for _, result in items]
         sentinel = [result.get("qa", {}).get("sentinel_pass", False)
                     for _, result in items]
+        central = [np.isclose(abs(float(row["eta"])), 0.25)
+                   for row, _ in items]
+        heldout = [np.isclose(abs(float(row["eta"])), 0.50)
+                   for row, _ in items]
+        heldout_acceptable = []
+        for (_, result), selected in zip(items, heldout):
+            if not selected:
+                continue
+            qa = result.get("qa", {})
+            model_form_only = (
+                set(qa.get("continuation_reasons", [])) == {"model_form"}
+                and all(qa.get(name, False) for name in (
+                    "angular_projection_pass", "elastic_pass",
+                    "energy_projection_pass", "ess_pass",
+                    "incoming_partition_pass", "memory_diagnostic_pass",
+                    "propensity_pass", "proposal_balance_pass")))
+            heldout_acceptable.append(bool(qa.get("sentinel_pass", False)
+                                           or model_form_only))
         node = {
             "coordinates": list(key), "mode": mode, "n_excitations": len(items),
             "design_features": list(design_names), "design_rank": rank,
@@ -115,6 +134,13 @@ def main() -> None:
             "minimum_ess_fraction": float(min(ess)),
             "maximum_weight_share": float(max(share)),
             "all_sentinel_pass": bool(all(sentinel)),
+            "training_sentinel_pass": bool(all(
+                value for value, selected in zip(sentinel, central) if selected)),
+            "heldout_sentinel_pass": bool(all(
+                value for value, selected in zip(sentinel, heldout) if selected)),
+            "n_heldout_sentinel_failures": int(sum(
+                not value for value, selected in zip(sentinel, heldout) if selected)),
+            "heldout_boundary_acceptable": bool(all(heldout_acceptable)),
             "all_pointwise_precision_pass": bool(all(precision)),
             # Compatibility alias. Pointwise precision is reported, but it is
             # no longer confused with a response-model release decision.
@@ -123,11 +149,13 @@ def main() -> None:
         }
         node["screening_pass"] = bool(
             rank == expected_rank and min(ess) >= 0.5 and max(share) <= 0.01
-            and all(sentinel))
-        lambda1 = response.get("lambda1", {})
-        node["response_linearity_pass"] = bool(lambda1.get("linearity_pass", False))
+            and node["training_sentinel_pass"])
+        required = [response.get(name, {}) for name in CORRECTION_PARAMETERS]
+        node["response_linearity_pass"] = bool(
+            all(item.get("linearity_pass", False) for item in required))
         node["response_fit_ready"] = bool(
             node["screening_pass"] and node["response_linearity_pass"]
+            and node["heldout_boundary_acceptable"]
             and node["condition_number_scaled"] <= 100.0)
         nodes.append(node)
 
@@ -136,6 +164,9 @@ def main() -> None:
     response_fit_ready = bool(not failures and nodes
                               and all(node["response_fit_ready"] for node in nodes))
     mode = rows[0]["mode"] if rows else None
+    heldout_sentinel_pass = bool(nodes and all(
+        node["heldout_sentinel_pass"] for node in nodes))
+    candidate_artifact_ready = bool(mode == "correction-grid" and response_fit_ready)
     blockers = ["pilot_does_not_modify_artifact",
                 "corrected_dynamics_not_validated",
                 "independent_direct_ctc_validation_missing"]
@@ -145,23 +176,28 @@ def main() -> None:
         "manifest": args.manifest, "n_tasks": len(rows), "n_failures": len(failures),
         "failures": failures, "nodes": nodes,
         "screening_pass": screening_pass,
+        "training_screening_pass": screening_pass,
+        "heldout_sentinel_pass": heldout_sentinel_pass,
+        "restricted_to_calibrated_feature_domain": not heldout_sentinel_pass,
         "pointwise_precision_pass": bool(nodes and all(
             node["all_pointwise_precision_pass"] for node in nodes)),
         "response_fit_ready": response_fit_ready,
+        "candidate_artifact_ready": candidate_artifact_ready,
         # Deployment needs a rebuilt candidate artifact followed by corrected
         # HCS and direct-CTC validation. A pilot can never satisfy those gates.
         "deployment_ready": False,
         "deployment_blockers": blockers,
-        "decision": ("proceed to the next staged excitation campaign only when "
-                     "response_fit_ready is true; do not buy smaller per-point "
-                     "error bars by blindly increasing bootstrap replicates"),
+        "decision": ("build a correction-enabled candidate when candidate_artifact_ready "
+                     "is true; held-out boundary failures restrict the calibrated feature "
+                     "domain but do not invalidate a full-rank central response fit"),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     print(json.dumps({key: payload[key] for key in
                       ("n_tasks", "n_failures", "screening_pass",
-                       "response_fit_ready", "deployment_ready")},
+                       "heldout_sentinel_pass", "response_fit_ready",
+                       "candidate_artifact_ready", "deployment_ready")},
                      indent=2, sort_keys=True))
 
 

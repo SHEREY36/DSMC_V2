@@ -10,8 +10,18 @@ EXCITATIONS=${3:-results/closure_estimates/excitation_correction-grid}
 SUMMARY=${4:-results/closure_estimates/excitation_correction-grid_summary.json}
 OUTPUT=${5:-models/microscopic_closure_v2_candidate}
 WORK=${6:-results/closure_estimates/artifact_precompute_corrected}
+OFFLINE=${7:-results/closure_estimates/excitation_correction-grid_offline_validation.json}
 
 mkdir -p logs "$OUTPUT" "$WORK"
+# Recompute both gates with the checked-out code.  This avoids trusting a
+# stale summary copied from an earlier summarizer implementation.
+PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
+  hpc/python.sh hpc/summarize_excitation.py \
+  --manifest manifests/excitation_correction-grid.csv --output "$SUMMARY"
+PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
+  hpc/python.sh Coll_Models_v2/scripts/validate_multivariate_corrections.py \
+  --manifest manifests/excitation_correction-grid.csv --output "$OFFLINE"
+hpc/python.sh -c 'import json,sys; p=json.load(open(sys.argv[1])); assert p["offline_validation_pass"], "offline multivariate response validation failed"' "$OFFLINE"
 hpc/python.sh hpc/require_excitation_pass.py "$SUMMARY" \
   --expected-mode correction-grid
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
