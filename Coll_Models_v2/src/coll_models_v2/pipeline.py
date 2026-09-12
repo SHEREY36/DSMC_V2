@@ -9,7 +9,8 @@ from pathlib import Path
 
 from dsmc_v2_contracts import FEATURE_NAMES, load_run
 
-from .estimate import estimate_node
+from .estimate import equilibrium_anchor, estimate_node
+from .weights import DEFAULT_OFFSETS
 
 
 def discover_runs(root: str | Path) -> list[Path]:
@@ -47,18 +48,30 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
         return not reasons, reasons
     reasons = []
     qa = result["qa"]
-    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass", "energy_projection_pass",
-                "angular_projection_pass", "model_form_pass", "elastic_pass"):
+    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass",
+                "energy_projection_pass", "angular_projection_pass",
+                "model_form_pass",
+                "incoming_partition_pass", "elastic_pass"):
         if not qa.get(key, False):
             reasons.append(key.removesuffix("_pass"))
-    for name in ("p_exch", "reset_mean", "lambda1", "lambda2", "eta1", "eta2"):
+    # p_exch is the slope of an affine diagnostic inherited from the retired
+    # Bernoulli-reset model.  The continuous conditional sampler does not use
+    # it; lambda3 (and, where selected, the higher memory coefficients) carry
+    # the dependence on the incoming partition.  A negative diagnostic must
+    # therefore be reported but cannot veto a kernel that never consumes it.
+    required = ["lambda1", "lambda2", "lambda3", "eta1", "eta2"]
+    if result.get("energy", {}).get("kernel_form") == "conditional_logit_cubic_v3":
+        required += ["lambda5", "lambda6"]
+    else:
+        required.append("reset_mean")
+    for name in required:
         interval = result.get("uncertainty", {}).get(name)
         if interval is None:
             reasons.append(f"{name}_precision_missing")
     # Excitation continuation is driven by the contribution uncertainty, not
     # a relative coefficient error that diverges at a true zero coefficient.
     if int(result.get("ensemble_id", 0)) != 0:
-        x = result["proposal_features"]
+        x = result.get("cell_features") or result["proposal_features"]
         lambda_se = result.get("uncertainty", {}).get("lambda1", {}).get("standard_error")
         if lambda_se is None or max(abs(value) for value in x.values()) * 1.96 * lambda_se > 0.005:
             reasons.append("lambda1_contribution_precision")
@@ -66,13 +79,33 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
 
 
 def estimate_grid(runs_root: str | Path, output_directory: str | Path,
-                  bl=None, n_bootstrap: int = 200) -> list[dict]:
+                  bl=None, n_bootstrap: int = 200,
+                  propensity_offsets: int | None = DEFAULT_OFFSETS) -> list[dict]:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     grouped = group_runs(discover_runs(runs_root))
+    # One equilibrium anchor per aspect ratio, measured on the elastic
+    # equipartitioned node and shared by every node at that aspect ratio.
+    # Without this each node re-measures the reference law from its own theta
+    # and the kernel loses its restoring force everywhere except theta = 1.
+    anchors: dict[float, tuple] = {}
+    for key, shards in sorted(grouped.items()):
+        alpha, theta, aspect = (float(key[0]), float(key[1]), float(key[2]))
+        if abs(alpha - 1.0) < 1e-9 and abs(theta - 1.0) < 1e-9:
+            anchors[aspect] = equilibrium_anchor(
+                shards, propensity_offsets=propensity_offsets)
+    if not anchors:
+        raise ValueError("grid has no elastic equipartitioned node to anchor on; "
+                         "the reference law cannot be established")
     results = []
     for key, paths in sorted(grouped.items()):
-        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap)
+        aspect = float(key[2])
+        if aspect not in anchors:
+            raise ValueError(f"no elastic equipartitioned node at AR={aspect}; "
+                             "cannot anchor this aspect ratio")
+        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap,
+                               anchor=anchors[aspect],
+                               propensity_offsets=propensity_offsets)
         passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
         results.append(result)

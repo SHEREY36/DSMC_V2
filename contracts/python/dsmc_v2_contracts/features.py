@@ -16,6 +16,7 @@ FEATURE_NAMES = (
     "PiPi", "QQ", "RtRt", "PiQ", "PiRt", "QRt",
     "qtr2", "qrot2", "qtr_qrot", "W2",
 )
+ONE_SIDED_FEATURE_NAMES = ("PiPi", "QQ", "RtRt", "qtr2", "qrot2", "W2")
 DIAGNOSTIC_NAMES = ("Acw2", "vx2")
 ALL_INVARIANT_NAMES = FEATURE_NAMES + DIAGNOSTIC_NAMES
 LEGACY_FEATURE_NAMES = (
@@ -103,8 +104,8 @@ def pair_score_kernel(
 
     Averaging these kernels over independent proposal pairs gives the same
     population invariants as :func:`cell_features`. They are used for
-    proposal-balance diagnostics; coefficient identification uses directly
-    generated excitation ensembles rather than score reweighting.
+    proposal-balance diagnostics and for checking importance-reweighted or
+    directly generated excitation ensembles against the same feature basis.
     """
     arrays = [np.atleast_2d(np.asarray(value, dtype=float)) for value in
               (c1, c2, omega1, omega2, u1, u2)]
@@ -155,6 +156,26 @@ def _u_dot(a: np.ndarray, b: np.ndarray) -> float:
                   - np.einsum("ni,ni->", a, b)) / (n * (n - 1)))
 
 
+def _u_v_square_contraction(a: np.ndarray) -> tuple[float, float]:
+    """Return unbiased U and nonnegative V contractions with one reduction."""
+    n = len(a)
+    total = np.sum(a, axis=0).ravel()
+    total_square = float(total @ total)
+    self_square = float(np.einsum("nij,nij->", a, a))
+    return ((total_square - self_square) / (n * (n - 1)),
+            total_square / (n * n))
+
+
+def _u_v_square_dot(a: np.ndarray) -> tuple[float, float]:
+    """Return unbiased U and nonnegative V dot products with one reduction."""
+    n = len(a)
+    total = np.sum(a, axis=0)
+    total_square = float(total @ total)
+    self_square = float(np.einsum("ni,ni->", a, a))
+    return ((total_square - self_square) / (n * (n - 1)),
+            total_square / (n * n))
+
+
 def _normalised_state(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,
                       mass: float, moi_perpendicular: float) -> tuple[np.ndarray, ...]:
     velocity = np.asarray(velocity, dtype=float)
@@ -176,6 +197,68 @@ def _normalised_state(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,
     return c, w, axis
 
 
+def _cell_invariants_with_domain(
+    velocity: np.ndarray,
+    omega: np.ndarray,
+    axis: np.ndarray,
+    mass: float = 1.0,
+    moi_perpendicular: float = 1.0,
+    sphere: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return correction features, diagnostics, and support-test features.
+
+    The correction features deliberately use unbiased pair U-statistics.  A
+    U-statistic estimating a squared population moment can be slightly
+    negative at finite particle count even though the population quantity is
+    nonnegative.  For domain classification only, the matching V-statistic
+    (the squared sample mean) is therefore used for the six one-sided
+    features.  The learned correction continues to receive the raw unbiased
+    values; no feature is clipped or changed in the physical model.
+    """
+    c, w, u = _normalised_state(velocity, omega, axis, mass, moi_perpendicular)
+    moments = _particle_moments(c, w, u)
+    if sphere:
+        moments["rt"] -= moments["qq"]
+        moments["qq"][:] = 0.0
+        moments["acu"][:] = 0.0
+    x, y = moments["x"], moments["y"]
+    pipi_u, pipi_v = _u_v_square_contraction(moments["pi"])
+    qq_u, qq_v = _u_v_square_contraction(moments["qq"])
+    rtrt_u, rtrt_v = _u_v_square_contraction(moments["rt"])
+    qtr2_u, qtr2_v = _u_v_square_dot(moments["qtr"])
+    qrot2_u, qrot2_v = _u_v_square_dot(moments["qrot"])
+    w2_u, w2_v = _u_v_square_dot(moments["w"])
+    features = np.array([
+        (4.0 / 15.0) * np.mean(x * x) - 1.0,
+        0.5 * np.mean(y * y) - 1.0,
+        (2.0 / 3.0) * np.mean(x * y) - 1.0,
+        np.mean(moments["acu"]),
+        pipi_u / 8.0,
+        qq_u / 8.0,
+        rtrt_u / 8.0,
+        _u_contraction(moments["pi"], moments["qq"]) / 4.0,
+        _u_contraction(moments["pi"], moments["rt"]) / 4.0,
+        _u_contraction(moments["qq"], moments["rt"]) / 4.0,
+        qtr2_u,
+        qrot2_u,
+        _u_dot(moments["qtr"], moments["qrot"]),
+        w2_u,
+    ], dtype=float)
+    acw = moments["acw"][:, None]
+    diagnostics = np.array([
+        _u_dot(acw, acw),
+        _u_dot(moments["vx"], moments["vx"]),
+    ], dtype=float)
+    domain_features = features.copy()
+    domain_features[4] = pipi_v / 8.0
+    domain_features[5] = qq_v / 8.0
+    domain_features[6] = rtrt_v / 8.0
+    domain_features[10] = qtr2_v
+    domain_features[11] = qrot2_v
+    domain_features[13] = w2_v
+    return features, diagnostics, domain_features
+
+
 def cell_invariants(
     velocity: np.ndarray,
     omega: np.ndarray,
@@ -184,41 +267,21 @@ def cell_invariants(
     moi_perpendicular: float = 1.0,
     sphere: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the fourteen production features and two diagnostics."""
-    c, w, u = _normalised_state(velocity, omega, axis, mass, moi_perpendicular)
-    moments = _particle_moments(c, w, u)
-    if sphere:
-        moments["rt"] -= moments["qq"]
-        moments["qq"][:] = 0.0
-        moments["acu"][:] = 0.0
-    x, y = moments["x"], moments["y"]
-    features = np.array([
-        (4.0 / 15.0) * np.mean(x * x) - 1.0,
-        0.5 * np.mean(y * y) - 1.0,
-        (2.0 / 3.0) * np.mean(x * y) - 1.0,
-        np.mean(moments["acu"]),
-        _u_contraction(moments["pi"], moments["pi"]) / 8.0,
-        _u_contraction(moments["qq"], moments["qq"]) / 8.0,
-        _u_contraction(moments["rt"], moments["rt"]) / 8.0,
-        _u_contraction(moments["pi"], moments["qq"]) / 4.0,
-        _u_contraction(moments["pi"], moments["rt"]) / 4.0,
-        _u_contraction(moments["qq"], moments["rt"]) / 4.0,
-        _u_dot(moments["qtr"], moments["qtr"]),
-        _u_dot(moments["qrot"], moments["qrot"]),
-        _u_dot(moments["qtr"], moments["qrot"]),
-        _u_dot(moments["w"], moments["w"]),
-    ], dtype=float)
-    acw = moments["acw"][:, None]
-    diagnostics = np.array([
-        _u_dot(acw, acw),
-        _u_dot(moments["vx"], moments["vx"]),
-    ], dtype=float)
+    """Return the fourteen unbiased production features and two diagnostics."""
+    features, diagnostics, _ = _cell_invariants_with_domain(
+        velocity, omega, axis, mass, moi_perpendicular, sphere)
     return features, diagnostics
 
 
 def cell_features(*args, **kwargs) -> np.ndarray:
     """Compatibility wrapper returning only the deployed fourteen features."""
     return cell_invariants(*args, **kwargs)[0]
+
+
+def cell_features_with_domain(*args, **kwargs) -> tuple[np.ndarray, np.ndarray]:
+    """Return raw correction features and noise-aware support-test features."""
+    features, _, domain_features = _cell_invariants_with_domain(*args, **kwargs)
+    return features, domain_features
 
 
 def legacy_cell_features(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,

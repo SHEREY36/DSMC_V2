@@ -5,11 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-from coll_models_v2.projections import angular_quantiles, energy_quantiles
+from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2.legacy_models import FrozenLossModel
 from dsmc_v2.simulation import run_simulation, runtime_gate_status
-from dsmc_v2_contracts import FEATURE_NAMES
+from dsmc_v2_contracts import FEATURE_NAMES, ONE_SIDED_FEATURE_NAMES
 
 
 class VariationalArtifactTests(unittest.TestCase):
@@ -18,17 +18,29 @@ class VariationalArtifactTests(unittest.TestCase):
         coordinates = np.array([[a, t, r] for a in (0.8, 1.0)
                                  for t in (0.1, 3.0) for r in (1.5, 2.0)])
         probability = np.linspace(0.0, 1.0, 513)
-        ep = np.zeros((len(coordinates), 2))
+        # (lambda1, lambda2, lambda3, lambda4); a real memory so the sampler's
+        # a-axis is exercised rather than collapsing to a point.
+        ep = np.zeros((len(coordinates), 4))
+        ep[:, 2] = 5.0
+        a_grid = np.array([np.linspace(row[0] - 1.0, row[0] + row[2] + 1.0, 65)
+                           for row in ep])
         ap = np.zeros((len(coordinates), 2))
         beta = np.zeros((len(coordinates), len(FEATURE_NAMES)))
         beta[:, 0] = 0.2
         np.savez_compressed(
-            path, schema_version=np.array("2.2.0"),
+            path, schema_version=np.array("2.3.0"),
             artifact_type=np.array("bl_variational_closure"),
             feature_names=np.array(FEATURE_NAMES), surface_coordinates=coordinates,
             p_exch=np.full(len(coordinates), 0.4), energy_parameters=ep,
             angular_parameters=ap, quantile_probability=probability,
-            energy_quantiles=np.array([energy_quantiles(row, probability) for row in ep]),
+            energy_a_grid=a_grid, kernel_form=np.array("sinkhorn_bridge_v2"),
+            energy_mean_loss=np.zeros(len(coordinates)),
+            energy_anchor=np.zeros((len(coordinates), 2)),
+            xi_grid=np.geomspace(0.05, 40.0, 32),
+            xi_enhancement=np.ones((len(coordinates), 32)),
+            energy_quantiles=np.array([
+                energy_quantile_table(row[2], row[1], grid, probability)
+                for row, grid in zip(ep, a_grid)]),
             angular_quantiles=np.array([angular_quantiles(row, probability) for row in ap]),
             beta_coordinates=coordinates, beta=beta, beta_se=np.zeros_like(beta),
             beta_deployed=beta != 0.0, feature_lower=np.full(len(FEATURE_NAMES), -0.5),
@@ -38,6 +50,48 @@ class VariationalArtifactTests(unittest.TestCase):
                               if joint else np.full((len(coordinates), 3), np.nan)),
         )
 
+    def test_correction_is_relative_to_the_fitted_baseline_feature_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            center = np.zeros_like(data["beta"])
+            center[:, 0] = 0.04
+            data["beta_feature_center"] = center
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.10
+            state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertAlmostEqual(state["energy_correction"], 0.2 * (0.10 - 0.04))
+
+    def test_multivariate_corrections_reach_energy_and_angular_parameters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path, joint=True)
+            data = dict(np.load(path, allow_pickle=False))
+            count = len(data["surface_coordinates"])
+            beta = np.zeros((count, 6, len(FEATURE_NAMES)))
+            beta[:, :, 0] = np.array([0.2, 0.3, 0.4, 0.5, 0.6, -0.2])
+            data["beta"] = beta
+            data["beta_se"] = np.zeros_like(beta)
+            data["beta_deployed"] = np.ones_like(beta, dtype=bool)
+            data["beta_feature_center"] = np.zeros((count, len(FEATURE_NAMES)))
+            data["correction_parameter_names"] = np.array(
+                ["lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2"])
+            a_count = data["energy_a_grid"].shape[1]
+            data["energy_logit_sensitivities"] = np.zeros(
+                (count, a_count, 2, len(data["quantile_probability"])))
+            data["energy_sensitivity_parameter_names"] = np.array(
+                ["lambda2", "lambda3"])
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
+            state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            np.testing.assert_allclose(
+                state["energy_parameters"], [0.02, 0.03, 5.04, 0.05])
+            np.testing.assert_allclose(state["angular_parameters"], [0.06, -0.02])
+            np.testing.assert_allclose(state["joint_parameters"], [0.16, -0.12, 0.3])
+
     def test_load_interpolate_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
@@ -45,11 +99,155 @@ class VariationalArtifactTests(unittest.TestCase):
             closure = VariationalClosure(path)
             features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
             state = closure.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertEqual(closure.energy_interpolation,
+                             "node_first_quantile_interpolation_v1")
             self.assertAlmostEqual(state["p_exch"], 0.4)
             self.assertAlmostEqual(state["energy_parameters"][0], 0.02)
             rng = np.random.default_rng(123)
-            values = np.array([closure.sample_energy(state, rng) for _ in range(100000)])
+            values = np.array([closure.sample_energy(state, 0.5, 0.0, rng)
+                               for _ in range(100000)])
             self.assertTrue(np.all((values > 0.0) & (values < 1.0)))
+            self.assertAlmostEqual(
+                np.mean(values), closure.mean_energy(state, 0.5, 0.0), places=3)
+            # Memory must actually bite: a larger incoming share must push the
+            # outgoing share up, or lambda3 is being dropped again.
+            low = np.mean([closure.sample_energy(state, 0.1, 0.0, rng)
+                           for _ in range(20000)])
+            high = np.mean([closure.sample_energy(state, 0.9, 0.0, rng)
+                            for _ in range(20000)])
+            self.assertGreater(high - low, 0.05)
+
+    def test_packed_adaptive_energy_tables_match_rectangular_reader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            rectangular_path = Path(temporary) / "rectangular.npz"
+            packed_path = Path(temporary) / "packed.npz"
+            self._write(rectangular_path)
+            data = dict(np.load(rectangular_path, allow_pickle=False))
+            grids = data["energy_a_grid"]
+            tables = data["energy_quantiles"]
+            offsets = np.r_[0, np.cumsum([len(grid) for grid in grids])]
+            data["energy_a_grid"] = np.concatenate(list(grids))
+            data["energy_quantiles"] = np.concatenate(list(tables), axis=0)
+            data["energy_a_offsets"] = offsets
+            np.savez_compressed(packed_path, **data)
+
+            rectangular = VariationalClosure(
+                rectangular_path, corrections_enabled=False)
+            packed = VariationalClosure(packed_path, corrections_enabled=False)
+            features = np.zeros(len(FEATURE_NAMES))
+            state_r = rectangular.kernel_state(0.9, 0.75, 1.75, features)
+            state_p = packed.kernel_state(0.9, 0.75, 1.75, features)
+            self.assertEqual(packed.energy_table_layout, "packed_adaptive_v1")
+            for z_in in (0.05, 0.4, 0.95):
+                self.assertAlmostEqual(
+                    packed.mean_energy(state_p, z_in, 0.0),
+                    rectangular.mean_energy(state_r, z_in, 0.0), places=14)
+
+    def test_physical_interpolation_preserves_exact_grid_planes(self):
+        """An exact sampled alpha must not borrow a neighbouring alpha plane.
+
+        Generic Delaunay interpolation through a Cartesian grid can select a
+        diagonal simplex that does so, even though a tensor-product stencil is
+        available and has the physically unambiguous answer.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.8, 0.75, 1.75,
+                                         np.zeros(len(FEATURE_NAMES)))
+            indices = state["energy_vertex_indices"]
+            np.testing.assert_allclose(closure.coordinates[indices, 0], 0.8)
+            self.assertAlmostEqual(float(np.sum(state["energy_vertex_weights"])), 1.0)
+
+    def test_energy_sampler_evaluates_nodes_before_mixing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.9, 0.75, 1.75,
+                                         np.zeros(len(FEATURE_NAMES)))
+            z_in = 0.37
+            rows = []
+            for index in state["energy_vertex_indices"]:
+                lambda1, _, lambda3, lambda4 = closure.energy_parameters[index]
+                a = lambda1 + lambda3 * z_in + lambda4 * 0.0
+                grid = closure.energy_a_grid[index]
+                upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
+                lower = upper - 1
+                blend = (a - grid[lower]) / (grid[upper] - grid[lower])
+                table = closure.energy_tables[index]
+                rows.append((1.0 - blend) * table[lower] + blend * table[upper])
+            expected_row = np.tensordot(state["energy_vertex_weights"], rows,
+                                        axes=(0, 0))
+            expected_mean = np.trapezoid(expected_row, closure.probability)
+            self.assertAlmostEqual(closure.mean_energy(state, z_in, 0.0),
+                                   expected_mean, places=13)
+
+    def test_bounded_logit_kernel_loads_and_uses_nonlinear_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            count = len(data["surface_coordinates"])
+            coefficients = np.tile([3.0, -1.0, 0.5], (count, 1))
+            center = np.zeros(count)
+            scale = np.ones(count)
+            z = np.linspace(1.0e-9, 1.0 - 1.0e-9, 2049)
+            x = np.tanh(np.log(z / (1.0 - z)) / 2.0)
+            shift = coefficients[0, 0] * x + coefficients[0, 1] * x**2 \
+                + coefficients[0, 2] * x**3
+            ep = np.zeros((count, 4)); ep[:, 1] = -1.1
+            a_grid = np.tile(np.linspace(shift.min() - 0.1, shift.max() + 0.1, 129),
+                             (count, 1))
+            probability = data["quantile_probability"]
+            tables = np.array([
+                energy_quantile_table(0.0, row[1], grid, probability,
+                                      kernel_form="conditional_logit_cubic_v3")
+                for row, grid in zip(ep, a_grid)])
+            data.update(
+                p_exch=np.full(count, -0.05),
+                energy_parameters=ep,
+                energy_a_grid=a_grid,
+                energy_quantiles=tables,
+                kernel_form=np.array("conditional_logit_cubic_v3"),
+                energy_kernel_forms=np.full(count, "conditional_logit_cubic_v3"),
+                energy_memory_coefficients=coefficients,
+                energy_memory_center=center,
+                energy_memory_scale=scale,
+            )
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            state = closure.kernel_state(0.8, 0.1, 1.5,
+                                         np.zeros(len(FEATURE_NAMES)))
+            self.assertLess(state["p_exch"], 0.0)
+            low = closure.mean_energy(state, 0.02, 0.0)
+            high = closure.mean_energy(state, 0.98, 0.0)
+            self.assertGreater(high - low, 0.1)
+
+    def test_refuses_an_artifact_without_the_collision_measure(self):
+        """Fail closed. A missing enhancement silently reverts the runtime to
+        the orientation-isotropic proposal ensemble -- the exact bug the table
+        exists to remove -- and would do it with a plausible-looking answer."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            del data["xi_enhancement"]
+            np.savez_compressed(path, **data)
+            with self.assertRaisesRegex(ValueError, "collision-measure enhancement"):
+                VariationalClosure(path)
+
+    def test_enhancement_must_be_per_node(self):
+        """One global curve is wrong: it depends on aspect ratio and on theta."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            data["xi_enhancement"] = np.ones(32)
+            np.savez_compressed(path, **data)
+            with self.assertRaisesRegex(ValueError, "xi_enhancement must be"):
+                VariationalClosure(path)
 
     def test_refuses_enabled_but_undeployed_corrections(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -72,6 +270,47 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertTrue(state["out_of_domain"])
             self.assertEqual(closure.out_of_domain_fraction, 1.0)
 
+    def test_one_sided_sampling_excursion_is_not_physical_extrapolation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            index = FEATURE_NAMES.index(ONE_SIDED_FEATURE_NAMES[0])
+            data["feature_lower"][index] = 0.0
+            data["beta"][:, index] = 1.0
+            data["beta_deployed"][:, index] = True
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            raw = np.zeros(len(FEATURE_NAMES)); raw[index] = -0.01
+            domain = raw.copy(); domain[index] = 0.001
+            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
+            self.assertFalse(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 0.0)
+            self.assertEqual(closure.sampling_excursion_by_feature[index], 1)
+            # Support classification must not alter the learned correction.
+            self.assertAlmostEqual(state["energy_correction"], raw[index])
+
+    def test_domain_statistic_still_fails_on_true_upper_extrapolation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path)
+            raw = np.zeros(len(FEATURE_NAMES))
+            domain = raw.copy(); domain[FEATURE_NAMES.index("PiPi")] = 0.7
+            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
+            self.assertTrue(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 1.0)
+
+    def test_feature_domain_is_inactive_when_corrections_are_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path, corrections_enabled=False)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
+            state = closure.kernel_state(0.8, 0.5, 1.5, features)
+            self.assertFalse(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 0.0)
+
     def test_joint_angular_parameters_interpolate_inside_deployed_mask(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
@@ -93,9 +332,11 @@ class VariationalArtifactTests(unittest.TestCase):
             "negative_energy_repairs": 1,
             "out_of_domain_fraction": 0.001,
             "closure_overhead_fraction": 0.05,
+            "energy_axis_clamps": 1,
+            "energy_monotonic_repairs": 1,
         })
         self.assertFalse(rejected["pass"])
-        self.assertEqual(len(rejected["reasons"]), 3)
+        self.assertEqual(len(rejected["reasons"]), 5)
 
     def test_variational_loss_loader_has_no_gmm_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -137,6 +378,8 @@ class VariationalArtifactTests(unittest.TestCase):
             }
             diagnostics = run_simulation(config, 42, root / "hcs.txt")
             self.assertEqual(diagnostics["routing"], "variational_v2")
+            self.assertEqual(diagnostics["energy_interpolation"],
+                             "node_first_quantile_interpolation_v1")
             self.assertEqual(diagnostics["negative_energy_repairs"], 0)
             self.assertIsNotNone(diagnostics["runtime_gate"])
 

@@ -1,22 +1,38 @@
 #!/bin/bash -l
 #SBATCH --account=morri353
 #SBATCH --partition=cpu
-#SBATCH --job-name=artifact_v2
+#SBATCH --job-name=artifact_pack
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=8G
+#SBATCH --time=04:00:00
 #SBATCH --output=logs/artifact_%j.out
 #SBATCH --error=logs/artifact_%j.err
 
 set -euo pipefail
-RUNS_ROOT=${1:-results/ctc}
-OUTPUT=${2:-models/microscopic_closure_v2}
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-20}
+MANIFEST=${1:-manifests/artifact_grid.csv}
+ESTIMATES=${2:-results/closure_estimates/artifact_grid}
+OUTPUT=${3:-models/microscopic_closure_v2}
+PRECOMPUTED=${4:-results/closure_estimates/artifact_precompute}
+shift $(( $# < 4 ? $# : 4 ))
+NODE_ESTIMATES=("$ESTIMATES" "$@")
+# Slurm executes a copied script from /var/spool/slurm, so $0 does not point
+# into the checkout.  sbatch records the submission directory explicitly.
+ROOT=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
+ESTIMATE_ARGS=(--node-estimates)
+for DIRECTORY in "${NODE_ESTIMATES[@]}"; do
+  if [[ "$DIRECTORY" = /* ]]; then
+    ESTIMATE_ARGS+=("$DIRECTORY")
+  else
+    ESTIMATE_ARGS+=("$ROOT/$DIRECTORY")
+  fi
+done
 PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 "$ROOT/hpc/python.sh" "$ROOT/Coll_Models_v2/scripts/build_artifact.py" \
-  --runs-root "$ROOT/$RUNS_ROOT" --output "$ROOT/$OUTPUT" --bootstrap 2000 \
+  --manifest "$ROOT/$MANIFEST" "${ESTIMATE_ARGS[@]}" \
+  --output "$ROOT/$OUTPUT" --precomputed-directory "$ROOT/$PRECOMPUTED" \
+  --bootstrap 200 \
   --gamma-max-table "$ROOT/Coll_Models_v2/models/legacy_bl/gamma_max_table.json" \
   --one-hit-table "$ROOT/Coll_Models_v2/models/legacy_bl/one_hit_table.json"
