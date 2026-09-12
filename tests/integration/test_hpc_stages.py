@@ -131,7 +131,8 @@ class HPCStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             for mode, expected in (("hcs-pilot", 96), ("full-pilot", 72),
                                    ("correction-grid", 1296),
-                                   ("production-grid", 10368)):
+                                   ("production-grid", 10368),
+                                   ("independent-holdout", 36)):
                 manifest = Path(temporary) / f"{mode}.csv"
                 subprocess.run([
                     sys.executable, str(ROOT / "hpc" / "make_excitation_manifest.py"),
@@ -152,6 +153,30 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("EXCITATION_MAX_CORES:-256", submitter)
         self.assertIn("require_hcs_pass.py", submitter)
         self.assertIn("require_excitation_pass.py", submitter)
+
+    def test_independent_holdout_uses_fresh_ctc_and_boundary_points_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ctc = Path(temporary) / "ctc.csv"
+            fit = Path(temporary) / "fit.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "hpc" / "make_independent_ctc_holdout_manifest.py"),
+                "--ctc-output", str(ctc), "--fit-output", str(fit),
+                "--results-root", str(Path(temporary) / "raw"),
+            ], check=True, capture_output=True, text=True)
+            with ctc.open(newline="") as handle:
+                ctc_rows = list(csv.DictReader(handle))
+            with fit.open(newline="") as handle:
+                fit_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(ctc_rows), 2)
+            self.assertEqual(len(fit_rows), 1)
+            self.assertEqual(ctc_rows[0]["seed"], ctc_rows[1]["seed"])
+            self.assertEqual(fit_rows[0]["anchor_directory"],
+                             ctc_rows[1]["output_directory"])
+        submitter = (ROOT / "hpc" / "submit_independent_ctc_holdout.sh").read_text()
+        self.assertIn("--array=0-35%36", submitter)
+        self.assertIn("EXCITATION_BOOTSTRAP=0", submitter)
+        self.assertIn("CLOSURE_PROPENSITY_WORKERS=20", submitter)
 
 
 if __name__ == "__main__":

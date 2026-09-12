@@ -1,9 +1,12 @@
 import unittest
+import tempfile
 from types import SimpleNamespace
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from coll_models_v2.estimate import _run_events
+from coll_models_v2.estimate import _run_events, _run_propensity
 from coll_models_v2.weights import effective_sample_size, projected_excluded_area
 from dsmc_v2_contracts.io import AI, OI, ATTEMPT_DTYPE, OUTCOME_DTYPE
 
@@ -55,6 +58,25 @@ class MeasureWeightTests(unittest.TestCase):
         events = _run_events(
             run, measure="collision", attempt_weight=np.array([2.0, 3.0, 5.0]))
         np.testing.assert_allclose(events["weight"], [5.0, 2.0])
+
+    def test_propensity_cache_cannot_alias_fresh_shards_with_same_name_and_size(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directories = [root / side / "same_shard" for side in ("training", "holdout")]
+            runs = []
+            for seed, directory in enumerate(directories, start=1):
+                directory.mkdir(parents=True)
+                (directory / "attempts_v2.bin").write_bytes(b"same byte count")
+                runs.append(SimpleNamespace(
+                    directory=directory, attempts=np.zeros(3), metadata={"seed": seed}))
+            generated = [np.full(3, 0.1), np.full(3, 0.2)]
+            with patch("coll_models_v2.estimate.kinematic_propensity",
+                       side_effect=generated) as calculate:
+                first = _run_propensity(runs[0], 8, cache=root / "cache")
+                second = _run_propensity(runs[1], 8, cache=root / "cache")
+            self.assertEqual(calculate.call_count, 2)
+            np.testing.assert_array_equal(first, generated[0])
+            np.testing.assert_array_equal(second, generated[1])
 
 
 if __name__ == "__main__":

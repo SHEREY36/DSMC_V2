@@ -27,7 +27,8 @@ def coordinate(row) -> tuple[float, float, float]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("hcs-pilot", "full-pilot",
-                                            "correction-grid", "production-grid"),
+                                            "correction-grid", "production-grid",
+                                            "independent-holdout"),
                         default="hcs-pilot")
     parser.add_argument("--grid", default="manifests/artifact_grid.csv")
     parser.add_argument("--estimates", default="results/closure_estimates/artifact_grid")
@@ -53,6 +54,13 @@ def main() -> None:
                      for theta in (0.20, 1.00, 2.00)
                      for ar in (2.0, 3.0)}
         families = EXCITATION_FAMILIES
+    elif args.mode == "independent-holdout":
+        # A fresh CTC shard at this representative inelastic node is not used
+        # in fitting the artifact.  The two boundary amplitudes are therefore
+        # validation observations only; regenerating the central training
+        # amplitudes would add cost without making the holdout more independent.
+        requested = {(0.95, 1.0, 2.0)}
+        families = EXCITATION_FAMILIES
     else:
         # Final surface: only justified after the small correction grid passes
         # corrected HCS and direct-CTC validation.
@@ -74,6 +82,8 @@ def main() -> None:
         if int(payload.get("ensemble_id", 0)) == 0:
             estimates[coordinate(payload)] = (path, payload)
 
+    amplitudes = ((-0.50, 0.50) if args.mode == "independent-holdout"
+                  else AMPLITUDES)
     rows = []
     results = Path(args.results)
     for physical in sorted(requested):
@@ -83,8 +93,8 @@ def main() -> None:
         if not estimate.get("qa", {}).get("precision_pass", False):
             raise ValueError(f"baseline estimate at {physical} has not passed QA")
         for family_index, family in enumerate(families):
-            for amplitude_index, eta in enumerate(AMPLITUDES):
-                ensemble_id = 1 + family_index * len(AMPLITUDES) + amplitude_index
+            for amplitude_index, eta in enumerate(amplitudes):
+                ensemble_id = 1 + family_index * len(amplitudes) + amplitude_index
                 tag = (f"alpha_{physical[0]:.3f}_theta_{physical[1]:.3f}_"
                        f"AR_{physical[2]:.3f}_ensemble_{ensemble_id:03d}.json")
                 rows.append({

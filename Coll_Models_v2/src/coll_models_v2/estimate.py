@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -102,15 +103,21 @@ def _run_propensity(run, offsets: int | None,
 
     The integral is deterministic given the shard and the offset count, and it
     dominates the cost of a node, so it is cached on disk. The key carries the
-    shard identity and its byte size, so a regenerated shard misses the cache.
+    resolved path, seed, byte size, and modification time, so a fresh or
+    regenerated shard cannot reuse an unrelated geometry calculation.
     """
     if offsets is None:
         return None
     key = None
     if cache is not None:
         directory = Path(run.directory).resolve()
-        size = (directory / "attempts_v2.bin").stat().st_size
-        key = cache / f"{directory.name}_{size}_{int(offsets)}.npy"
+        attempt_path = directory / "attempts_v2.bin"
+        stat = attempt_path.stat()
+        identity = hashlib.sha256(
+            (f"{directory}|{run.metadata.get('seed')}|{stat.st_size}|"
+             f"{stat.st_mtime_ns}").encode()).hexdigest()[:16]
+        key = cache / (
+            f"{directory.name}_{identity}_{stat.st_size}_{int(offsets)}.npy")
         if key.is_file():
             try:
                 stored = np.load(key)
@@ -351,6 +358,7 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
 def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   bootstrap_seed: int = 20260902,
                   propensity_offsets: int | None = DEFAULT_OFFSETS,
+                  propensity_workers: int = 1,
                   measure: str = MEASURE,
                   anchor: tuple | None = None,
                   attempt_weights: list[np.ndarray] | None = None,
@@ -371,11 +379,15 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     """
     runs = [load_run(path) for path in run_directories]
     _check_compatible(runs)
+    if int(propensity_workers) < 1:
+        raise ValueError("propensity_workers must be positive")
     if attempt_weights is None:
         attempt_weights = [None] * len(runs)
     elif len(attempt_weights) != len(runs):
         raise ValueError("one attempt-weight array is required per input shard")
-    propensities = [_run_propensity(run, propensity_offsets) for run in runs]
+    propensities = [_run_propensity(run, propensity_offsets,
+                                    workers=int(propensity_workers))
+                    for run in runs]
     offsets = int(propensity_offsets or DEFAULT_OFFSETS)
     parts = [_run_events(run, propensity, offsets, measure, importance)
              for run, propensity, importance in

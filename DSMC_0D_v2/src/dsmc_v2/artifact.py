@@ -297,6 +297,8 @@ class VariationalClosure:
             tuple(float(value) for value in row): index
             for index, row in enumerate(self.coordinates)
         }
+        self._coordinate_axes = tuple(
+            np.unique(self.coordinates[:, axis]) for axis in range(3))
         self._physical_triangulation = None
         if len(self.coordinates) >= 4:
             try:
@@ -350,13 +352,14 @@ class VariationalClosure:
         cells (for example a deliberately truncated low-theta campaign) fall
         back to barycentric interpolation on the measured convex hull.
         """
-        exact = self._exact(self.coordinates, query)
-        if len(exact):
-            return exact[:1].astype(int), np.ones(1, dtype=float)
+        exact_index = self._coordinate_index.get(
+            tuple(float(value) for value in query))
+        if exact_index is not None:
+            return np.array([exact_index], dtype=int), np.ones(1, dtype=float)
 
         choices = []
         for axis in range(3):
-            values = np.unique(self.coordinates[:, axis])
+            values = self._coordinate_axes[axis]
             matched = np.flatnonzero(np.isclose(values, query[axis], atol=1.0e-12,
                                                  rtol=0.0))
             if len(matched):
@@ -481,7 +484,11 @@ class VariationalClosure:
         else:
             correction = {name: 0.0 for name in self.correction_parameter_names}
             feature_center = np.zeros(len(FEATURE_NAMES))
-        exact = self._exact(self.coordinates, query)
+        exact = (vertex_indices[:1]
+                 if len(vertex_indices) == 1
+                 and np.all(np.isclose(self.coordinates[vertex_indices[0]], query,
+                                       atol=1.0e-12, rtol=0.0))
+                 else np.empty(0, dtype=int))
         joint = bool(len(exact) and self.joint_deployed[exact[0]])
         joint_parameters = self.joint_parameters[exact[0]].copy() if joint else None
         if not len(exact) and "joint_parameters" in self._interpolators:

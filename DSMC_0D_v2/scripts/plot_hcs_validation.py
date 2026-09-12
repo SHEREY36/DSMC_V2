@@ -142,6 +142,7 @@ def main() -> None:
         maximum_mean_drift = max(mean_drift_by_start.values())
         maximum_individual_drift = max(
             item["late_relative_drift"] for item in items)
+        overhead = np.array([item["closure_overhead_fraction"] for item in items])
         physics_pass = (len(start_means) > 1 and convergence <= 0.10
                         and replicate_cv <= 0.10
                         and all(item["bounded"] and item["energy_behavior_pass"]
@@ -162,9 +163,13 @@ def main() -> None:
                       "replicate_mean_relative_drift_by_theta0": mean_drift_by_start,
                       "maximum_replicate_mean_relative_drift": maximum_mean_drift,
                       "maximum_individual_relative_drift": maximum_individual_drift,
+                      "mean_closure_overhead_fraction": float(np.mean(overhead)),
+                      "maximum_closure_overhead_fraction": float(np.max(overhead)),
+                      "n_performance_failures": int(np.count_nonzero(overhead >= 0.05)),
                       "physics_pass": bool(physics_pass),
                       "production_pass": bool(production_pass)})
 
+    overhead = np.array([record["closure_overhead_fraction"] for record in records])
     summary = {"criteria": {"target_relative_error_max": 0.10,
                              "replicate_mean_relative_drift_max": 0.10,
                              "initial_condition_spread_max": 0.10,
@@ -172,6 +177,12 @@ def main() -> None:
                              "elastic_total_energy_relative_change_max": 0.02,
                              "energy_axis_clamps": 0,
                              "energy_monotonic_repairs": 0},
+               "performance": {
+                   "closure_overhead_fraction_max": 0.05,
+                   "campaign_mean_closure_overhead_fraction": float(np.mean(overhead)),
+                   "campaign_maximum_closure_overhead_fraction": float(np.max(overhead)),
+                   "n_run_failures": int(np.count_nonzero(overhead >= 0.05)),
+               },
                "runs": records, "cases": cases,
                "physics_gate_pass": all(case["physics_pass"] for case in cases
                                         if case["tier"] == "gate"),

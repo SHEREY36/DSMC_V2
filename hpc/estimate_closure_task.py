@@ -81,6 +81,9 @@ def main() -> None:
                         help="impact-plane samples for the kinematic acceptance "
                              "propensity; 0 falls back to the static 1/A_perp "
                              "weight, which is retained only for A/B runs")
+    parser.add_argument("--propensity-workers", type=int, default=1,
+                        help="threads used only for deterministic geometric "
+                             "propensity blocks")
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -124,6 +127,7 @@ def main() -> None:
                                anchor=anchor,
                                bootstrap_seed=20260902 + args.index,
                                propensity_offsets=args.propensity_offsets or None,
+                               propensity_workers=args.propensity_workers,
                                kernel_form=kernel_form)
     except SCIENTIFIC_FIT_EXCEPTIONS as exc:
         result = _failed_fit_result(row, run, exc)
@@ -136,6 +140,7 @@ def main() -> None:
         "git_sha": _git_sha(),
         "bootstrap": int(args.bootstrap),
         "propensity_offsets": int(args.propensity_offsets),
+        "propensity_workers": int(args.propensity_workers),
         "manifest": str(Path(args.manifest)),
         "manifest_index": int(args.index),
         "anchor_run": str(anchor_run.resolve()),
