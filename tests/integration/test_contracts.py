@@ -6,7 +6,8 @@ from pathlib import Path
 import numpy as np
 
 from dsmc_v2_contracts import (
-    ATTEMPT_DTYPE, OUTCOME_DTYPE, FEATURE_NAMES, cell_features, load_run, validate_run,
+    ATTEMPT_DTYPE, OUTCOME_DTYPE, FEATURE_NAMES, ONE_SIDED_FEATURE_NAMES,
+    cell_features, cell_features_with_domain, load_run, validate_run,
 )
 from dsmc_v2_contracts.io import OI
 
@@ -63,6 +64,24 @@ class ContractTests(unittest.TestCase):
         values = cell_features(velocity, omega, axis)
         self.assertLess(np.max(np.abs(values)), 0.04)
         self.assertTrue(np.isfinite(values).all())
+
+    def test_domain_features_do_not_misclassify_negative_u_statistic_noise(self):
+        rng = np.random.default_rng(193)
+        velocity = rng.normal(size=(32, 3))
+        axis = rng.normal(size=(32, 3))
+        axis /= np.linalg.norm(axis, axis=1)[:, None]
+        omega = rng.normal(size=(32, 3))
+        omega -= np.einsum("ni,ni->n", omega, axis)[:, None] * axis
+        raw, domain = cell_features_with_domain(velocity, omega, axis)
+        one_sided = np.array([
+            FEATURE_NAMES.index(name) for name in ONE_SIDED_FEATURE_NAMES])
+        signed = np.array([
+            i for i in range(len(FEATURE_NAMES)) if i not in set(one_sided)])
+        self.assertTrue(np.all(domain[one_sided] >= 0.0))
+        np.testing.assert_allclose(domain[signed], raw[signed])
+        # The correction retains the unbiased estimator rather than silently
+        # replacing it with the support-test statistic.
+        self.assertGreater(np.max(np.abs(domain[one_sided] - raw[one_sided])), 0.0)
 
 
 if __name__ == "__main__":

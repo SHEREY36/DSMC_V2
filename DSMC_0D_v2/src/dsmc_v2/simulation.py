@@ -9,7 +9,12 @@ from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import FEATURE_NAMES, cell_features, legacy_cell_features
+from dsmc_v2_contracts import (
+    FEATURE_NAMES,
+    cell_features,
+    cell_features_with_domain,
+    legacy_cell_features,
+)
 
 from .artifact import MicroscopicClosure, VariationalClosure
 from .kernel import SpherocylinderKernel
@@ -167,6 +172,9 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     feature_sum = np.zeros(len(FEATURE_NAMES))
     feature_min = np.full(feature_sum.shape, np.inf)
     feature_max = np.full(feature_sum.shape, -np.inf)
+    domain_feature_sum = np.zeros(len(FEATURE_NAMES))
+    domain_feature_min = np.full(feature_sum.shape, np.inf)
+    domain_feature_max = np.full(feature_sum.shape, -np.inf)
     pressure_context = pressure_path.open("w", buffering=65536) if pressure_path else nullcontext(None)
     with output_path.open("w", buffering=65536) as handle, pressure_context as pressure_handle:
         while time < end_time and (tau_end is None or collisions / count < tau_end
@@ -199,16 +207,23 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 minimum_ftr, maximum_ftr = min(minimum_ftr, ftr), max(maximum_ftr, ftr)
             elif kernel is not None and routing == "variational_v2":
                 closure_started = wallclock.perf_counter()
-                features = cell_features(state.velocity, state.omega, state.axis,
-                                         params.mass, params.inertia, sphere=False)
+                features, domain_features = cell_features_with_domain(
+                    state.velocity, state.omega, state.axis,
+                    params.mass, params.inertia, sphere=False)
                 if audit_enabled:
                     feature_count += 1
                     feature_sum += features
                     feature_min = np.minimum(feature_min, features)
                     feature_max = np.maximum(feature_max, features)
+                    domain_feature_sum += domain_features
+                    domain_feature_min = np.minimum(
+                        domain_feature_min, domain_features)
+                    domain_feature_max = np.maximum(
+                        domain_feature_max, domain_features)
                 closure_alpha = 1.0 if time < kernel.equilibration_time else alpha
                 kernel.set_cell_variational(
-                    closure.kernel_state(closure_alpha, theta, params.aspect_ratio, features))
+                    closure.kernel_state(closure_alpha, theta, params.aspect_ratio,
+                                         features, domain_features))
                 closure_seconds += wallclock.perf_counter() - closure_started
 
             if routing == "variational_v2" and not getattr(kernel, "_enhanced", False):
@@ -311,6 +326,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "closure_overhead_fraction": closure_seconds / max(total_seconds, 1.0e-30),
         "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
                                     else closure.out_of_domain_fraction),
+        "out_of_domain_fraction_by_feature": (
+            {} if not isinstance(closure, VariationalClosure) else dict(zip(
+                FEATURE_NAMES,
+                (closure.out_of_domain_by_feature
+                 / max(closure.total_queries, 1)).tolist()))),
+        "sampling_excursion_fraction_by_feature": (
+            {} if not isinstance(closure, VariationalClosure) else dict(zip(
+                FEATURE_NAMES,
+                (closure.sampling_excursion_by_feature
+                 / max(closure.total_queries, 1)).tolist()))),
         "energy_axis_clamps": (0 if not isinstance(closure, VariationalClosure)
                                 else closure.energy_axis_clamps),
         "energy_axis_clamp_fraction": (
@@ -361,6 +386,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         (feature_sum / max(feature_count, 1)).tolist())),
                     "minimum": dict(zip(FEATURE_NAMES, feature_min.tolist())),
                     "maximum": dict(zip(FEATURE_NAMES, feature_max.tolist())),
+                },
+                "domain_features": {
+                    "samples": feature_count,
+                    "mean": dict(zip(
+                        FEATURE_NAMES,
+                        (domain_feature_sum / max(feature_count, 1)).tolist())),
+                    "minimum": dict(zip(
+                        FEATURE_NAMES, domain_feature_min.tolist())),
+                    "maximum": dict(zip(
+                        FEATURE_NAMES, domain_feature_max.tolist())),
                 },
             }
         else:

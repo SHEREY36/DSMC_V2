@@ -290,6 +290,8 @@ class VariationalClosure:
         self.corrections_enabled = bool(corrections_enabled)
         self.out_of_domain_queries = 0
         self.total_queries = 0
+        self.out_of_domain_by_feature = np.zeros(len(FEATURE_NAMES), dtype=np.int64)
+        self.sampling_excursion_by_feature = np.zeros(len(FEATURE_NAMES), dtype=np.int64)
         self._interpolators = {}
         self._coordinate_index = {
             tuple(float(value) for value in row): index
@@ -406,10 +408,15 @@ class VariationalClosure:
     STATE_CACHE_LIMIT = 4096
 
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
-                     features: np.ndarray) -> dict:
+                     features: np.ndarray,
+                     domain_features: np.ndarray | None = None) -> dict:
         features = np.asarray(features, dtype=float)
         if features.shape != (len(FEATURE_NAMES),):
             raise ValueError("variational closure requires fourteen cell features")
+        domain_features = (features if domain_features is None
+                           else np.asarray(domain_features, dtype=float))
+        if domain_features.shape != (len(FEATURE_NAMES),):
+            raise ValueError("variational closure requires fourteen domain features")
         self.total_queries += 1
         key = None
         if not self.corrections_enabled:
@@ -420,17 +427,15 @@ class VariationalClosure:
             hit = self._state_cache.get(key)
             if hit is not None:
                 self._state_cache_hits += 1
-                # Features do not enter this state when corrections are off,
-                # so a feature-hull failure has no mathematical meaning.
-                self.out_of_domain_queries += int(
-                    self.corrections_enabled
-                    and bool(np.any(features < self.feature_lower)
-                             or np.any(features > self.feature_upper)))
                 return hit
-        ood = bool(
-            self.corrections_enabled
-            and (np.any(features < self.feature_lower)
-                 or np.any(features > self.feature_upper)))
+        raw_outside = ((features < self.feature_lower)
+                       | (features > self.feature_upper))
+        domain_outside = ((domain_features < self.feature_lower)
+                          | (domain_features > self.feature_upper))
+        if self.corrections_enabled:
+            self.out_of_domain_by_feature += domain_outside
+            self.sampling_excursion_by_feature += raw_outside & ~domain_outside
+        ood = bool(self.corrections_enabled and np.any(domain_outside))
         self.out_of_domain_queries += int(ood)
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
         vertex_indices, vertex_weights = self._physical_vertex_weights(query)

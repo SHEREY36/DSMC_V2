@@ -9,7 +9,7 @@ from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2.legacy_models import FrozenLossModel
 from dsmc_v2.simulation import run_simulation, runtime_gate_status
-from dsmc_v2_contracts import FEATURE_NAMES
+from dsmc_v2_contracts import FEATURE_NAMES, ONE_SIDED_FEATURE_NAMES
 
 
 class VariationalArtifactTests(unittest.TestCase):
@@ -267,6 +267,37 @@ class VariationalArtifactTests(unittest.TestCase):
             closure = VariationalClosure(path)
             features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
             state = closure.kernel_state(0.8, 0.5, 1.5, features)
+            self.assertTrue(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 1.0)
+
+    def test_one_sided_sampling_excursion_is_not_physical_extrapolation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            index = FEATURE_NAMES.index(ONE_SIDED_FEATURE_NAMES[0])
+            data["feature_lower"][index] = 0.0
+            data["beta"][:, index] = 1.0
+            data["beta_deployed"][:, index] = True
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            raw = np.zeros(len(FEATURE_NAMES)); raw[index] = -0.01
+            domain = raw.copy(); domain[index] = 0.001
+            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
+            self.assertFalse(state["out_of_domain"])
+            self.assertEqual(closure.out_of_domain_fraction, 0.0)
+            self.assertEqual(closure.sampling_excursion_by_feature[index], 1)
+            # Support classification must not alter the learned correction.
+            self.assertAlmostEqual(state["energy_correction"], raw[index])
+
+    def test_domain_statistic_still_fails_on_true_upper_extrapolation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            closure = VariationalClosure(path)
+            raw = np.zeros(len(FEATURE_NAMES))
+            domain = raw.copy(); domain[FEATURE_NAMES.index("PiPi")] = 0.7
+            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
             self.assertTrue(state["out_of_domain"])
             self.assertEqual(closure.out_of_domain_fraction, 1.0)
 

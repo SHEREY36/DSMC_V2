@@ -76,7 +76,15 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
                         and np.max(theta) < 10.0),
         "negative_energy_repairs": int(diagnostics["negative_energy_repairs"]),
         "energy_axis_clamps": int(diagnostics.get("energy_axis_clamps", 0)),
+        "energy_monotonic_repairs": int(
+            diagnostics.get("energy_monotonic_repairs", 0)),
+        "maximum_energy_monotonic_repair": float(
+            diagnostics.get("maximum_energy_monotonic_repair", 0.0)),
         "out_of_domain_fraction": float(diagnostics["out_of_domain_fraction"]),
+        "out_of_domain_fraction_by_feature": diagnostics.get(
+            "out_of_domain_fraction_by_feature", {}),
+        "sampling_excursion_fraction_by_feature": diagnostics.get(
+            "sampling_excursion_fraction_by_feature", {}),
         "closure_overhead_fraction": float(diagnostics["closure_overhead_fraction"]),
         "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.05,
     }
@@ -139,6 +147,7 @@ def main() -> None:
                         and all(item["bounded"] and item["energy_behavior_pass"]
                                 and item["negative_energy_repairs"] == 0
                                 and item["energy_axis_clamps"] == 0
+                                and item["energy_monotonic_repairs"] == 0
                                 and item["out_of_domain_fraction"] < 1.0e-3
                                 for item in items)
                         and maximum_mean_drift <= 0.10
@@ -161,7 +170,8 @@ def main() -> None:
                              "initial_condition_spread_max": 0.10,
                              "replicate_coefficient_of_variation_max": 0.10,
                              "elastic_total_energy_relative_change_max": 0.02,
-                             "energy_axis_clamps": 0},
+                             "energy_axis_clamps": 0,
+                             "energy_monotonic_repairs": 0},
                "runs": records, "cases": cases,
                "physics_gate_pass": all(case["physics_pass"] for case in cases
                                         if case["tier"] == "gate"),
