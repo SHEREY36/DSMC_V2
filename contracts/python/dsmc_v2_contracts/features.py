@@ -216,38 +216,75 @@ def _cell_invariants_with_domain(
     values; no feature is clipped or changed in the physical model.
     """
     c, w, u = _normalised_state(velocity, omega, axis, mass, moi_perpendicular)
-    moments = _particle_moments(c, w, u)
-    if sphere:
-        moments["rt"] -= moments["qq"]
-        moments["qq"][:] = 0.0
-        moments["acu"][:] = 0.0
-    x, y = moments["x"], moments["y"]
-    pipi_u, pipi_v = _u_v_square_contraction(moments["pi"])
-    qq_u, qq_v = _u_v_square_contraction(moments["qq"])
-    rtrt_u, rtrt_v = _u_v_square_contraction(moments["rt"])
-    qtr2_u, qtr2_v = _u_v_square_dot(moments["qtr"])
-    qrot2_u, qrot2_v = _u_v_square_dot(moments["qrot"])
-    w2_u, w2_v = _u_v_square_dot(moments["w"])
+    n = len(c)
+    denominator = n * (n - 1)
+    ident = np.eye(3)
+    x = np.einsum("ni,ni->n", c, c)
+    y = np.einsum("ni,ni->n", w, w)
+    cu = np.einsum("ni,ni->n", c, u)
+    cw = np.einsum("ni,ni->n", c, w)
+    uw = np.einsum("ni,ni->n", u, w)
+
+    # All tensor U-statistics depend only on tensor sums and same-particle
+    # contractions.  Forming N separate 3x3 tensors used most of the runtime
+    # and memory traffic even though those arrays were immediately reduced.
+    sum_pi = 2.0 * (c.T @ c - float(np.sum(x)) * ident / 3.0)
+    sum_rr = 3.0 * (w.T @ w - float(np.sum(y)) * ident / 3.0)
+    sum_qq = (np.zeros((3, 3)) if sphere else
+              0.5 * (3.0 * (u.T @ u) - n * ident))
+    sum_rt = sum_rr + sum_qq
+    self_pi = (8.0 / 3.0) * float(np.sum(x * x))
+    self_rr = 6.0 * float(np.sum(y * y))
+    self_qq = 0.0 if sphere else 1.5 * n
+    self_pi_qq = (0.0 if sphere else
+                  3.0 * float(np.sum(cu * cu - x / 3.0)))
+    self_pi_rr = 6.0 * float(np.sum(cw * cw - x * y / 3.0))
+    self_qq_rr = (0.0 if sphere else
+                  4.5 * float(np.sum(uw * uw - y / 3.0)))
+    self_rt = self_rr + self_qq + 2.0 * self_qq_rr
+
+    def tensor_u(sa, sb, self_cross):
+        return float((sa.ravel() @ sb.ravel() - self_cross) / denominator)
+
+    def tensor_uv(sa, self_square):
+        total_square = float(sa.ravel() @ sa.ravel())
+        return ((total_square - self_square) / denominator,
+                total_square / (n * n))
+
+    pipi_u, pipi_v = tensor_uv(sum_pi, self_pi)
+    qq_u, qq_v = tensor_uv(sum_qq, self_qq)
+    rtrt_u, rtrt_v = tensor_uv(sum_rt, self_rt)
+    pi_qq = tensor_u(sum_pi, sum_qq, self_pi_qq)
+    pi_rt = tensor_u(sum_pi, sum_rt, self_pi_rr + self_pi_qq)
+    qq_rt = tensor_u(sum_qq, sum_rt, self_qq_rr + self_qq)
+
+    qtr = 0.8 * c * (x[:, None] - 2.5)
+    qrot = 2.0 * c * (y[:, None] - 1.0)
+    qtr2_u, qtr2_v = _u_v_square_dot(qtr)
+    qrot2_u, qrot2_v = _u_v_square_dot(qrot)
+    w2_u, w2_v = _u_v_square_dot(w)
+    acu = np.zeros(n) if sphere else cu * cu - x / 3.0
     features = np.array([
         (4.0 / 15.0) * np.mean(x * x) - 1.0,
         0.5 * np.mean(y * y) - 1.0,
         (2.0 / 3.0) * np.mean(x * y) - 1.0,
-        np.mean(moments["acu"]),
+        np.mean(acu),
         pipi_u / 8.0,
         qq_u / 8.0,
         rtrt_u / 8.0,
-        _u_contraction(moments["pi"], moments["qq"]) / 4.0,
-        _u_contraction(moments["pi"], moments["rt"]) / 4.0,
-        _u_contraction(moments["qq"], moments["rt"]) / 4.0,
+        pi_qq / 4.0,
+        pi_rt / 4.0,
+        qq_rt / 4.0,
         qtr2_u,
         qrot2_u,
-        _u_dot(moments["qtr"], moments["qrot"]),
+        _u_dot(qtr, qrot),
         w2_u,
     ], dtype=float)
-    acw = moments["acw"][:, None]
+    acw = cw[:, None]
+    vx = np.cross(c, w)
     diagnostics = np.array([
         _u_dot(acw, acw),
-        _u_dot(moments["vx"], moments["vx"]),
+        _u_dot(vx, vx),
     ], dtype=float)
     domain_features = features.copy()
     domain_features[4] = pipi_v / 8.0

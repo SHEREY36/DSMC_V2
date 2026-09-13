@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--holdout", required=True)
     parser.add_argument("--artifact", required=True)
     parser.add_argument("--pilot-summary")
+    parser.add_argument("--require-full-domain", action="store_true")
     args = parser.parse_args()
     hcs = load(args.hcs)
     holdout = load(args.holdout)
@@ -39,6 +40,9 @@ def main() -> None:
     artifact_digest = sha256(artifact)
     if not hcs.get("physics_gate_pass", False):
         raise SystemExit("corrected HCS physics gate has not passed")
+    if args.require_full_domain and not hcs.get(
+            "full_domain_physics_gate_pass", False):
+        raise SystemExit("corrected full-domain HCS physics gate has not passed")
     if hcs.get("artifact_sha256") != artifact_digest:
         raise SystemExit("HCS gate was not run with these candidate artifact bytes")
     if not holdout.get("validation_pass", False):

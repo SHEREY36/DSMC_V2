@@ -32,12 +32,15 @@ STRIDE=$(( ${SLURM_ARRAY_TASK_MAX:?} - ${SLURM_ARRAY_TASK_MIN:?} + 1 ))
 INDEX=${SLURM_ARRAY_TASK_ID:?}
 
 while (( INDEX < ROWS )); do
+  COEFFICIENT_ARGS=()
+  [[ -n "${COEFFICIENT_ROWS:-}" ]] && COEFFICIENT_ARGS+=(--coefficient-rows "$COEFFICIENT_ROWS")
   PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/precompute_artifact_task.py \
       --manifest "$MANIFEST" --node-estimates "${NODE_ESTIMATES[@]}" \
       --output "$WORK" --index "$INDEX" \
       --workers "${SLURM_CPUS_PER_TASK:-2}" --propensity-offsets 128 \
       --gamma-max-table Coll_Models_v2/models/legacy_bl/gamma_max_table.json \
-      --one-hit-table Coll_Models_v2/models/legacy_bl/one_hit_table.json
+      --one-hit-table Coll_Models_v2/models/legacy_bl/one_hit_table.json \
+      "${COEFFICIENT_ARGS[@]}"
   INDEX=$(( INDEX + STRIDE ))
 done

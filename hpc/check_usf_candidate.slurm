@@ -16,7 +16,9 @@ set -euo pipefail
 HCS=${1:?HCS summary is required}
 HOLDOUT=${2:?fresh-CTC validation is required}
 ARTIFACT=${3:?candidate artifact is required}
+FULL_DOMAIN=${4:-false}
 ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 cd "$ROOT"
-hpc/python.sh hpc/require_usf_prerequisites.py \
-  --hcs "$HCS" --holdout "$HOLDOUT" --artifact "$ARTIFACT"
+ARGS=(--hcs "$HCS" --holdout "$HOLDOUT" --artifact "$ARTIFACT")
+[[ "$FULL_DOMAIN" == "true" ]] && ARGS+=(--require-full-domain)
+hpc/python.sh hpc/require_usf_prerequisites.py "${ARGS[@]}"

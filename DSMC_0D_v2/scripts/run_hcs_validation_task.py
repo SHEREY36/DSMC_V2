@@ -71,6 +71,7 @@ def main() -> None:
         "routing": "variational_v2", "angular": "variational_v2",
         "artifact": args.artifact,
         "invariant_corrections": bool(args.enable_invariant_corrections),
+        "state_update_cpp": float(row.get("state_update_cpp", 0.0) or 0.0),
     })
     config.setdefault("diagnostics", {})["collision_audit"] = True
 

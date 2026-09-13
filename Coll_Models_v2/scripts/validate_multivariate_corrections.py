@@ -23,20 +23,20 @@ from coll_models_v2.fit_coefficients import (
     LINEARITY_TOLERANCE,
     fit_correction_coefficients,
 )
+from coll_models_v2.correction_support import (
+    HELDOUT_AMPLITUDE,
+    TANGENT_MAXIMUM_TOLERANCE,
+    assess_heldout_support,
+    energy_quantiles,
+    tangent_quantiles,
+)
 from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2_contracts import FEATURE_NAMES
 
 
 def _quantiles(energy: dict, z_in: float, loss: float,
                probability: np.ndarray) -> np.ndarray:
-    form = energy.get("kernel_form", "conditional_iprojection_v2")
-    a = (float(energy["lambda1"]) + float(energy["lambda3"]) * z_in
-         + float(energy["lambda4"]) * loss)
-    return energy_quantile_table(
-        float(energy["lambda3"]), float(energy["lambda2"]), np.array([a]),
-        probability, kernel_form=form,
-        anchor=(energy.get("anchor_c1", 0.0), energy.get("anchor_c2", 0.0)),
-    )[0]
+    return energy_quantiles(energy, z_in, loss, probability)
 
 
 def _percentiles(values: list[float]) -> dict:
@@ -52,40 +52,7 @@ def _percentiles(values: list[float]) -> dict:
 def _tangent_quantiles(baseline: dict, predicted: dict, z_in: float,
                        loss: float, probability: np.ndarray) -> np.ndarray:
     """Emulate the candidate artifact's logit-quantile tangent update."""
-    form = baseline.get("kernel_form", "conditional_iprojection_v2")
-    anchor = (baseline.get("anchor_c1", 0.0), baseline.get("anchor_c2", 0.0))
-    a = (float(predicted["lambda1"]) + float(predicted["lambda3"]) * z_in
-         + float(predicted["lambda4"]) * loss)
-
-    def table(memory: float, lambda2: float) -> np.ndarray:
-        return energy_quantile_table(
-            memory, lambda2, np.array([a]), probability,
-            kernel_form=form, anchor=anchor)[0]
-
-    base_memory = float(baseline["lambda3"])
-    base_lambda2 = float(baseline["lambda2"])
-    base = table(base_memory, base_lambda2)
-    sensitivities = []
-    for name in ("lambda2", "lambda3"):
-        value = float(baseline[name])
-        step = max(1.0e-4, 1.0e-3 * (1.0 + abs(value)))
-        low = table(base_memory - (step if name == "lambda3" else 0.0),
-                    base_lambda2 - (step if name == "lambda2" else 0.0))
-        high = table(base_memory + (step if name == "lambda3" else 0.0),
-                     base_lambda2 + (step if name == "lambda2" else 0.0))
-        eps = 1.0e-8
-        low = np.clip(low, eps, 1.0 - eps)
-        high = np.clip(high, eps, 1.0 - eps)
-        sensitivities.append(
-            (np.log(high / (1.0 - high)) - np.log(low / (1.0 - low)))
-            / (2.0 * step))
-    q = np.clip(base, 1.0e-8, 1.0 - 1.0e-8)
-    logit = np.log(q / (1.0 - q))
-    logit += ((float(predicted["lambda2"]) - base_lambda2) * sensitivities[0]
-              + (float(predicted["lambda3"]) - base_memory) * sensitivities[1])
-    result = 1.0 / (1.0 + np.exp(-np.clip(logit, -50.0, 50.0)))
-    result[0], result[-1] = 0.0, 1.0
-    return np.maximum.accumulate(result)
+    return tangent_quantiles(baseline, predicted, z_in, loss, probability)
 
 
 def main() -> None:
@@ -125,6 +92,16 @@ def main() -> None:
         baseline = json.loads(baseline_paths[key].read_text())
         excited = [item[1] for item in items]
         fitted = fit_correction_coefficients([baseline, *excited])
+        support_candidates = sorted({abs(float(node["excitation"]["eta"]))
+                                     for node in excited
+                                     if abs(float(node["excitation"]["eta"])) > 0.25},
+                                    reverse=True)
+        support_validations = [assess_heldout_support(
+            baseline, excited, fitted, amplitude)
+            for amplitude in support_candidates]
+        support = next((item for item in support_validations if item["pass"]),
+                       {"pass": False, "amplitude": 0.25,
+                        "reason": "no_larger_amplitude_passed"})
         beta = np.asarray(fitted["beta"]) * np.asarray(fitted["beta_deployed"])
         center = np.asarray(fitted["feature_center"])
         heldout = [node for node in excited
@@ -207,6 +184,10 @@ def main() -> None:
                 name for name, fit in fitted["parameter_fits"].items()
                 if fit.get("immaterial_response_suppressed", False)],
             "elastic_constraints": fitted["elastic_constraints"],
+            "heldout_support_validation": support,
+            "support_validations": support_validations,
+            "released_trust_amplitude": (
+                float(support["amplitude"]) if support["pass"] else 0.25),
         })
 
     global_relative = {}
@@ -265,6 +246,13 @@ def main() -> None:
             "angular_quantile_wasserstein1": central_angular,
         },
         "heldout_exact_response_pass": heldout_exact_response_pass,
+        "adaptive_support": {
+            "heldout_amplitude": HELDOUT_AMPLITUDE,
+            "tangent_maximum_tolerance": TANGENT_MAXIMUM_TOLERANCE,
+            "n_expanded_nodes": int(sum(
+                row["heldout_support_validation"]["pass"] for row in node_rows)),
+            "all_nodes_require_expansion": False,
+        },
         "parameter_response_pass": parameter_pass,
         "distribution_response_pass": distribution_pass,
         "offline_validation_pass": bool(parameter_pass and distribution_pass),

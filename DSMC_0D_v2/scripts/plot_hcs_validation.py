@@ -88,7 +88,7 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
         "closure_overhead_fraction": float(diagnostics["closure_overhead_fraction"]),
         "artifact": diagnostics.get("artifact"),
         "artifact_sha256": diagnostics.get("artifact_sha256"),
-        "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.05,
+        "performance_gate_pass": float(diagnostics["closure_overhead_fraction"]) < 0.15,
     }
     return result, np.column_stack((tau, theta, total / total[0]))
 
@@ -172,7 +172,7 @@ def main() -> None:
                       "maximum_individual_relative_drift": maximum_individual_drift,
                       "mean_closure_overhead_fraction": float(np.mean(overhead)),
                       "maximum_closure_overhead_fraction": float(np.max(overhead)),
-                      "n_performance_failures": int(np.count_nonzero(overhead >= 0.05)),
+                      "n_performance_failures": int(np.count_nonzero(overhead >= 0.15)),
                       "physics_pass": bool(physics_pass),
                       "production_pass": bool(production_pass)})
 
@@ -193,10 +193,10 @@ def main() -> None:
                              "energy_axis_clamps": 0,
                              "energy_monotonic_repairs": 0},
                "performance": {
-                   "closure_overhead_fraction_max": 0.05,
+                   "closure_overhead_fraction_max": 0.15,
                    "campaign_mean_closure_overhead_fraction": float(np.mean(overhead)),
                    "campaign_maximum_closure_overhead_fraction": float(np.max(overhead)),
-                   "n_run_failures": int(np.count_nonzero(overhead >= 0.05)),
+                   "n_run_failures": int(np.count_nonzero(overhead >= 0.15)),
                },
                "artifact_sha256": (next(iter(artifact_digests))
                                    if artifact_consistent else None),

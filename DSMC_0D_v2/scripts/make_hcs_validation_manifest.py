@@ -12,7 +12,8 @@ import numpy as np
 
 FIELDS = (
     "task_id", "campaign_mode", "tier", "alpha", "aspect_ratio", "theta0", "target_theta",
-    "replicate", "seed", "particles", "tau_end", "output_prefix",
+    "replicate", "seed", "particles", "tau_end", "state_update_cpp",
+    "output_prefix",
 )
 
 
@@ -68,6 +69,10 @@ def main() -> None:
     parser.add_argument("--particles", type=int, default=2000)
     parser.add_argument("--tau-end", type=float, default=20.0)
     parser.add_argument("--replicates", type=int, default=3)
+    parser.add_argument(
+        "--state-update-cpp", type=float, default=0.05,
+        help=("collisions per particle between cell-feature refreshes; "
+              "use 0 for the exact every-time-step reference"))
     parser.add_argument("--include-diagnostics", action="store_true")
     parser.add_argument("--mode", choices=("compact", "full-domain"),
                         default="compact")
@@ -76,6 +81,8 @@ def main() -> None:
 
     if args.replicates < 1:
         parser.error("--replicates must be positive")
+    if args.state_update_cpp < 0.0:
+        parser.error("--state-update-cpp must be nonnegative")
     rows = []
     if args.mode == "full-domain":
         if not args.artifact:
@@ -103,6 +110,7 @@ def main() -> None:
                     "seed": 260910 + 1000 * case_index + 10 * start_index + replicate,
                     "particles": args.particles,
                     "tau_end": args.tau_end,
+                    "state_update_cpp": args.state_update_cpp,
                     "output_prefix": str(Path(args.results) / tag),
                 })
 

@@ -16,6 +16,7 @@ import numpy as np
 # numpy 2 renamed trapz; keep one spelling for both
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz
 from scipy.interpolate import PchipInterpolator
+from scipy.spatial import Delaunay, QhullError
 from scipy.optimize import brentq
 
 from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES
@@ -27,6 +28,7 @@ from .fit_coefficients import (
     fit_correction_coefficients,
 )
 from .response import CENTRAL_AMPLITUDE
+from .correction_support import HELDOUT_AMPLITUDE, assess_heldout_support
 from .projections import (
     _legendre_nodes,
     _bridge_spline,
@@ -46,7 +48,7 @@ XI_BINS = 24
 ENERGY_A_INTERPOLATION_TOLERANCE = 2.0e-4
 ENERGY_A_MAX_NODES = 8193
 ARTIFACT_TYPE = "bl_variational_closure"
-PRECOMPUTE_SCHEMA = "artifact-node-v2-multivariate"
+PRECOMPUTE_SCHEMA = "artifact-node-v3-local-correction-bounds"
 ENERGY_SENSITIVITY_PARAMETERS = ("lambda2", "lambda3")
 
 
@@ -164,6 +166,67 @@ def _estimate_digest(row: dict) -> str:
     return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
 
 
+def _coefficient_source_digest(nodes: list[dict]) -> str:
+    payload = [(list(_node_key(node)), _estimate_digest(node))
+               for node in sorted(nodes, key=_node_key)]
+    return _sha256_bytes(json.dumps(payload, sort_keys=True).encode())
+
+
+def _baseline_source_digest(nodes: list[dict]) -> str:
+    return _coefficient_source_digest([
+        node for node in nodes if int(node.get("ensemble_id", 0)) == 0])
+
+
+def write_coefficient_rows(node_estimate_directories, output_path) -> dict:
+    """Compile the expensive response/support fit once for all array tasks."""
+    directories = ([node_estimate_directories]
+                   if isinstance(node_estimate_directories, (str, os.PathLike))
+                   else list(node_estimate_directories))
+    paths = [path for directory in directories
+             for path in sorted(Path(directory).glob("alpha_*.json"))]
+    nodes = [json.loads(path.read_text()) for path in paths]
+    keys = [_node_key(node) for node in nodes]
+    if len(keys) != len(set(keys)):
+        raise ValueError("coefficient inputs contain duplicate grid/ensemble keys")
+    rows = _fit_coefficient_rows(nodes)
+    payload = {
+        "schema": "correction-coefficient-surface-v1",
+        "source_digest": _coefficient_source_digest(nodes),
+        "baseline_source_digest": _baseline_source_digest(nodes),
+        "n_source_nodes": len(nodes),
+        "n_coefficient_nodes": len(rows),
+        "coefficient_rows": rows,
+    }
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
+
+
+def _coefficient_rows_from_cache(nodes: list[dict], path,
+                                 full_validation: bool = True) -> list[dict]:
+    if path is None:
+        return _fit_coefficient_rows(nodes)
+    payload = json.loads(Path(path).read_text())
+    expected_digest = (_coefficient_source_digest(nodes) if full_validation
+                       else _baseline_source_digest(nodes))
+    actual_digest = (payload.get("source_digest") if full_validation
+                     else payload.get("baseline_source_digest"))
+    if payload.get("schema") != "correction-coefficient-surface-v1" \
+            or actual_digest != expected_digest:
+        raise ValueError("stale or mismatched correction coefficient cache")
+    rows = payload.get("coefficient_rows", [])
+    expected = ({_node_key(node)[:3] for node in nodes
+                 if int(node.get("ensemble_id", 0)) != 0}
+                if full_validation else
+                {_node_key(node)[:3] for node in nodes
+                 if int(node.get("ensemble_id", 0)) == 0})
+    actual = {tuple(row["coordinates"]) for row in rows}
+    if actual != expected:
+        raise ValueError("correction coefficient cache has incomplete coordinates")
+    return rows
+
+
 def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
     rows = []
     grouped = defaultdict(list)
@@ -178,14 +241,31 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
         if not fitted["linearity_pass"]:
             raise ValueError(
                 f"multivariate natural-parameter response is nonlinear at {key}")
+        baseline = next(node for node in group
+                        if int(node.get("ensemble_id", 0)) == 0)
+        excited = [node for node in group if node is not baseline]
+        candidates = sorted({abs(float(node["excitation"]["eta"]))
+                             for node in excited
+                             if abs(float(node["excitation"]["eta"]))
+                             > CENTRAL_AMPLITUDE + 1.0e-12}, reverse=True)
+        validations = [assess_heldout_support(
+            baseline, excited, fitted, amplitude) for amplitude in candidates]
+        support = next((item for item in validations if item["pass"]),
+                       {"pass": False, "amplitude": CENTRAL_AMPLITUDE,
+                        "reason": "no_larger_amplitude_passed"})
+        trust_amplitude = (float(support["amplitude"]) if support["pass"]
+                           else CENTRAL_AMPLITUDE)
         trust_features = np.asarray([
             [(node.get("cell_features") or node["proposal_features"])[name]
              for name in FEATURE_NAMES]
-            for node in _correction_trust_nodes(group)
+            for node in _correction_trust_nodes(group, trust_amplitude)
         ], dtype=float)
         fitted["feature_lower"] = np.min(trust_features, axis=0).tolist()
         fitted["feature_upper"] = np.max(trust_features, axis=0).tolist()
         fitted["coordinates"] = list(key)
+        fitted["trust_amplitude"] = trust_amplitude
+        fitted["heldout_support_validation"] = support
+        fitted["support_validations"] = validations
         rows.append(fitted)
     expected = {(node["alpha"], node["theta"], node["aspect_ratio"])
                 for node in nodes if int(node["ensemble_id"]) != 0}
@@ -194,7 +274,8 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
     return rows
 
 
-def _correction_trust_nodes(nodes: list[dict]) -> list[dict]:
+def _correction_trust_nodes(nodes: list[dict],
+                            amplitude: float = CENTRAL_AMPLITUDE) -> list[dict]:
     """Return baseline and fitted-amplitude nodes claimed by the runtime.
 
     The |eta|=0.5 observations are independent extrapolation sentinels.  They
@@ -205,7 +286,7 @@ def _correction_trust_nodes(nodes: list[dict]) -> list[dict]:
             if int(node.get("ensemble_id", 0)) == 0
             or (node.get("excitation") is not None
                 and abs(float(node["excitation"]["eta"]))
-                <= CENTRAL_AMPLITUDE + 1.0e-12)]
+                <= float(amplitude) + 1.0e-12)]
 
 
 def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
@@ -227,7 +308,9 @@ def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
         # The table axis contains lambda1 + lambda3*z_in + lambda4*loss.  A
         # conservative unit interval for both covariates bounds every runtime
         # shift without assuming their correlation.
-        for z_in in (0.0, 1.0):
+        # Raw-z memory uses [0,1]; bounded-logit memory uses x in [-1,1].
+        # The latter interval conservatively covers both kernel forms.
+        for z_in in (-1.0, 1.0):
             for loss in (0.0, 1.0):
                 bounds.extend((component_bounds[0][0]
                                + z_in * component_bounds[2][0]
@@ -237,6 +320,78 @@ def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
                                + loss * component_bounds[3][1]))
     payload = json.dumps(coefficient_rows, sort_keys=True).encode()
     return (float(min(bounds)), float(max(bounds))), _sha256_bytes(payload)
+
+
+def _local_correction_plan(baseline: list[dict], coefficient_rows: list[dict]):
+    """Bound corrections only over cells that can use each energy table.
+
+    Once every physical node has a coefficient fit, a global correction range
+    needlessly applies the most extreme low-temperature response to all energy
+    tables.  For a node, interval arithmetic over its adjacent tensor/Delaunay
+    star bounds every interpolated beta and feature hull that can give that
+    node nonzero physical weight.  Partial correction surfaces retain the
+    conservative artifact-wide bound until they are completed.
+    """
+    global_bounds, digest = _correction_spec(baseline, coefficient_rows)
+    if not coefficient_rows:
+        return [(0.0, 0.0)] * len(baseline), global_bounds, digest
+    base_coordinates = np.asarray([
+        [row["alpha"], row["theta"], row["aspect_ratio"]] for row in baseline])
+    coefficient_coordinates = np.asarray(
+        [row["coordinates"] for row in coefficient_rows], dtype=float)
+    base_keys = {tuple(row) for row in base_coordinates.tolist()}
+    coefficient_keys = {tuple(row) for row in coefficient_coordinates.tolist()}
+    if base_keys != coefficient_keys:
+        return [global_bounds] * len(baseline), global_bounds, digest
+
+    lookup = {tuple(row["coordinates"]): row for row in coefficient_rows}
+    ordered = [lookup[tuple(coordinate)] for coordinate in base_coordinates]
+    axes = [np.unique(base_coordinates[:, axis]) for axis in range(3)]
+    axis_indices = np.column_stack([
+        np.searchsorted(axes[axis], base_coordinates[:, axis]) for axis in range(3)])
+    simplex_neighbours = [set([index]) for index in range(len(baseline))]
+    try:
+        triangulation = Delaunay(base_coordinates)
+        for simplex in triangulation.simplices:
+            for index in simplex:
+                simplex_neighbours[int(index)].update(int(item) for item in simplex)
+    except QhullError:
+        pass
+
+    plan = []
+    for index, row in enumerate(ordered):
+        adjacent = set(np.flatnonzero(np.all(
+            np.abs(axis_indices - axis_indices[index]) <= 1, axis=1)).tolist())
+        adjacent.update(simplex_neighbours[index])
+        neighbours = [ordered[item] for item in sorted(adjacent)]
+        beta = np.asarray([np.asarray(item["beta"], dtype=float)
+                           * np.asarray(item["beta_deployed"], dtype=bool)
+                           for item in neighbours])
+        lower = np.asarray([item["feature_lower"] for item in neighbours])
+        upper = np.asarray([item["feature_upper"] for item in neighbours])
+        center = np.asarray([item["feature_center"] for item in neighbours])
+        delta_lo = np.min(lower - center, axis=0)
+        delta_hi = np.max(upper - center, axis=0)
+        beta_lo, beta_hi = np.min(beta, axis=0), np.max(beta, axis=0)
+        parameter_bounds = []
+        for parameter in range(beta.shape[1]):
+            products = np.stack((
+                beta_lo[parameter] * delta_lo,
+                beta_lo[parameter] * delta_hi,
+                beta_hi[parameter] * delta_lo,
+                beta_hi[parameter] * delta_hi))
+            parameter_bounds.append((float(np.sum(np.min(products, axis=0))),
+                                     float(np.sum(np.max(products, axis=0)))))
+        memory_radius = max(abs(parameter_bounds[2][0]),
+                            abs(parameter_bounds[2][1]))
+        lo = parameter_bounds[0][0] - memory_radius \
+            + min(0.0, parameter_bounds[3][0])
+        hi = parameter_bounds[0][1] + memory_radius \
+            + max(0.0, parameter_bounds[3][1])
+        plan.append((float(min(0.0, lo)), float(max(0.0, hi))))
+    summary = (float(min(item[0] for item in plan)),
+               float(max(item[1] for item in plan)))
+    return plan, summary, digest
 
 
 def _energy_logit_sensitivities(row: dict, a_grid: np.ndarray,
@@ -302,7 +457,8 @@ def _atomic_savez(path: Path, **arrays) -> None:
 
 def precompute_artifact_node(run_directories, node_estimates, output_directory,
                              index: int, bl, propensity_offsets: int = 128,
-                             propensity_workers: int = 1) -> Path:
+                             propensity_workers: int = 1,
+                             coefficient_rows_path=None) -> Path:
     """Build the independent geometry and sampler payload for one node.
 
     This is the unit executed by the Negishi Slurm array.  The final aggregator
@@ -313,12 +469,22 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     grouped = defaultdict(list)
     for path in paths:
         grouped[_path_key(path)].append(path)
-    nodes = _load_node_estimates(node_estimates, grouped)
-    coefficient_rows = _fit_coefficient_rows(nodes)
-    correction_bounds, correction_digest = _correction_spec(nodes, coefficient_rows)
+    # The shared cache has already read and fitted every excitation.  Array
+    # tasks need only the 144 baselines; re-reading ~15,000 excitation JSONs
+    # in each of 144 processes would multiply metadata I/O for no new check.
+    estimate_inputs = (node_estimates[0]
+                       if coefficient_rows_path is not None
+                       and not isinstance(node_estimates, (str, os.PathLike))
+                       else node_estimates)
+    nodes = _load_node_estimates(estimate_inputs, grouped)
+    coefficient_rows = _coefficient_rows_from_cache(
+        nodes, coefficient_rows_path,
+        full_validation=coefficient_rows_path is None)
     baseline = sorted(
         (node for node in nodes if int(node["ensemble_id"]) == 0),
         key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
+    correction_plan, _, correction_digest = _local_correction_plan(
+        baseline, coefficient_rows)
     if not 0 <= int(index) < len(baseline):
         raise IndexError(f"artifact node index {index} outside 0..{len(baseline) - 1}")
     row = baseline[int(index)]
@@ -335,7 +501,7 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     enhancement = _measure_enhancement(shards, propensity_offsets)
     probability = np.linspace(0.0, 1.0, 513)
     a_grid, quantiles, interpolation_error = _energy_table_for_node(
-        row, bl, probability, correction_bounds)
+        row, bl, probability, correction_plan[int(index)])
     sensitivities = _energy_logit_sensitivities(
         row, a_grid, probability, workers=propensity_workers)
     target = Path(output_directory) / f"node_{int(index):04d}.npz"
@@ -682,7 +848,7 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
 def build_artifact(run_directories, output_directory, bl=None,
                    n_bootstrap: int = 200, node_estimates=None,
                    propensity_offsets: int = 128,
-                   precomputed_directory=None) -> dict:
+                   precomputed_directory=None, coefficient_rows_path=None) -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -703,8 +869,9 @@ def build_artifact(run_directories, output_directory, bl=None,
     if not baseline:
         raise ValueError("artifact requires baseline ensemble_id=0 nodes")
     baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
-    coefficient_rows = _fit_coefficient_rows(nodes)
-    correction_bounds, correction_digest = _correction_spec(nodes, coefficient_rows)
+    coefficient_rows = _coefficient_rows_from_cache(nodes, coefficient_rows_path)
+    correction_plan, correction_bounds, correction_digest = _local_correction_plan(
+        baseline, coefficient_rows)
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
                             for row in baseline], dtype=float)
     # 513 nodes reproduce the kernel's first two moments to ~1e-5, and the
@@ -735,7 +902,7 @@ def build_artifact(run_directories, output_directory, bl=None,
                 correction_digest)
         else:
             grid, quantile, interpolation_error = _energy_table_for_node(
-                row, bl, probability, correction_bounds)
+                row, bl, probability, correction_plan[index])
             sensitivity = _energy_logit_sensitivities(row, grid, probability)
             shards = dict(grouped).get(_node_key(row))
             if not shards:
@@ -810,10 +977,15 @@ def build_artifact(run_directories, output_directory, bl=None,
     beta_feature_upper = np.array([row["feature_upper"] for row in coefficient_rows],
                                   dtype=float) \
         if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
+    beta_trust_amplitude = np.array(
+        [row["trust_amplitude"] for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty(0, dtype=float)
     # Runtime features are cell moments.  Collision-attempt moments are flux
     # weighted (a Maxwellian reports a2_tr ~= -0.032 there), so using them as
     # the runtime hull makes every real cell out of domain even at startup.
-    feature_nodes = _correction_trust_nodes(nodes)
+    feature_nodes = _correction_trust_nodes(
+        nodes, float(np.max(beta_trust_amplitude))
+        if len(beta_trust_amplitude) else CENTRAL_AMPLITUDE)
     feature_values = np.array([
         [(node.get("cell_features") or node["proposal_features"])[name]
          for name in FEATURE_NAMES]
@@ -909,6 +1081,7 @@ def build_artifact(run_directories, output_directory, bl=None,
             row["energy"].get("memory_scale", 1.0) for row in baseline], dtype=float),
         correction_parameter_names=np.array(CORRECTION_PARAMETER_NAMES),
         correction_trust_amplitude=np.array(CENTRAL_AMPLITUDE),
+        beta_trust_amplitude=beta_trust_amplitude,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed, beta_feature_center=beta_feature_center,
         beta_feature_lower=beta_feature_lower,
@@ -936,7 +1109,21 @@ def build_artifact(run_directories, output_directory, bl=None,
         "coefficient_fit": "shared_baseline_gls_central_amplitudes_multivariate_v2",
         "correction_parameters": list(CORRECTION_PARAMETER_NAMES),
         "correction_trust_amplitude": CENTRAL_AMPLITUDE,
+        "correction_trust_amplitudes": sorted(
+            set(beta_trust_amplitude.tolist())),
+        "n_expanded_correction_nodes": int(np.count_nonzero(
+            beta_trust_amplitude > CENTRAL_AMPLITUDE + 1.0e-12)),
+        "heldout_support_validation": [
+            {"coordinates": row["coordinates"],
+             "trust_amplitude": row["trust_amplitude"],
+             **row["heldout_support_validation"]}
+            for row in coefficient_rows],
         "correction_bounds": list(correction_bounds),
+        "correction_bound_scope": (
+            "adjacent_physical_interpolation_star"
+            if {tuple(row["coordinates"]) for row in coefficient_rows}
+            == {tuple(row) for row in coordinates.tolist()}
+            else "artifact_wide_partial_surface"),
         "correction_digest": correction_digest,
         "coefficient_validation_relative_rmse_max": (
             max(row["maximum_validation_relative_rmse"] for row in coefficient_rows)

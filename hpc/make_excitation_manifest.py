@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from coll_models_v2.excitation import EXCITATION_FAMILIES
+from coll_models_v2.response import CENTRAL_AMPLITUDE
 
 
 HCS_FAMILIES = ("a2_tr", "a2_rot", "a11", "A_cu")
@@ -28,12 +29,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("hcs-pilot", "full-pilot",
                                             "correction-grid", "production-grid",
-                                            "independent-holdout", "usf-extension"),
+                                            "independent-holdout", "usf-extension",
+                                            "near-sphere-extension",
+                                            "support-refinement"),
                         default="hcs-pilot")
     parser.add_argument("--grid", default="manifests/artifact_grid.csv")
     parser.add_argument("--estimates", default="results/closure_estimates/artifact_grid")
     parser.add_argument("--output", default="manifests/excitation_pilot.csv")
     parser.add_argument("--results", default="results/closure_estimates/excitation_pilot")
+    parser.add_argument(
+        "--exclude-manifest", action="append", default=[],
+        help="for production-grid, omit physical nodes already present here")
+    parser.add_argument(
+        "--include-manifest", action="append", default=[],
+        help="for support-refinement, use the physical nodes present here")
+    parser.add_argument("--amplitudes", nargs="+", type=float)
     args = parser.parse_args()
 
     if args.mode == "hcs-pilot":
@@ -67,6 +77,23 @@ def main() -> None:
                for theta in (0.20, 1.00, 2.00)}
         )
         families = EXCITATION_FAMILIES
+    elif args.mode == "near-sphere-extension":
+        # Complete the correction hull down to the smallest nonspherical
+        # baseline nodes.  AR=1 is the separate exact sphere kernel; the
+        # variational spherocylinder artifact starts at AR=1.1.
+        requested = {(alpha, theta, ar)
+                     for alpha in (0.50, 0.80, 0.95, 1.00)
+                     for theta in (0.20, 1.00, 2.00)
+                     for ar in (1.10, 1.20, 1.35)}
+        families = EXCITATION_FAMILIES
+    elif args.mode == "support-refinement":
+        requested = set()
+        for source in args.include_manifest:
+            with open(source, newline="") as handle:
+                requested.update(coordinate(row) for row in csv.DictReader(handle))
+        if not requested:
+            raise ValueError("support-refinement requires --include-manifest")
+        families = EXCITATION_FAMILIES
     elif args.mode == "independent-holdout":
         # A fresh CTC shard at this representative inelastic node is not used
         # in fitting the artifact.  The two boundary amplitudes are therefore
@@ -84,6 +111,13 @@ def main() -> None:
         grid = list(csv.DictReader(handle))
     if requested is None:
         requested = {coordinate(row) for row in grid}
+    excluded = set()
+    for source in args.exclude_manifest:
+        with open(source, newline="") as handle:
+            excluded.update(coordinate(row) for row in csv.DictReader(handle))
+    requested -= excluded
+    if not requested:
+        raise ValueError("no physical nodes remain after exclusions")
     selected = {coordinate(row): row for row in grid if coordinate(row) in requested}
     missing = sorted(requested - set(selected))
     if missing:
@@ -95,8 +129,14 @@ def main() -> None:
         if int(payload.get("ensemble_id", 0)) == 0:
             estimates[coordinate(payload)] = (path, payload)
 
-    amplitudes = ((-0.50, 0.50) if args.mode == "independent-holdout"
-                  else AMPLITUDES)
+    amplitudes = (tuple(args.amplitudes) if args.amplitudes is not None else
+                  (-0.50, 0.50) if args.mode == "independent-holdout" else
+                  (-0.35, 0.35) if args.mode == "support-refinement" else
+                  AMPLITUDES)
+    if args.mode == "support-refinement" and (
+            not amplitudes or any(abs(value) <= CENTRAL_AMPLITUDE
+                                  for value in amplitudes)):
+        raise ValueError("support refinement amplitudes must exceed 0.25")
     rows = []
     results = Path(args.results)
     for physical in sorted(requested):
@@ -107,7 +147,8 @@ def main() -> None:
             raise ValueError(f"baseline estimate at {physical} has not passed QA")
         for family_index, family in enumerate(families):
             for amplitude_index, eta in enumerate(amplitudes):
-                ensemble_id = 1 + family_index * len(amplitudes) + amplitude_index
+                ensemble_id = (1001 if args.mode == "support-refinement" else 1) \
+                    + family_index * len(amplitudes) + amplitude_index
                 tag = (f"alpha_{physical[0]:.3f}_theta_{physical[1]:.3f}_"
                        f"AR_{physical[2]:.3f}_ensemble_{ensemble_id:03d}.json")
                 rows.append({

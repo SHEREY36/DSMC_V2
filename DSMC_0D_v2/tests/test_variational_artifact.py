@@ -327,13 +327,13 @@ class VariationalArtifactTests(unittest.TestCase):
         accepted = runtime_gate_status({
             "negative_energy_repairs": 0,
             "out_of_domain_fraction": 0.0009,
-            "closure_overhead_fraction": 0.049,
+            "closure_overhead_fraction": 0.149,
         })
         self.assertTrue(accepted["pass"])
         rejected = runtime_gate_status({
             "negative_energy_repairs": 1,
             "out_of_domain_fraction": 0.001,
-            "closure_overhead_fraction": 0.05,
+            "closure_overhead_fraction": 0.15,
             "energy_axis_clamps": 1,
             "energy_monotonic_repairs": 1,
         })

@@ -240,8 +240,8 @@ class HPCStageTests(unittest.TestCase):
         script = ROOT / "DSMC_0D_v2" / "scripts" / "make_usf_validation_manifest.py"
         with tempfile.TemporaryDirectory() as temporary:
             for mode, expected, arms in (
-                    ("pilot", 24, {"corrected", "uncorrected"}),
-                    ("full", 160, {"corrected"})):
+                    ("pilot", 72, {"corrected", "uncorrected"}),
+                    ("full", 280, {"corrected"})):
                 manifest = Path(temporary) / f"{mode}.csv"
                 subprocess.run([
                     sys.executable, str(script), "--mode", mode,

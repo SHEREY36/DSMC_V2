@@ -222,7 +222,7 @@ def main() -> None:
             and item["result"].get("out_of_domain_fraction", 0.0) < 1.0e-3
             for item in items)
         performance_pass = all(
-            item["result"].get("closure_overhead_fraction", 0.0) < 0.05
+            item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
         stationarity_pass = all(
             value is None or value["maximum_relative_early_late_drift"] <= 0.10

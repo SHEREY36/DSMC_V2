@@ -17,11 +17,17 @@ MANIFEST=${1:?excitation manifest is required}
 ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 cd "$ROOT"
 export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
-STRIDE=$(( ${SLURM_ARRAY_TASK_MAX:?} - ${SLURM_ARRAY_TASK_MIN:?} + 1 ))
-INDEX=${SLURM_ARRAY_TASK_ID:?}
 ROWS=$(( $(wc -l < "$MANIFEST") - 1 ))
+STRIDE=$(( ${SLURM_ARRAY_TASK_MAX:?} - ${SLURM_ARRAY_TASK_MIN:?} + 1 ))
+if [[ -n "${EXCITATION_START:-}" ]]; then
+  INDEX=$(( EXCITATION_START + ${SLURM_ARRAY_TASK_ID:?} ))
+  STOP=${EXCITATION_STOP:?EXCITATION_STOP is required with EXCITATION_START}
+else
+  INDEX=${SLURM_ARRAY_TASK_ID:?}
+  STOP=$ROWS
+fi
 
-while (( INDEX < ROWS )); do
+while (( INDEX < STOP && INDEX < ROWS )); do
   PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/run_excitation_task.py \
       --manifest "$MANIFEST" --index "$INDEX" \

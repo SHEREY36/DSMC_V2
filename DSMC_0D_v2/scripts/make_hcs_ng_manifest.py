@@ -13,7 +13,7 @@ import numpy as np
 FIELDS = (
     "task_id", "mode", "arm", "alpha", "aspect_ratio", "replicate",
     "seed", "particles", "tau_end", "sample_start_tau", "sample_end_tau",
-    "sample_delta_tau", "output_prefix",
+    "sample_delta_tau", "state_update_cpp", "output_prefix",
 )
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
@@ -80,6 +80,7 @@ def main() -> None:
                     "particles": particles, "tau_end": tau_end,
                     "sample_start_tau": start, "sample_end_tau": tau_end,
                     "sample_delta_tau": delta,
+                    "state_update_cpp": 0.05,
                     "output_prefix": str(Path(args.results) / tag),
                 })
     output = Path(args.output)

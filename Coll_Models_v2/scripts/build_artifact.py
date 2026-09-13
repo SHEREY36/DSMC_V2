@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--precomputed-directory",
                         help="validated per-node geometry/sampler payloads from the "
                              "parallel artifact precompute array")
+    parser.add_argument("--coefficient-rows",
+                        help="validated shared correction coefficient surface")
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
     args = parser.parse_args()
@@ -43,7 +45,8 @@ def main():
                        args.beta_a, args.beta_b)
     result = build_artifact(
         runs, args.output, bl, args.bootstrap, args.node_estimates,
-        precomputed_directory=args.precomputed_directory)
+        precomputed_directory=args.precomputed_directory,
+        coefficient_rows_path=args.coefficient_rows)
     print(f"Wrote {result['artifact_type']} with {result['n_nodes']} node(s) to {args.output}")
 
 

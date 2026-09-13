@@ -23,14 +23,15 @@ SHEAR_RATES = {
 
 
 def campaign_rows(mode: str, results: Path, particles: int,
-                  tau_end: float) -> list[dict[str, object]]:
+                  tau_end: float, state_update_cpp: float = 0.05
+                  ) -> list[dict[str, object]]:
     """Return independent one-core jobs without changing any discretization."""
     if mode == "pilot":
-        aspect_ratios = (2.0,)
+        aspect_ratios = (1.1, 2.0, 3.0)
         alphas = (0.50, 0.75, 0.95)
         arms = ("uncorrected", "corrected")
     elif mode == "full":
-        aspect_ratios = (1.5, 2.0, 2.5, 3.0)
+        aspect_ratios = (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)
         alphas = tuple(sorted(SHEAR_RATES))
         arms = ("corrected",)
     else:
@@ -55,6 +56,7 @@ def campaign_rows(mode: str, results: Path, particles: int,
                         "seed": seed,
                         "particles": int(particles),
                         "tau_end": f"{float(tau_end):.1f}",
+                        "state_update_cpp": f"{float(state_update_cpp):.6g}",
                         "output_prefix": str(prefix),
                     })
     return rows
@@ -67,16 +69,19 @@ def main() -> None:
     parser.add_argument("--results", default="results/usf_validation_pilot")
     parser.add_argument("--particles", type=int, default=4000)
     parser.add_argument("--tau-end", type=float, default=80.0)
+    parser.add_argument("--state-update-cpp", type=float, default=0.05)
     args = parser.parse_args()
     if args.particles < 100:
         raise SystemExit("USF validation requires at least 100 particles")
     if args.tau_end <= 0.0:
         raise SystemExit("--tau-end must be positive")
+    if args.state_update_cpp < 0.0:
+        raise SystemExit("--state-update-cpp must be nonnegative")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     rows = campaign_rows(args.mode, Path(args.results), args.particles,
-                         args.tau_end)
+                         args.tau_end, args.state_update_cpp)
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()

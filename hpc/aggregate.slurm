@@ -20,6 +20,12 @@ NODE_ESTIMATES=("$ESTIMATES" "$@")
 # Slurm executes a copied script from /var/spool/slurm, so $0 does not point
 # into the checkout.  sbatch records the submission directory explicitly.
 ROOT=${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
+COEFFICIENT_ARGS=()
+if [[ -n "${COEFFICIENT_ROWS:-}" ]]; then
+  [[ "$COEFFICIENT_ROWS" = /* ]] \
+    && COEFFICIENT_ARGS+=(--coefficient-rows "$COEFFICIENT_ROWS") \
+    || COEFFICIENT_ARGS+=(--coefficient-rows "$ROOT/$COEFFICIENT_ROWS")
+fi
 export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
 ESTIMATE_ARGS=(--node-estimates)
 for DIRECTORY in "${NODE_ESTIMATES[@]}"; do
@@ -35,4 +41,5 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
   --output "$ROOT/$OUTPUT" --precomputed-directory "$ROOT/$PRECOMPUTED" \
   --bootstrap 200 \
   --gamma-max-table "$ROOT/Coll_Models_v2/models/legacy_bl/gamma_max_table.json" \
-  --one-hit-table "$ROOT/Coll_Models_v2/models/legacy_bl/one_hit_table.json"
+  --one-hit-table "$ROOT/Coll_Models_v2/models/legacy_bl/one_hit_table.json" \
+  "${COEFFICIENT_ARGS[@]}"

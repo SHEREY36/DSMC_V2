@@ -254,6 +254,14 @@ class VariationalClosure:
         if not np.isfinite(self.correction_trust_amplitude) \
                 or self.correction_trust_amplitude <= 0.0:
             raise ValueError("artifact correction trust amplitude must be positive")
+        self.beta_trust_amplitude = np.asarray(
+            data["beta_trust_amplitude"] if "beta_trust_amplitude" in data.files
+            else np.full(len(self.beta_coordinates), self.correction_trust_amplitude),
+            dtype=float)
+        if self.beta_trust_amplitude.shape != (len(self.beta_coordinates),) \
+                or np.any(~np.isfinite(self.beta_trust_amplitude)) \
+                or np.any(self.beta_trust_amplitude <= 0.0):
+            raise ValueError("beta trust amplitudes must be positive per-node values")
         self.correction_parameter_names = tuple(
             data["correction_parameter_names"].astype(str)
             if "correction_parameter_names" in data.files else ("lambda1",))
@@ -596,10 +604,12 @@ class VariationalClosure:
             else:
                 memory = float(coefficients[0] * float(z_in))
             if abs(delta3) > 0.0:
-                if self.energy_kernel_forms[index] != "sinkhorn_bridge_v2":
-                    raise ValueError(
-                        "lambda3 correction reached a non-Sinkhorn energy node")
-                memory += delta3 * float(z_in)
+                if self.energy_kernel_forms[index] == "conditional_logit_cubic_v3":
+                    # lambda3 is the first bounded-logit memory coefficient,
+                    # whose sufficient statistic is x rather than raw z_in.
+                    memory += delta3 * x
+                else:
+                    memory += delta3 * float(z_in)
             a = float(lambda1 + delta1 + memory + (lambda4 + delta4) * covariate)
             grid = self.energy_a_grid[index]
             if a < grid[0] or a > grid[-1]:
@@ -644,7 +654,7 @@ class VariationalClosure:
 
         ``z_in`` is the pair's incoming translational share and ``loss`` the
         fractional energy the collision removes.  They enter only through
-        ``a = lambda1 + lambda3 z_in + lambda4 loss``; the table is indexed by
+        ``a = lambda1 + memory(z_in) + lambda4 loss``; the table is indexed by
         that scalar, so the draw is a bilinear interpolation and costs the same
         as the memoryless one it replaces.
         """

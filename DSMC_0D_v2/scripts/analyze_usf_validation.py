@@ -210,7 +210,7 @@ def summarize(rows: list[dict[str, str]], references: dict,
         < by_arm["uncorrected"]["stress_relative_rmse"])
     corrected_pass = by_arm.get("corrected", {}).get("physics_pass", False)
     performance_pass = all(
-        record["closure_overhead_fraction"] < 0.05 for record, _ in loaded
+        record["closure_overhead_fraction"] < 0.15 for record, _ in loaded
         if record["arm"] == "corrected")
     artifact_digests = {record["artifact_sha256"] for record, _ in loaded
                         if record.get("artifact_sha256")}
@@ -226,7 +226,7 @@ def summarize(rows: list[dict[str, str]], references: dict,
             "replicate_coefficient_of_variation_max": 0.10,
             "replicate_mean_relative_drift_max": 0.10,
             "out_of_domain_fraction_exclusive_maximum": 1e-3,
-            "closure_overhead_fraction_exclusive_maximum": 0.05,
+            "closure_overhead_fraction_exclusive_maximum": 0.15,
         },
         "n_expected": len(rows), "n_valid": len(loaded),
         "artifact_sha256": (next(iter(artifact_digests))

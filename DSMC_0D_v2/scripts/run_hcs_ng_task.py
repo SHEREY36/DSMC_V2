@@ -56,7 +56,8 @@ def main() -> None:
     else:
         config["microscopic_closure"].update(
             routing="variational_v2", angular="variational_v2",
-            artifact=str(artifact), invariant_corrections=True)
+            artifact=str(artifact), invariant_corrections=True,
+            state_update_cpp=float(row.get("state_update_cpp", 0.0) or 0.0))
     params = particle_parameters(config)
     particles = int(row["particles"])
     volume = 64.0**3
