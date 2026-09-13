@@ -82,6 +82,38 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("--precomputed-directory", script)
         self.assertIn("OPENBLAS_NUM_THREADS=1", script)
 
+    def test_excitation_pipeline_uses_bounded_worker_arrays(self):
+        submitter = (ROOT / "hpc" / "submit_full_model_pipeline.sh").read_text()
+        worker = (ROOT / "hpc" / "excitation_fit_stride.slurm").read_text()
+        self.assertIn("submit_fit_workers", submitter)
+        self.assertNotIn("submit_fit_chunks", submitter)
+        self.assertIn('EXCITATION_MAX_CORES:-256', submitter)
+        self.assertIn("#SBATCH --time=14-00:00:00", worker)
+
+    def test_excitation_resume_manifest_contains_only_absent_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            complete = root / "complete.json"
+            complete.write_text("{}\n")
+            source = root / "source.csv"
+            with source.open("w", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=("task_id", "output_file", "value"))
+                writer.writeheader()
+                writer.writerow({"task_id": 8, "output_file": complete, "value": "a"})
+                writer.writerow({"task_id": 9, "output_file": root / "missing.json",
+                                 "value": "b"})
+            retry = root / "retry.csv"
+            subprocess.run([
+                sys.executable, str(ROOT / "hpc" / "filter_missing_excitation.py"),
+                "--manifest", str(source), "--output", str(retry),
+            ], check=True, capture_output=True, text=True)
+            with retry.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows, [{"task_id": "0",
+                                     "output_file": str(root / "missing.json"),
+                                     "value": "b"}])
+
     def test_hcs_gate_has_two_initial_conditions_and_known_targets(self):
         with tempfile.TemporaryDirectory() as temporary:
             manifest = Path(temporary) / "hcs.csv"

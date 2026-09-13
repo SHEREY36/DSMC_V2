@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 TAG=${TAG:-full_candidate_v1}
+RESUME_FROM_MISSING=${RESUME_FROM_MISSING:-false}
 GRID=${GRID:-manifests/artifact_grid.csv}
 BASELINES=${BASELINES:-results/closure_estimates/artifact_grid}
 OLD_MANIFEST=${OLD_MANIFEST:-manifests/excitation_correction-grid.csv}
@@ -14,6 +15,7 @@ EXT_MANIFEST=${EXT_MANIFEST:-manifests/excitation_usf_extension_v1.csv}
 EXT_RESULTS=${EXT_RESULTS:-results/closure_estimates/excitation_usf_extension_v1}
 MISSING_MANIFEST="manifests/excitation_${TAG}_missing.csv"
 MISSING_RESULTS="results/closure_estimates/excitation_${TAG}_missing"
+MISSING_RETRY_MANIFEST="manifests/excitation_${TAG}_missing_retry.csv"
 REFINE_MANIFEST="manifests/excitation_${TAG}_support_refinement.csv"
 REFINE_RESULTS="results/closure_estimates/excitation_${TAG}_support_refinement"
 COMBINED_MANIFEST="manifests/excitation_${TAG}_combined.csv"
@@ -39,9 +41,12 @@ NG_MANIFEST="manifests/hcs_ng_${TAG}_domain_pilot.csv"
 NG_RESULTS="results/hcs_ng_${TAG}_domain_pilot"
 
 mkdir -p logs results/closure_estimates
-for target in "$MISSING_RESULTS" "$REFINE_RESULTS" "$PRECOMPUTED" "$ARTIFACT_DIR" \
-  "results/hcs_${TAG}_reference" \
-  "$HCS_FULL_RESULTS" "$USF_PILOT_RESULTS" "$USF_FULL_RESULTS" "$NG_RESULTS"; do
+FRESH_TARGETS=("$PRECOMPUTED" "$ARTIFACT_DIR" "results/hcs_${TAG}_reference" \
+  "$HCS_FULL_RESULTS" "$USF_PILOT_RESULTS" "$USF_FULL_RESULTS" "$NG_RESULTS")
+if [[ "$RESUME_FROM_MISSING" != "true" ]]; then
+  FRESH_TARGETS=("$MISSING_RESULTS" "$REFINE_RESULTS" "${FRESH_TARGETS[@]}")
+fi
+for target in "${FRESH_TARGETS[@]}"; do
   if [[ -e "$target" ]] && find "$target" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
     echo "refusing to mix this run with existing outputs in $target" >&2
     exit 2
@@ -99,39 +104,50 @@ if (( MISSING_ROWS != 11664 || REFINE_ROWS != 1296 || MISSING_NODES != 108 || CO
 fi
 mkdir -p "$MISSING_RESULTS" "$REFINE_RESULTS" "$PRECOMPUTED" "$ARTIFACT_DIR"
 
-MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
-MAX_ARRAY=${MAX_ARRAY:-1000}
 PROP_CONCURRENT=18
-PROP_RAW=$(sbatch --parsable --array="0-$((MISSING_NODES - 1))%$PROP_CONCURRENT" \
-  hpc/excitation_propensity_array.slurm "$MISSING_MANIFEST")
-PROP_JOB=${PROP_RAW%%;*}
 REFINE_NODES=36
+
+# Slurm job-array elements count toward association submission limits.  Use
+# at most 256 long-lived workers and distribute rows by stride; this keeps all
+# purchased cores occupied without injecting ~13,000 pending jobs at once.
+submit_fit_workers() {
+  local manifest=$1 rows=$2 dependency=${3:-}
+  if (( rows == 0 )); then
+    echo ""
+    return
+  fi
+  local workers=${EXCITATION_MAX_CORES:-256}
+  (( workers > rows )) && workers=$rows
+  local dependency_args=()
+  [[ -n "$dependency" ]] && dependency_args+=(--dependency="afterok:$dependency")
+  local raw
+  raw=$(sbatch --parsable --kill-on-invalid-dep=yes \
+    "${dependency_args[@]}" --time="${EXCITATION_FIT_TIME:-14-00:00:00}" \
+    --array="0-$((workers - 1))%$workers" \
+    --export="ALL,EXCITATION_BOOTSTRAP=50,EXCITATION_OFFSETS=128" \
+    hpc/excitation_fit_stride.slurm "$manifest")
+  echo "${raw%%;*}"
+}
+
+if [[ "$RESUME_FROM_MISSING" == "true" ]]; then
+  PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
+    hpc/python.sh hpc/filter_missing_excitation.py \
+    --manifest "$MISSING_MANIFEST" --output "$MISSING_RETRY_MANIFEST"
+  RETRY_ROWS=$(( $(wc -l < "$MISSING_RETRY_MANIFEST") - 1 ))
+  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_RETRY_MANIFEST" "$RETRY_ROWS")
+  PROP_JOB="reused"
+else
+  PROP_RAW=$(sbatch --parsable --array="0-$((MISSING_NODES - 1))%$PROP_CONCURRENT" \
+    hpc/excitation_propensity_array.slurm "$MISSING_MANIFEST")
+  PROP_JOB=${PROP_RAW%%;*}
+  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_MANIFEST" "$MISSING_ROWS" "$PROP_JOB")
+fi
 REFINE_PROP_RAW=$(sbatch --parsable --array="0-$((REFINE_NODES - 1))%3" \
   hpc/excitation_propensity_array.slurm "$REFINE_MANIFEST")
 REFINE_PROP_JOB=${REFINE_PROP_RAW%%;*}
-
-# Submit chunks rather than a long strided array element.  This respects
-# MaxArraySize while ensuring every Slurm task performs exactly one expensive
-# fit and cannot time out after serially processing 8--12 rows.
-submit_fit_chunks() {
-  local manifest=$1 rows=$2 dependency=$3
-  local start=0 stop size raw job
-  local jobs=()
-  while (( start < rows )); do
-    stop=$(( start + MAX_ARRAY )); (( stop > rows )) && stop=$rows
-    size=$(( stop - start ))
-    raw=$(sbatch --parsable --kill-on-invalid-dep=yes \
-      --dependency="afterok:$dependency" --array="0-$((size - 1))%${EXCITATION_MAX_CORES:-256}" \
-      --export="ALL,EXCITATION_BOOTSTRAP=50,EXCITATION_OFFSETS=128,EXCITATION_START=$start,EXCITATION_STOP=$stop" \
-      hpc/excitation_fit_stride.slurm "$manifest")
-    job=${raw%%;*}; jobs+=("$job"); start=$stop
-  done
-  local joined; joined=$(IFS=:; echo "${jobs[*]}")
-  echo "$joined"
-}
-MISSING_FIT_JOBS=$(submit_fit_chunks "$MISSING_MANIFEST" "$MISSING_ROWS" "$PROP_JOB")
-REFINE_FIT_JOBS=$(submit_fit_chunks "$REFINE_MANIFEST" "$REFINE_ROWS" "$REFINE_PROP_JOB")
-ALL_FIT_JOBS="$MISSING_FIT_JOBS:$REFINE_FIT_JOBS"
+REFINE_FIT_JOBS=$(submit_fit_workers "$REFINE_MANIFEST" "$REFINE_ROWS" "$REFINE_PROP_JOB")
+ALL_FIT_JOBS=$REFINE_FIT_JOBS
+[[ -n "$MISSING_FIT_JOBS" ]] && ALL_FIT_JOBS="$MISSING_FIT_JOBS:$ALL_FIT_JOBS"
 FULL_QA_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
   --dependency="afterok:$ALL_FIT_JOBS" hpc/validate_excitation_surface.slurm \
   "$COMBINED_MANIFEST" "$COMBINED_SUMMARY" "$COMBINED_OFFLINE")
@@ -143,7 +159,7 @@ COEFFICIENT_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
 COEFFICIENT_JOB=${COEFFICIENT_RAW%%;*}
 
 BASELINE_ROWS=$(( $(wc -l < "$GRID") - 1 ))
-PRE_TASKS=$BASELINE_ROWS; (( PRE_TASKS > MAX_ARRAY )) && PRE_TASKS=$MAX_ARRAY
+PRE_TASKS=$BASELINE_ROWS
 PRE_CONCURRENT=$(( ${ARTIFACT_MAX_CORES:-256} / 2 )); (( PRE_CONCURRENT > PRE_TASKS )) && PRE_CONCURRENT=$PRE_TASKS
 PRE_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes --dependency="afterok:$COEFFICIENT_JOB" \
   --array="0-$((PRE_TASKS - 1))%$PRE_CONCURRENT" \
@@ -228,8 +244,8 @@ NG_QA_JOB=${NG_QA_RAW%%;*}
 
 echo "missing_correction_propensity_job=$PROP_JOB ($MISSING_NODES nodes; $PROP_CONCURRENT x 12 cores)"
 echo "support_refinement_propensity_job=$REFINE_PROP_JOB (cache verification for 36 completed nodes)"
-echo "missing_correction_fit_jobs=$MISSING_FIT_JOBS ($MISSING_ROWS one-fit tasks)"
-echo "support_refinement_fit_jobs=$REFINE_FIT_JOBS ($REFINE_ROWS one-fit tasks)"
+echo "missing_correction_fit_job=${MISSING_FIT_JOBS:-none} ($MISSING_ROWS rows distributed over at most ${EXCITATION_MAX_CORES:-256} workers)"
+echo "support_refinement_fit_job=$REFINE_FIT_JOBS ($REFINE_ROWS rows distributed over at most ${EXCITATION_MAX_CORES:-256} workers)"
 echo "combined_correction_QA_job=$FULL_QA_JOB"
 echo "coefficient_surface_job=$COEFFICIENT_JOB (compiled once, shared by all artifact tasks)"
 echo "artifact_precompute_job=$PRE_JOB ($PRE_CONCURRENT x 2 cores); pack=$PACK_JOB; prepare=$PREP_JOB"

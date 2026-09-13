@@ -1,5 +1,7 @@
 #!/bin/bash -l
-# Independent virtual excitation fits.  No fresh CTC trajectory is generated.
+# Independent virtual excitation fits.  Each array element processes a
+# balanced stride through the manifest, keeping the number of submitted jobs
+# small while retaining 256-way concurrency.  No fresh CTC is generated.
 #SBATCH --account=morri353
 #SBATCH --partition=cpu
 #SBATCH --qos=normal
@@ -8,7 +10,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
-#SBATCH --time=24:00:00
+#SBATCH --time=14-00:00:00
 #SBATCH --output=logs/excitation_fit_%A_%a.out
 #SBATCH --error=logs/excitation_fit_%A_%a.err
 

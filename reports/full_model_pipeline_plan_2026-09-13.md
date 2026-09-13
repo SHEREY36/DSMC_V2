@@ -90,3 +90,20 @@ two-core tasks, then runs:
 The artifact's nonspherical interpolation domain is the measured grid
 1.1 <= AR <= 3 and 0.5 <= alpha <= 1.  AR=1 is the separate exact sphere
 kernel/control, not extrapolation of the nonspherical closure.
+
+## Negishi submission-policy repair
+
+The first full-domain submission exposed a scheduler-design error rather than
+a physics or wall-time failure.  Splitting 11,664 fits into one array element
+per observation caused Slurm to reject the next arrays with
+`AssocMaxSubmitJobLimit`.  Purdue's published `cpu/normal` PI-queue maximum is
+two weeks, but wall time and the association's live submitted-job count are
+independent limits.
+
+Fit campaigns now use at most 256 array workers.  Each worker processes a
+balanced stride of observations and has the published 14-day maximum wall
+time.  This leaves the number of fits, 50 bootstrap replicates, 128 propensity
+offsets, and all output rows unchanged while reducing scheduler objects from
+12,960 to at most 512 fit workers.  A resume path waits for the already
+accepted missing-node arrays, retries only absent atomic outputs, and then
+submits refinement and the gated downstream chain.
