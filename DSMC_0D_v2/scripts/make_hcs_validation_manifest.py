@@ -7,11 +7,37 @@ import argparse
 import csv
 from pathlib import Path
 
+import numpy as np
+
 
 FIELDS = (
-    "task_id", "tier", "alpha", "aspect_ratio", "theta0", "target_theta",
+    "task_id", "campaign_mode", "tier", "alpha", "aspect_ratio", "theta0", "target_theta",
     "replicate", "seed", "particles", "tau_end", "output_prefix",
 )
+
+
+def full_domain_cases(artifact: Path) -> tuple[tuple[str, float, float, float | None], ...]:
+    """Return every calibrated alpha/AR axis pair in the artifact.
+
+    This is deliberately driven by the artifact itself instead of a manually
+    maintained list, so an expanded gate cannot silently omit new nodes.
+    """
+    with np.load(artifact, allow_pickle=False) as data:
+        coordinates = np.asarray(data["surface_coordinates"], dtype=float)
+    alphas = np.unique(coordinates[:, 0])
+    aspect_ratios = np.unique(coordinates[:, 2])
+    known = {(alpha, ar): target for _, alpha, ar, target in GATE_CASES}
+    cases = []
+    for alpha in alphas:
+        for ar in aspect_ratios:
+            target = known.get((float(alpha), float(ar)))
+            # Equipartition is an exact target in the elastic limit for every
+            # nonspherical geometry, whether or not a DEM datum was tabulated.
+            if np.isclose(alpha, 1.0):
+                target = 1.0
+            tier = "gate" if target is not None else "domain"
+            cases.append((tier, float(alpha), float(ar), target))
+    return tuple(cases)
 
 # DEM HCS ratios used in the coupling handoff.  The elastic entries are exact
 # physics rulers, not fitted targets.
@@ -43,12 +69,23 @@ def main() -> None:
     parser.add_argument("--tau-end", type=float, default=20.0)
     parser.add_argument("--replicates", type=int, default=3)
     parser.add_argument("--include-diagnostics", action="store_true")
+    parser.add_argument("--mode", choices=("compact", "full-domain"),
+                        default="compact")
+    parser.add_argument("--artifact")
     args = parser.parse_args()
 
     if args.replicates < 1:
         parser.error("--replicates must be positive")
     rows = []
-    cases = GATE_CASES + (DIAGNOSTIC_CASES if args.include_diagnostics else ())
+    if args.mode == "full-domain":
+        if not args.artifact:
+            parser.error("--artifact is required for --mode full-domain")
+        artifact = Path(args.artifact)
+        if not artifact.is_file():
+            parser.error(f"artifact does not exist: {artifact}")
+        cases = full_domain_cases(artifact)
+    else:
+        cases = GATE_CASES + (DIAGNOSTIC_CASES if args.include_diagnostics else ())
     for case_index, (tier, alpha, ar, target) in enumerate(cases):
         for start_index, theta0 in enumerate((0.75, 1.25)):
             for replicate in range(args.replicates):
@@ -56,6 +93,7 @@ def main() -> None:
                        f"rep_{replicate:02d}")
                 rows.append({
                     "task_id": len(rows),
+                    "campaign_mode": args.mode,
                     "tier": tier,
                     "alpha": alpha,
                     "aspect_ratio": ar,

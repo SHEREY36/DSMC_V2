@@ -82,6 +82,13 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
     # avoids an ill-posed relative test for a genuinely tiny contribution.
     deployed = ((np.abs(beta) > 1.96 * beta_se)
                 & (contribution_halfwidth <= np.maximum(0.005, 0.25 * effect)))
+    all_excited_se = np.array([_standard_error(node, parameter)
+                               for node in usable])
+    all_excited_se = np.maximum(
+        np.where(np.isfinite(all_excited_se), all_excited_se, floor), floor)
+    maximum_standardized_shift = float(np.max(
+        np.abs(y_all) / np.maximum(
+            np.hypot(base_se, all_excited_se), 1.0e-30)))
     return {
         "feature_order": list(feature_names),
         "feature_center": base_x.tolist(),
@@ -94,6 +101,8 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
                          np.linalg.norm(x, axis=0), 1.0))),
         "n_training": int(np.sum(train)),
         "n_validation": int(np.sum(validate)),
+        "maximum_standardized_shift": maximum_standardized_shift,
+        "material_response": maximum_standardized_shift >= 3.0,
         "training_rmse": train_rmse,
         "training_relative_rmse": train_relative,
         "validation_rmse": validation_rmse,

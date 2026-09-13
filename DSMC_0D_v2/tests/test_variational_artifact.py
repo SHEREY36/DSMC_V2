@@ -43,7 +43,9 @@ class VariationalArtifactTests(unittest.TestCase):
                 for row, grid in zip(ep, a_grid)]),
             angular_quantiles=np.array([angular_quantiles(row, probability) for row in ap]),
             beta_coordinates=coordinates, beta=beta, beta_se=np.zeros_like(beta),
-            beta_deployed=beta != 0.0, feature_lower=np.full(len(FEATURE_NAMES), -0.5),
+            beta_deployed=beta != 0.0,
+            correction_trust_amplitude=np.array(0.25),
+            feature_lower=np.full(len(FEATURE_NAMES), -0.5),
             feature_upper=np.full(len(FEATURE_NAMES), 0.5),
             joint_deployed=np.full(len(coordinates), joint, dtype=bool),
             joint_parameters=(np.tile([0.1, -0.1, 0.3], (len(coordinates), 1))

@@ -66,6 +66,21 @@ class ParticleState:
             )
         self.axis /= np.linalg.norm(self.axis, axis=1)[:, None]
 
+    def rescale_thermal_state(self, scale: float) -> None:
+        """Apply one uniform HCS similarity scaling without changing shape.
+
+        Velocities and angular velocities have the same inverse-time scaling.
+        The separately stored rotational energy must therefore receive the
+        square of that factor.  Keeping all three arrays synchronized is
+        essential once particle axes are advanced with ``omega``.
+        """
+        scale = float(scale)
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError("thermal-state scale must be finite and positive")
+        self.velocity *= scale
+        self.omega *= scale
+        self.rotational_energy *= scale * scale
+
     def orientation_tensor(self) -> np.ndarray:
         """Return the traceless nematic tensor Q=<uu>-I/3."""
         second_moment = self.axis.T @ self.axis / float(self.count)

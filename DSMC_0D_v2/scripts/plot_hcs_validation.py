@@ -102,6 +102,11 @@ def main() -> None:
 
     records, series, missing = [], [], []
     manifest_rows = load_manifest(Path(args.manifest))
+    campaign_modes = {row.get("campaign_mode", "compact")
+                      for row in manifest_rows}
+    if len(campaign_modes) != 1:
+        raise SystemExit("HCS manifest mixes campaign modes")
+    campaign_mode = campaign_modes.pop()
     for row in manifest_rows:
         trajectory_path = Path(row["output_prefix"] + ".txt")
         diagnostics_path = Path(row["output_prefix"] + ".json")
@@ -177,7 +182,10 @@ def main() -> None:
     artifact_consistent = bool(len(artifact_digests) == 1
                                and all(record.get("artifact_sha256")
                                        for record in records))
-    summary = {"criteria": {"target_relative_error_max": 0.10,
+    all_cases_physics_pass = bool(cases) and all(
+        case["physics_pass"] for case in cases)
+    summary = {"campaign_mode": campaign_mode,
+               "criteria": {"target_relative_error_max": 0.10,
                              "replicate_mean_relative_drift_max": 0.10,
                              "initial_condition_spread_max": 0.10,
                              "replicate_coefficient_of_variation_max": 0.10,
@@ -197,6 +205,12 @@ def main() -> None:
                "physics_gate_pass": bool(artifact_consistent and all(
                    case["physics_pass"] for case in cases
                    if case["tier"] == "gate")),
+               # This field exists only as a positive verdict for an explicit
+               # artifact-derived full-domain design.  Downstream scientific
+               # campaigns must not promote a compact six-case gate.
+               "full_domain_physics_gate_pass": bool(
+                   campaign_mode == "full-domain" and artifact_consistent
+                   and all_cases_physics_pass),
                "production_gate_pass": bool(artifact_consistent and all(
                    case["production_pass"] for case in cases
                    if case["tier"] == "gate"))}
@@ -206,8 +220,9 @@ def main() -> None:
 
     gate_keys = [(1.0, 2.0), (0.95, 2.0), (0.8, 2.0),
                  (1.0, 3.0), (0.95, 3.0), (0.8, 3.0)]
-    available = [key for key in gate_keys if key in grouped]
-    ncols = 3
+    available = (sorted(grouped) if campaign_mode == "full-domain"
+                 else [key for key in gate_keys if key in grouped])
+    ncols = 4 if campaign_mode == "full-domain" else 3
     nrows = max(1, int(np.ceil(len(available) / ncols)))
     fig, axes = plt.subplots(nrows, ncols, figsize=(12.0, 3.5 * nrows), squeeze=False)
     colors = {0.75: "#0072B2", 1.25: "#D55E00"}

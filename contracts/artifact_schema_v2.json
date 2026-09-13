@@ -14,6 +14,7 @@
   ],
   "energy_table_layout": "packed_adaptive_v1",
   "correction_model": "six_parameter_centered_response_v2",
+  "correction_feature_trust_amplitude": 0.25,
   "energy_shape_response": "logit_quantile_tangent_lambda2_lambda3_v1",
   "retired_in_variational_mode": ["conditional_gmm", "rank0_routing", "VSS"],
   "preserved_runtime": ["v1_ntc", "frozen_sigma_c", "BL_scalar_loss", "legacy_mode"]

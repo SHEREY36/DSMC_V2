@@ -56,6 +56,17 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
             row[:] = 0.0
             row_deployed[:] = False
             fitted["elastic_constraint_applied"] = True
+            fitted["immaterial_response_suppressed"] = False
+            fitted["linearity_pass"] = True
+        elif not fitted["material_response"]:
+            # A Jacobian row that cannot be resolved from zero is not a
+            # correction.  Deploying all fourteen noisy coefficients merely
+            # amplifies feature noise and can make an otherwise harmless
+            # held-out relative error block the entire physical node.
+            row[:] = 0.0
+            row_deployed[:] = False
+            fitted["elastic_constraint_applied"] = False
+            fitted["immaterial_response_suppressed"] = True
             fitted["linearity_pass"] = True
         else:
             # Release the response as a jointly validated Jacobian. Dropping
@@ -64,6 +75,7 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
             # not fourteen separate t-tests, is the correct model-level gate.
             row_deployed[:] = True
             fitted["elastic_constraint_applied"] = False
+            fitted["immaterial_response_suppressed"] = False
             fitted["linearity_pass"] = bool(
                 fitted["validation_relative_rmse"] is not None
                 and fitted["validation_relative_rmse"] <= LINEARITY_TOLERANCE)

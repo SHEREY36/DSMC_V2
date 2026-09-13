@@ -100,6 +100,32 @@ class HPCStageTests(unittest.TestCase):
             self.assertEqual({float(row["target_theta"]) for row in ar2_alpha95}, {0.9792})
             self.assertEqual({int(row["replicate"]) for row in ar2_alpha95}, {0, 1, 2})
 
+    def test_full_domain_hcs_gate_is_driven_by_artifact_axes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / "artifact.npz"
+            surface = np.array([[alpha, theta, ar]
+                                for alpha in (0.5, 0.8, 1.0)
+                                for theta in (0.2, 1.0, 2.0)
+                                for ar in (1.1, 2.0, 3.0)])
+            np.savez_compressed(artifact, surface_coordinates=surface)
+            manifest = Path(temporary) / "full_hcs.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts" / "make_hcs_validation_manifest.py"),
+                "--mode", "full-domain", "--artifact", str(artifact),
+                "--replicates", "2", "--output", str(manifest),
+                "--results", str(Path(temporary) / "results"),
+            ], check=True, capture_output=True, text=True)
+            with manifest.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 3 * 3 * 2 * 2)
+            self.assertEqual({row["campaign_mode"] for row in rows}, {"full-domain"})
+            elastic = [row for row in rows if float(row["alpha"]) == 1.0]
+            self.assertEqual({float(row["target_theta"]) for row in elastic}, {1.0})
+        submitter = (ROOT / "hpc" / "submit_hcs_validation.sh").read_text()
+        self.assertIn('[[ "$MODE" == "full-domain" ]] && CORRECTIONS=true', submitter)
+        self.assertIn('"$ARTIFACT" "$CORRECTIONS"', submitter)
+
     def test_negishi_environment_includes_hcs_plot_dependency(self):
         setup = (ROOT / "hpc" / "setup_negishi_env.sh").read_text()
         submitter = (ROOT / "hpc" / "submit_hcs_plot.sh").read_text()
@@ -198,6 +224,17 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn('dependency="afterok:$HCS_PLOT_JOB:$HOLDOUT_JOB"', submitter)
         self.assertIn("check_usf_candidate.slurm", submitter)
         self.assertIn("paired_usf_pilot_job", submitter)
+
+    def test_usf_candidate_resume_reuses_fits_and_preserves_gates(self):
+        resume = (ROOT / "hpc" / "resume_usf_candidate_pipeline.sh").read_text()
+        self.assertIn("reusing {len(rows)} completed extension fits", resume)
+        self.assertNotIn("excitation_fit_stride.slurm", resume)
+        self.assertNotIn("excitation_propensity_array.slurm", resume)
+        self.assertIn("validate_usf_extension.slurm", resume)
+        self.assertIn('dependency="afterok:$QA_JOB"', resume)
+        self.assertIn('dependency="afterok:$HCS_PLOT_JOB:$HOLDOUT_JOB"', resume)
+        self.assertIn("ARTIFACT_MAX_CORES:-256", resume)
+        self.assertIn("paired_usf_pilot_job", resume)
 
     def test_usf_manifests_are_paired_pilot_and_corrected_full_grid(self):
         script = ROOT / "DSMC_0D_v2" / "scripts" / "make_usf_validation_manifest.py"

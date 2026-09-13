@@ -95,9 +95,16 @@ def main() -> None:
                                         max(np.hypot(base_se, excited_se), 1.0e-30))
             fitted = fit_response(baseline, [result for _, result in items],
                                   design_names, section, name)
+            # fit_response owns the materiality definition used by artifact
+            # construction.  Keep this legacy calculation only as a fallback
+            # for older response payloads.
             fitted.update({
-                "maximum_standardized_shift": (max(standardised) if standardised else None),
-                "material_response": bool(standardised and max(standardised) >= 3.0),
+                "maximum_standardized_shift": fitted.get(
+                    "maximum_standardized_shift",
+                    max(standardised) if standardised else None),
+                "material_response": fitted.get(
+                    "material_response",
+                    bool(standardised and max(standardised) >= 3.0)),
                 "linearity_pass": bool(fitted["validation_relative_rmse"] is not None
                                        and fitted["validation_relative_rmse"] <= 0.15),
             })
@@ -152,7 +159,8 @@ def main() -> None:
             and node["training_sentinel_pass"])
         required = [response.get(name, {}) for name in CORRECTION_PARAMETERS]
         node["response_linearity_pass"] = bool(
-            all(item.get("linearity_pass", False) for item in required))
+            all((not item.get("material_response", False))
+                or item.get("linearity_pass", False) for item in required))
         node["response_fit_ready"] = bool(
             node["screening_pass"] and node["response_linearity_pass"]
             and node["heldout_boundary_acceptable"]

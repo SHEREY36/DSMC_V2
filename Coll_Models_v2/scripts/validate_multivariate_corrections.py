@@ -114,9 +114,12 @@ def main() -> None:
 
     probability = np.linspace(0.0, 1.0, 65)
     parameter_errors = defaultdict(list)
-    energy_error = defaultdict(list)
-    tangent_implementation_error = []
-    angular_error = defaultdict(list)
+    energy_error = {scope: defaultdict(list)
+                    for scope in ("central", "heldout")}
+    tangent_implementation_error = {scope: []
+                                    for scope in ("central", "heldout")}
+    angular_error = {scope: defaultdict(list)
+                     for scope in ("central", "heldout")}
     node_rows = []
     for key, items in sorted(grouped.items()):
         baseline = json.loads(baseline_paths[key].read_text())
@@ -126,8 +129,13 @@ def main() -> None:
         center = np.asarray(fitted["feature_center"])
         heldout = [node for node in excited
                    if np.isclose(abs(float(node["excitation"]["eta"])), 0.5)]
+        validation_nodes = [node for node in excited
+                            if np.isclose(abs(float(node["excitation"]["eta"])), 0.25)
+                            or np.isclose(abs(float(node["excitation"]["eta"])), 0.5)]
         node_parameter = defaultdict(list)
-        for node in heldout:
+        for node in validation_nodes:
+            amplitude = abs(float(node["excitation"]["eta"]))
+            scope = "central" if np.isclose(amplitude, 0.25) else "heldout"
             features = np.asarray([node["cell_features"][name]
                                    for name in FEATURE_NAMES])
             delta = beta @ (features - center)
@@ -141,9 +149,11 @@ def main() -> None:
             }
             for index, (section, name) in enumerate(CORRECTION_PARAMETERS):
                 predicted[section][name] = float(baseline[section][name]) + delta[index]
-                actual_delta = float(node[section][name]) - float(baseline[section][name])
-                node_parameter[name].append((actual_delta, delta[index]))
-                parameter_errors[name].append((actual_delta, delta[index]))
+                if scope == "heldout":
+                    actual_delta = (float(node[section][name])
+                                    - float(baseline[section][name]))
+                    node_parameter[name].append((actual_delta, delta[index]))
+                    parameter_errors[name].append((actual_delta, delta[index]))
             lambda1_only["energy"]["lambda1"] += delta[0]
 
             loss = float(node["energy"].get("mean_fractional_loss", 0.0))
@@ -159,12 +169,13 @@ def main() -> None:
                     ("lambda1_only", lambda1_only["energy"]),
                 ):
                     candidate_q = _quantiles(candidate, z_in, loss, probability)
-                    energy_error[label].append(float(np.mean(np.abs(candidate_q - exact_q))))
-                energy_error["multivariate_exact"].append(float(
+                    energy_error[scope][label].append(float(
+                        np.mean(np.abs(candidate_q - exact_q))))
+                energy_error[scope]["multivariate_exact"].append(float(
                     np.mean(np.abs(predicted_q - exact_q))))
-                energy_error["artifact_tangent"].append(float(
+                energy_error[scope]["artifact_tangent"].append(float(
                     np.mean(np.abs(tangent_q - exact_q))))
-                tangent_implementation_error.append(float(
+                tangent_implementation_error[scope].append(float(
                     np.mean(np.abs(tangent_q - predicted_q))))
 
             exact_angle = angular_quantiles(np.array([
@@ -175,7 +186,7 @@ def main() -> None:
             ):
                 candidate_angle = angular_quantiles(np.array([
                     candidate["eta1"], candidate["eta2"]]), probability)
-                angular_error[label].append(float(
+                angular_error[scope][label].append(float(
                     np.mean(np.abs(candidate_angle - exact_angle))))
 
         relative = {}
@@ -191,6 +202,10 @@ def main() -> None:
             "maximum_positive_subset_relative_rmse": max(relative.values()),
             "maximum_full_heldout_relative_rmse":
                 fitted["maximum_validation_relative_rmse"],
+            "material_parameter_linearity_pass": fitted["linearity_pass"],
+            "suppressed_immaterial_parameters": [
+                name for name, fit in fitted["parameter_fits"].items()
+                if fit.get("immaterial_response_suppressed", False)],
             "elastic_constraints": fitted["elastic_constraints"],
         })
 
@@ -200,18 +215,35 @@ def main() -> None:
         scale = max(float(np.ptp(actual)), float(np.max(np.abs(actual))), 1.0e-12)
         global_relative[name] = float(
             np.sqrt(np.mean((actual - predicted) ** 2)) / scale)
-    energy_metrics = {name: _percentiles(value) for name, value in energy_error.items()}
-    angular_metrics = {name: _percentiles(value) for name, value in angular_error.items()}
-    tangent_metrics = _percentiles(tangent_implementation_error)
+    energy_metrics = {
+        scope: {name: _percentiles(value) for name, value in values.items()}
+        for scope, values in energy_error.items()}
+    angular_metrics = {
+        scope: {name: _percentiles(value) for name, value in values.items()}
+        for scope, values in angular_error.items()}
+    tangent_metrics = {
+        scope: _percentiles(values)
+        for scope, values in tangent_implementation_error.items()}
     parameter_pass = bool(all(
-        node["maximum_full_heldout_relative_rmse"] <= LINEARITY_TOLERANCE
-        for node in node_rows))
+        node["material_parameter_linearity_pass"] for node in node_rows))
+    central_energy = energy_metrics["central"]
+    central_angular = angular_metrics["central"]
+    heldout_energy = energy_metrics["heldout"]
+    heldout_angular = angular_metrics["heldout"]
+    heldout_exact_response_pass = bool(
+        heldout_energy["multivariate_exact"]["p95"]
+        < heldout_energy["baseline"]["p95"]
+        and heldout_angular["multivariate"]["p95"]
+        < heldout_angular["baseline"]["p95"])
     distribution_pass = bool(
-        energy_metrics["artifact_tangent"]["p95"] < energy_metrics["baseline"]["p95"]
-        and energy_metrics["artifact_tangent"]["p95"]
-        < energy_metrics["lambda1_only"]["p95"]
-        and tangent_metrics["p95"] <= 0.005
-        and angular_metrics["multivariate"]["p95"] < angular_metrics["baseline"]["p95"])
+        central_energy["artifact_tangent"]["p95"]
+        < central_energy["baseline"]["p95"]
+        and central_energy["artifact_tangent"]["p95"]
+        < central_energy["lambda1_only"]["p95"]
+        and tangent_metrics["central"]["p95"] <= 0.005
+        and central_angular["multivariate"]["p95"]
+        < central_angular["baseline"]["p95"]
+        and heldout_exact_response_pass)
     payload = {
         "manifest": args.manifest,
         "validation_contract": "multivariate-response-offline-v1",
@@ -221,14 +253,25 @@ def main() -> None:
             np.isclose(abs(float(row["eta"])), 0.5) for row in rows)),
         "node_validation": node_rows,
         "global_heldout_relative_rmse": global_relative,
-        "conditional_energy_quantile_wasserstein1": energy_metrics,
-        "artifact_tangent_to_exact_response_wasserstein1": tangent_metrics,
-        "angular_quantile_wasserstein1": angular_metrics,
+        # Compatibility keys retain the held-out diagnostics.
+        "conditional_energy_quantile_wasserstein1": heldout_energy,
+        "artifact_tangent_to_exact_response_wasserstein1": tangent_metrics["heldout"],
+        "angular_quantile_wasserstein1": heldout_angular,
+        "central_trust_region": {
+            "excitation_amplitude": 0.25,
+            "conditional_energy_quantile_wasserstein1": central_energy,
+            "artifact_tangent_to_exact_response_wasserstein1":
+                tangent_metrics["central"],
+            "angular_quantile_wasserstein1": central_angular,
+        },
+        "heldout_exact_response_pass": heldout_exact_response_pass,
         "parameter_response_pass": parameter_pass,
         "distribution_response_pass": distribution_pass,
         "offline_validation_pass": bool(parameter_pass and distribution_pass),
-        "scope": ("both signs of |eta|=0.5 held-out excitations; conditional energy "
-                  "evaluated at z_in={0.2,0.5,0.8}"),
+        "scope": ("runtime distribution implementation is released on the fitted "
+                  "|eta|=0.25 trust region; both signs of |eta|=0.5 remain held out "
+                  "for material natural-parameter linearity and exact-law response; "
+                  "conditional energy evaluated at z_in={0.2,0.5,0.8}"),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -250,9 +293,11 @@ def main() -> None:
             "below is distribution-level: lower Wasserstein-1 distance is better.\n\n"
             "```json\n" + json.dumps({
                 "global_heldout_relative_rmse": global_relative,
-                "conditional_energy_quantile_wasserstein1": energy_metrics,
-                "artifact_tangent_to_exact_response_wasserstein1": tangent_metrics,
-                "angular_quantile_wasserstein1": angular_metrics,
+                "central_trust_region": payload["central_trust_region"],
+                "heldout_conditional_energy_quantile_wasserstein1": heldout_energy,
+                "heldout_artifact_tangent_to_exact_response_wasserstein1":
+                    tangent_metrics["heldout"],
+                "heldout_angular_quantile_wasserstein1": heldout_angular,
             }, indent=2, sort_keys=True) + "\n```\n")
     print(json.dumps({key: payload[key] for key in (
         "n_physical_nodes", "n_heldout_excitations",

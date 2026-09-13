@@ -248,6 +248,12 @@ class VariationalClosure:
         self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
         self.beta = np.asarray(data["beta"], dtype=float)
         self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
+        self.correction_trust_amplitude = float(
+            data["correction_trust_amplitude"]
+            if "correction_trust_amplitude" in data.files else 0.5)
+        if not np.isfinite(self.correction_trust_amplitude) \
+                or self.correction_trust_amplitude <= 0.0:
+            raise ValueError("artifact correction trust amplitude must be positive")
         self.correction_parameter_names = tuple(
             data["correction_parameter_names"].astype(str)
             if "correction_parameter_names" in data.files else ("lambda1",))
@@ -258,6 +264,14 @@ class VariationalClosure:
         self.beta_feature_center = np.asarray(
             data["beta_feature_center"] if "beta_feature_center" in data.files
             else np.zeros((len(self.beta_coordinates), len(FEATURE_NAMES))), dtype=float)
+        self.beta_feature_lower = np.asarray(
+            data["beta_feature_lower"] if "beta_feature_lower" in data.files
+            else np.tile(np.asarray(data["feature_lower"], dtype=float),
+                         (len(self.beta_coordinates), 1)), dtype=float)
+        self.beta_feature_upper = np.asarray(
+            data["beta_feature_upper"] if "beta_feature_upper" in data.files
+            else np.tile(np.asarray(data["feature_upper"], dtype=float),
+                         (len(self.beta_coordinates), 1)), dtype=float)
         if self.beta.shape != (len(self.beta_coordinates),
                                len(self.correction_parameter_names),
                                len(FEATURE_NAMES)) \
@@ -266,6 +280,10 @@ class VariationalClosure:
         if self.beta_feature_center.shape != (len(self.beta_coordinates),
                                                len(FEATURE_NAMES)):
             raise ValueError("beta_feature_center must be (coefficient node, feature)")
+        if self.beta_feature_lower.shape != self.beta_feature_center.shape \
+                or self.beta_feature_upper.shape != self.beta_feature_center.shape \
+                or np.any(self.beta_feature_lower > self.beta_feature_upper):
+            raise ValueError("local correction feature bounds are invalid")
         if len(self.correction_parameter_names) > 1:
             expected = ("lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2")
             if self.correction_parameter_names != expected:
@@ -313,6 +331,10 @@ class VariationalClosure:
                 self.beta_coordinates, self.beta)
             self._interpolators["beta_feature_center"] = LinearNDInterpolator(
                 self.beta_coordinates, self.beta_feature_center)
+            self._interpolators["beta_feature_lower"] = LinearNDInterpolator(
+                self.beta_coordinates, self.beta_feature_lower)
+            self._interpolators["beta_feature_upper"] = LinearNDInterpolator(
+                self.beta_coordinates, self.beta_feature_upper)
         if len(self.beta_coordinates):
             self._interpolators["beta_mask"] = NearestNDInterpolator(
                 self.beta_coordinates, self.beta_deployed.astype(float))
@@ -431,15 +453,7 @@ class VariationalClosure:
             if hit is not None:
                 self._state_cache_hits += 1
                 return hit
-        raw_outside = ((features < self.feature_lower)
-                       | (features > self.feature_upper))
-        domain_outside = ((domain_features < self.feature_lower)
-                          | (domain_features > self.feature_upper))
-        if self.corrections_enabled:
-            self.out_of_domain_by_feature += domain_outside
-            self.sampling_excursion_by_feature += raw_outside & ~domain_outside
-        ood = bool(self.corrections_enabled and np.any(domain_outside))
-        self.out_of_domain_queries += int(ood)
+        ood = False
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
         vertex_indices, vertex_weights = self._physical_vertex_weights(query)
         p_exch = float(self._weighted(self.p_exch, vertex_indices, vertex_weights))
@@ -465,6 +479,22 @@ class VariationalClosure:
                 self.beta_coordinates, self.beta_feature_center, query,
                 "correction feature centre",
                 self._interpolators.get("beta_feature_center")).astype(float)
+            feature_lower = self._interpolate(
+                self.beta_coordinates, self.beta_feature_lower, query,
+                "correction feature lower bound",
+                self._interpolators.get("beta_feature_lower")).astype(float)
+            feature_upper = self._interpolate(
+                self.beta_coordinates, self.beta_feature_upper, query,
+                "correction feature upper bound",
+                self._interpolators.get("beta_feature_upper")).astype(float)
+            raw_outside = ((features < feature_lower)
+                           | (features > feature_upper))
+            domain_outside = ((domain_features < feature_lower)
+                              | (domain_features > feature_upper))
+            self.out_of_domain_by_feature += domain_outside
+            self.sampling_excursion_by_feature += raw_outside & ~domain_outside
+            ood = bool(np.any(domain_outside))
+            self.out_of_domain_queries += int(ood)
             exact_beta = self._exact(self.beta_coordinates, query)
             if len(exact_beta):
                 deployed = self.beta_deployed[exact_beta[0]]
@@ -484,6 +514,8 @@ class VariationalClosure:
         else:
             correction = {name: 0.0 for name in self.correction_parameter_names}
             feature_center = np.zeros(len(FEATURE_NAMES))
+            feature_lower = self.feature_lower
+            feature_upper = self.feature_upper
         exact = (vertex_indices[:1]
                  if len(vertex_indices) == 1
                  and np.all(np.isclose(self.coordinates[vertex_indices[0]], query,
@@ -515,6 +547,8 @@ class VariationalClosure:
                 "angular_parameters": aparams,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
                 "beta_feature_center": feature_center,
+                "beta_feature_lower": feature_lower,
+                "beta_feature_upper": feature_upper,
                 "energy_corrected": any(abs(correction.get(name, 0.0)) > 0.0
                                         for name in ("lambda1", "lambda2",
                                                      "lambda3", "lambda4")),

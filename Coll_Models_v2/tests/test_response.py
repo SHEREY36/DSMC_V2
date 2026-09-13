@@ -79,6 +79,44 @@ class ResponseFitTests(unittest.TestCase):
         np.testing.assert_array_equal(beta[[0, 1, 3]], 0.0)
         self.assertFalse(np.any(deployed[[0, 1, 3]]))
 
+    def test_unresolved_parameter_response_is_not_deployed(self):
+        center = np.zeros(len(FEATURE_NAMES))
+        baseline = {
+            "alpha": 0.8, "ensemble_id": 0,
+            "cell_features": dict(zip(FEATURE_NAMES, center)),
+            "energy": {"lambda1": 0.2, "lambda2": -0.1,
+                       "lambda3": 0.3, "lambda4": 0.1},
+            "angular": {"eta1": 0.2, "eta2": 0.0},
+            "uncertainty": {name: {"standard_error": 0.01}
+                            for _, name in CORRECTION_PARAMETERS},
+        }
+        nodes = [baseline]
+        for feature_index, family in enumerate(FEATURE_NAMES):
+            for eta in (-0.5, -0.25, 0.25, 0.5):
+                delta = np.zeros(len(FEATURE_NAMES))
+                delta[feature_index] = eta
+                node = {
+                    "alpha": 0.8, "ensemble_id": len(nodes),
+                    "cell_features": dict(zip(FEATURE_NAMES, delta)),
+                    "energy": {}, "angular": {},
+                    "uncertainty": {name: {"standard_error": 0.01}
+                                    for _, name in CORRECTION_PARAMETERS},
+                    "excitation": {"family": family, "eta": eta},
+                }
+                for section, name in CORRECTION_PARAMETERS:
+                    # Every parameter except eta2 has a clearly resolved
+                    # linear response. eta2 stays below three standard errors.
+                    slope = 0.2 if name != "eta2" else 0.005
+                    node[section][name] = baseline[section][name] + slope * eta
+                nodes.append(node)
+        fitted = fit_correction_coefficients(nodes)
+        eta2 = [name for _, name in CORRECTION_PARAMETERS].index("eta2")
+        np.testing.assert_array_equal(np.asarray(fitted["beta"])[eta2], 0.0)
+        self.assertFalse(np.any(np.asarray(fitted["beta_deployed"])[eta2]))
+        self.assertTrue(
+            fitted["parameter_fits"]["eta2"]["immaterial_response_suppressed"])
+        self.assertTrue(fitted["linearity_pass"])
+
     def test_lambda1_fit_is_centered_and_validated_on_extreme_amplitudes(self):
         center = np.linspace(-0.03, 0.04, len(FEATURE_NAMES))
         truth = np.linspace(-0.8, 0.9, len(FEATURE_NAMES))

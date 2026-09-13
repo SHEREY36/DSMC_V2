@@ -26,6 +26,7 @@ from .fit_coefficients import (
     CORRECTION_PARAMETER_NAMES,
     fit_correction_coefficients,
 )
+from .response import CENTRAL_AMPLITUDE
 from .projections import (
     _legendre_nodes,
     _bridge_spline,
@@ -177,6 +178,13 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
         if not fitted["linearity_pass"]:
             raise ValueError(
                 f"multivariate natural-parameter response is nonlinear at {key}")
+        trust_features = np.asarray([
+            [(node.get("cell_features") or node["proposal_features"])[name]
+             for name in FEATURE_NAMES]
+            for node in _correction_trust_nodes(group)
+        ], dtype=float)
+        fitted["feature_lower"] = np.min(trust_features, axis=0).tolist()
+        fitted["feature_upper"] = np.max(trust_features, axis=0).tolist()
         fitted["coordinates"] = list(key)
         rows.append(fitted)
     expected = {(node["alpha"], node["theta"], node["aspect_ratio"])
@@ -186,17 +194,28 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
     return rows
 
 
+def _correction_trust_nodes(nodes: list[dict]) -> list[dict]:
+    """Return baseline and fitted-amplitude nodes claimed by the runtime.
+
+    The |eta|=0.5 observations are independent extrapolation sentinels.  They
+    validate the exact natural-parameter response, but cannot enlarge the
+    feature hull of a tangent model fitted at |eta|=0.25.
+    """
+    return [node for node in nodes
+            if int(node.get("ensemble_id", 0)) == 0
+            or (node.get("excitation") is not None
+                and abs(float(node["excitation"]["eta"]))
+                <= CENTRAL_AMPLITUDE + 1.0e-12)]
+
+
 def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
     """Return a conservative artifact-wide correction interval and digest."""
     if not coefficient_rows:
         return (0.0, 0.0), "baseline-no-corrections"
-    features = np.array([
-        [(node.get("cell_features") or node["proposal_features"])[name]
-         for name in FEATURE_NAMES] for node in nodes
-    ], dtype=float)
-    lower, upper = np.min(features, axis=0), np.max(features, axis=0)
     bounds = [0.0]
     for row in coefficient_rows:
+        lower = np.asarray(row["feature_lower"], dtype=float)
+        upper = np.asarray(row["feature_upper"], dtype=float)
         beta = np.asarray(row["beta"], dtype=float) * np.asarray(
             row["beta_deployed"], dtype=bool)
         center = np.asarray(row["feature_center"], dtype=float)
@@ -785,13 +804,20 @@ def build_artifact(run_directories, output_directory, bl=None,
     beta_feature_center = np.array([row["feature_center"] for row in coefficient_rows],
                                    dtype=float) \
         if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
+    beta_feature_lower = np.array([row["feature_lower"] for row in coefficient_rows],
+                                  dtype=float) \
+        if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
+    beta_feature_upper = np.array([row["feature_upper"] for row in coefficient_rows],
+                                  dtype=float) \
+        if coefficient_rows else np.empty((0, len(FEATURE_NAMES)))
     # Runtime features are cell moments.  Collision-attempt moments are flux
     # weighted (a Maxwellian reports a2_tr ~= -0.032 there), so using them as
     # the runtime hull makes every real cell out of domain even at startup.
+    feature_nodes = _correction_trust_nodes(nodes)
     feature_values = np.array([
         [(node.get("cell_features") or node["proposal_features"])[name]
          for name in FEATURE_NAMES]
-        for node in nodes
+        for node in feature_nodes
     ])
     diagnostic_values = np.array([[node["proposal_diagnostics"][name]
                                     for name in DIAGNOSTIC_NAMES] for node in nodes])
@@ -882,8 +908,11 @@ def build_artifact(run_directories, output_directory, bl=None,
         energy_memory_scale=np.array([
             row["energy"].get("memory_scale", 1.0) for row in baseline], dtype=float),
         correction_parameter_names=np.array(CORRECTION_PARAMETER_NAMES),
+        correction_trust_amplitude=np.array(CENTRAL_AMPLITUDE),
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
         beta_deployed=beta_deployed, beta_feature_center=beta_feature_center,
+        beta_feature_lower=beta_feature_lower,
+        beta_feature_upper=beta_feature_upper,
         feature_lower=np.min(feature_values, axis=0), feature_upper=np.max(feature_values, axis=0),
         diagnostic_lower=np.min(diagnostic_values, axis=0),
         diagnostic_upper=np.max(diagnostic_values, axis=0),
@@ -906,6 +935,7 @@ def build_artifact(run_directories, output_directory, bl=None,
         "n_coefficient_nodes": len(coefficient_rows),
         "coefficient_fit": "shared_baseline_gls_central_amplitudes_multivariate_v2",
         "correction_parameters": list(CORRECTION_PARAMETER_NAMES),
+        "correction_trust_amplitude": CENTRAL_AMPLITUDE,
         "correction_bounds": list(correction_bounds),
         "correction_digest": correction_digest,
         "coefficient_validation_relative_rmse_max": (

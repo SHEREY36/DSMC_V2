@@ -19,6 +19,7 @@ from dsmc_v2_contracts import (
 from .artifact import MicroscopicClosure, VariationalClosure
 from .kernel import SpherocylinderKernel
 from .legacy_models import FrozenLossModel, LegacyModels
+from .non_gaussian import NonGaussianDiagnostics
 from .ntc import NTCWorkspace, candidate_count
 from .particle import particle_parameters
 from .pressure import accumulate_pij_c, compute_pij_k, normalise_pij_c
@@ -143,6 +144,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     end_time = float(config["time"]["t_end"])
     tau_end = config["time"].get("tau_end")
     tau_end = None if tau_end is None else float(tau_end)
+    hcs_rescale = bool(config.get("simulation", {}).get(
+        "hcs_rescale_temperature", False))
+    if hcs_rescale and flow_mode != "hcs":
+        raise ValueError("HCS temperature rescaling is only valid for flow.mode=hcs")
+    initial_ttr, _, initial_total = state.temperatures(params.mass)
+    rescale_reference = initial_ttr if sphere else initial_total
     vrmax = 5.0 * np.sqrt(2.0) * np.sqrt(ktt / params.mass)
     time, collisions, output_index = 0.0, 0, 0
     workspace = NTCWorkspace(capacity=1024, seed=seed)
@@ -163,6 +170,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             output_path.stem + "_orientation.txt")
     if orientation_path is not None:
         orientation_path.parent.mkdir(parents=True, exist_ok=True)
+    non_gaussian = NonGaussianDiagnostics(
+        config, output_path, count, params.mass, params.inertia, sphere)
     pressure_accumulator = np.zeros((3, 3)) if flow_mode == "usf" else None
     last_pressure_time = 0.0
     audit_enabled = bool(config.get("diagnostics", {}).get("collision_audit", False))
@@ -194,6 +203,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             tau = collisions / float(count)
             if tau >= output_index * dtau:
                 _write_row(handle, time, tau, state, params.mass)
+                non_gaussian.maybe_sample(time, tau, state)
                 if pressure_handle is not None:
                     kinetic = compute_pij_k(state.velocity, params.mass, volume)
                     collisional = normalise_pij_c(
@@ -331,8 +341,20 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                          eij_override=normal)
             if vrmax < vrmax_temp:
                 vrmax = vrmax_temp
+            if hcs_rescale:
+                current_ttr, _, current_total = state.temperatures(params.mass)
+                current_reference = current_ttr if sphere else current_total
+                if current_reference <= 0.0:
+                    raise FloatingPointError(
+                        "cannot rescale an HCS state with non-positive temperature")
+                scale = math.sqrt(rescale_reference / current_reference)
+                state.rescale_thermal_state(scale)
+                # Every relative speed, including the current NTC majorant,
+                # receives exactly the same similarity factor.
+                vrmax *= scale
             state.advance_axes(dt)
             time += dt
+    non_gaussian_summary = non_gaussian.close()
     total_seconds = wallclock.perf_counter() - march_started
     closure_seconds += 0.0 if kernel is None else kernel.closure_seconds
     diagnostics = {
@@ -375,6 +397,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "pressure_output": None if pressure_path is None else str(pressure_path),
         "orientation_output": (None if orientation_path is None
                                else str(orientation_path)),
+        "hcs_rescale_temperature": hcs_rescale,
+        "non_gaussian": non_gaussian_summary,
     }
     if audit_enabled:
         accepted = int(audit["accepted_pairs"])
