@@ -137,9 +137,11 @@ if [[ "$RESUME_FROM_MISSING" == "true" ]]; then
     hpc/python.sh hpc/filter_missing_excitation.py \
     --manifest "$MISSING_MANIFEST" --output "$MISSING_RETRY_MANIFEST"
   RETRY_ROWS=$(( $(wc -l < "$MISSING_RETRY_MANIFEST") - 1 ))
+  MISSING_SUBMITTED_ROWS=$RETRY_ROWS
   MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_RETRY_MANIFEST" "$RETRY_ROWS")
   PROP_JOB="reused"
 else
+  MISSING_SUBMITTED_ROWS=$MISSING_ROWS
   PROP_RAW=$(sbatch --parsable --array="0-$((MISSING_NODES - 1))%$PROP_CONCURRENT" \
     hpc/excitation_propensity_array.slurm "$MISSING_MANIFEST")
   PROP_JOB=${PROP_RAW%%;*}
@@ -247,7 +249,7 @@ NG_QA_JOB=${NG_QA_RAW%%;*}
 
 echo "missing_correction_propensity_job=$PROP_JOB ($MISSING_NODES nodes; $PROP_CONCURRENT x 12 cores)"
 echo "support_refinement_propensity_job=$REFINE_PROP_JOB (cache verification for 36 completed nodes)"
-echo "missing_correction_fit_job=${MISSING_FIT_JOBS:-none} ($MISSING_ROWS rows distributed over at most ${EXCITATION_MAX_CORES:-256} workers)"
+echo "missing_correction_fit_job=${MISSING_FIT_JOBS:-none} ($MISSING_SUBMITTED_ROWS rows submitted; $MISSING_ROWS rows in complete design; distributed over at most ${EXCITATION_MAX_CORES:-256} workers)"
 echo "support_refinement_fit_job=$REFINE_FIT_JOBS ($REFINE_ROWS rows distributed over at most ${EXCITATION_MAX_CORES:-256} workers)"
 echo "combined_correction_QA_job=$FULL_QA_JOB"
 echo "coefficient_surface_job=$COEFFICIENT_JOB (compiled once, shared by all artifact tasks)"

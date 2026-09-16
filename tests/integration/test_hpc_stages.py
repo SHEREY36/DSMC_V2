@@ -89,6 +89,7 @@ class HPCStageTests(unittest.TestCase):
         self.assertNotIn("submit_fit_chunks", submitter)
         self.assertIn('EXCITATION_MAX_CORES:-256', submitter)
         self.assertIn("verify_python_environment.py", submitter)
+        self.assertIn("MISSING_SUBMITTED_ROWS=$RETRY_ROWS", submitter)
         self.assertIn("#SBATCH --time=14-00:00:00", worker)
         self.assertIn("EXCITATION_IMPORT_RETRIES:-3", worker)
 
