@@ -90,7 +90,8 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn('EXCITATION_MAX_CORES:-256', submitter)
         self.assertIn("verify_python_environment.py", submitter)
         self.assertIn("MISSING_SUBMITTED_ROWS=$RETRY_ROWS", submitter)
-        self.assertIn("#SBATCH --time=14-00:00:00", worker)
+        self.assertIn("#SBATCH --time=3-00:00:00", worker)
+        self.assertIn('EXCITATION_FIT_TIME:-3-00:00:00', submitter)
         self.assertIn("EXCITATION_IMPORT_RETRIES:-3", worker)
 
     def test_excitation_resume_manifest_contains_only_absent_outputs(self):

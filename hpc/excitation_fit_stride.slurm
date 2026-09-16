@@ -10,7 +10,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
-#SBATCH --time=14-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --output=logs/excitation_fit_%A_%a.out
 #SBATCH --error=logs/excitation_fit_%A_%a.err
 

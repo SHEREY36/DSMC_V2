@@ -125,7 +125,7 @@ submit_fit_workers() {
   [[ -n "$dependency" ]] && dependency_args+=(--dependency="afterok:$dependency")
   local raw
   raw=$(sbatch --parsable --kill-on-invalid-dep=yes \
-    "${dependency_args[@]}" --time="${EXCITATION_FIT_TIME:-14-00:00:00}" \
+    "${dependency_args[@]}" --time="${EXCITATION_FIT_TIME:-3-00:00:00}" \
     --array="0-$((workers - 1))%$workers" \
     --export="ALL,EXCITATION_BOOTSTRAP=50,EXCITATION_OFFSETS=128" \
     hpc/excitation_fit_stride.slurm "$manifest")
