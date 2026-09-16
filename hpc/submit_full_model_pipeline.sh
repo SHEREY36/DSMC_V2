@@ -41,6 +41,9 @@ NG_MANIFEST="manifests/hcs_ng_${TAG}_domain_pilot.csv"
 NG_RESULTS="results/hcs_ng_${TAG}_domain_pilot"
 
 mkdir -p logs results/closure_estimates
+# Fail before submitting any array if the selected immutable environment cannot
+# load and execute the SciPy components used by fit and artifact workers.
+hpc/python.sh hpc/verify_python_environment.py
 FRESH_TARGETS=("$PRECOMPUTED" "$ARTIFACT_DIR" "results/hcs_${TAG}_reference" \
   "$HCS_FULL_RESULTS" "$USF_PILOT_RESULTS" "$USF_FULL_RESULTS" "$NG_RESULTS")
 if [[ "$RESUME_FROM_MISSING" != "true" ]]; then

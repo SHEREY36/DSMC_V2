@@ -30,10 +30,21 @@ else
 fi
 
 while (( INDEX < STOP && INDEX < ROWS )); do
-  PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
-    hpc/python.sh hpc/run_excitation_task.py \
-      --manifest "$MANIFEST" --index "$INDEX" \
-      --bootstrap "${EXCITATION_BOOTSTRAP:-50}" \
-      --propensity-offsets "${EXCITATION_OFFSETS:-128}"
+  STATUS=1
+  for ATTEMPT in $(seq 1 "${EXCITATION_IMPORT_RETRIES:-3}"); do
+    if PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
+      hpc/python.sh hpc/run_excitation_task.py \
+        --manifest "$MANIFEST" --index "$INDEX" \
+        --bootstrap "${EXCITATION_BOOTSTRAP:-50}" \
+        --propensity-offsets "${EXCITATION_OFFSETS:-128}"; then
+      STATUS=0
+      break
+    else
+      STATUS=$?
+      echo "excitation row $INDEX failed before publishing output; import/runtime retry $ATTEMPT" >&2
+      sleep $(( 5 * ATTEMPT ))
+    fi
+  done
+  (( STATUS == 0 )) || exit "$STATUS"
   INDEX=$(( INDEX + STRIDE ))
 done

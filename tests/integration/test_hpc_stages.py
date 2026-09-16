@@ -88,7 +88,9 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("submit_fit_workers", submitter)
         self.assertNotIn("submit_fit_chunks", submitter)
         self.assertIn('EXCITATION_MAX_CORES:-256', submitter)
+        self.assertIn("verify_python_environment.py", submitter)
         self.assertIn("#SBATCH --time=14-00:00:00", worker)
+        self.assertIn("EXCITATION_IMPORT_RETRIES:-3", worker)
 
     def test_excitation_resume_manifest_contains_only_absent_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -162,9 +164,14 @@ class HPCStageTests(unittest.TestCase):
         setup = (ROOT / "hpc" / "setup_negishi_env.sh").read_text()
         submitter = (ROOT / "hpc" / "submit_hcs_plot.sh").read_text()
         self.assertIn("'matplotlib>=3.7'", setup)
-        self.assertIn("import matplotlib", setup)
+        self.assertIn("verify_python_environment.py", setup)
         self.assertIn("import matplotlib", submitter)
         self.assertIn("does not rerun DSMC", submitter)
+
+    def test_explicit_python_selection_never_silently_falls_back(self):
+        launcher = (ROOT / "hpc" / "python.sh").read_text()
+        self.assertIn("DSMC_V2_PYTHON is not executable", launcher)
+        self.assertIn('exec "$DSMC_V2_PYTHON" "$@"', launcher)
 
     def test_hcs_drift_gate_uses_the_replicate_mean(self):
         plot_path = (ROOT / "DSMC_0D_v2" / "scripts"
