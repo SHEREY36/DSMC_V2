@@ -114,7 +114,7 @@ REFINE_NODES=36
 # at most 256 long-lived workers and distribute rows by stride; this keeps all
 # purchased cores occupied without injecting ~13,000 pending jobs at once.
 submit_fit_workers() {
-  local manifest=$1 rows=$2 dependency=${3:-}
+  local manifest=$1 rows=$2 dependency=${3:-} time_limit=${4:-3-00:00:00}
   if (( rows == 0 )); then
     echo ""
     return
@@ -125,7 +125,7 @@ submit_fit_workers() {
   [[ -n "$dependency" ]] && dependency_args+=(--dependency="afterok:$dependency")
   local raw
   raw=$(sbatch --parsable --kill-on-invalid-dep=yes \
-    "${dependency_args[@]}" --time="${EXCITATION_FIT_TIME:-3-00:00:00}" \
+    "${dependency_args[@]}" --time="$time_limit" \
     --array="0-$((workers - 1))%$workers" \
     --export="ALL,EXCITATION_BOOTSTRAP=50,EXCITATION_OFFSETS=128" \
     hpc/excitation_fit_stride.slurm "$manifest")
@@ -138,19 +138,22 @@ if [[ "$RESUME_FROM_MISSING" == "true" ]]; then
     --manifest "$MISSING_MANIFEST" --output "$MISSING_RETRY_MANIFEST"
   RETRY_ROWS=$(( $(wc -l < "$MISSING_RETRY_MANIFEST") - 1 ))
   MISSING_SUBMITTED_ROWS=$RETRY_ROWS
-  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_RETRY_MANIFEST" "$RETRY_ROWS")
+  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_RETRY_MANIFEST" "$RETRY_ROWS" "" \
+    "${EXCITATION_MISSING_FIT_TIME:-${EXCITATION_FIT_TIME:-3-00:00:00}}")
   PROP_JOB="reused"
 else
   MISSING_SUBMITTED_ROWS=$MISSING_ROWS
   PROP_RAW=$(sbatch --parsable --array="0-$((MISSING_NODES - 1))%$PROP_CONCURRENT" \
     hpc/excitation_propensity_array.slurm "$MISSING_MANIFEST")
   PROP_JOB=${PROP_RAW%%;*}
-  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_MANIFEST" "$MISSING_ROWS" "$PROP_JOB")
+  MISSING_FIT_JOBS=$(submit_fit_workers "$MISSING_MANIFEST" "$MISSING_ROWS" "$PROP_JOB" \
+    "${EXCITATION_MISSING_FIT_TIME:-${EXCITATION_FIT_TIME:-3-00:00:00}}")
 fi
 REFINE_PROP_RAW=$(sbatch --parsable --array="0-$((REFINE_NODES - 1))%3" \
   hpc/excitation_propensity_array.slurm "$REFINE_MANIFEST")
 REFINE_PROP_JOB=${REFINE_PROP_RAW%%;*}
-REFINE_FIT_JOBS=$(submit_fit_workers "$REFINE_MANIFEST" "$REFINE_ROWS" "$REFINE_PROP_JOB")
+REFINE_FIT_JOBS=$(submit_fit_workers "$REFINE_MANIFEST" "$REFINE_ROWS" "$REFINE_PROP_JOB" \
+  "${EXCITATION_REFINE_FIT_TIME:-${EXCITATION_FIT_TIME:-1-00:00:00}}")
 ALL_FIT_JOBS=$REFINE_FIT_JOBS
 [[ -n "$MISSING_FIT_JOBS" ]] && ALL_FIT_JOBS="$MISSING_FIT_JOBS:$ALL_FIT_JOBS"
 FULL_QA_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes \
