@@ -164,6 +164,43 @@ class HPCStageTests(unittest.TestCase):
         submitter = (ROOT / "hpc" / "submit_hcs_validation.sh").read_text()
         self.assertIn('[[ "$MODE" == "full-domain" ]] && CORRECTIONS=true', submitter)
         self.assertIn('"$ARTIFACT" "$CORRECTIONS"', submitter)
+        self.assertIn("submit_hcs_learned_low.sh", submitter)
+
+    def test_learned_extremes_hcs_uses_only_exact_far_from_one_nodes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / "artifact.npz"
+            surface = np.array([
+                [0.5, 0.0125, 1.1], [0.5, 0.2, 1.1],
+                [0.5, 1.0, 1.1], [0.5, 2.0, 1.1],
+                [0.5, 0.2, 2.0], [0.5, 1.0, 2.0], [0.5, 2.0, 2.0],
+                [1.0, 0.0125, 1.1], [1.0, 0.2, 1.1],
+                [1.0, 1.0, 1.1], [1.0, 2.0, 1.1],
+                [1.0, 0.2, 2.0], [1.0, 1.0, 2.0], [1.0, 2.0, 2.0],
+            ])
+            np.savez_compressed(artifact, surface_coordinates=surface)
+            manifest = Path(temporary) / "far_hcs.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts"
+                    / "make_hcs_validation_manifest.py"),
+                "--mode", "learned-extremes", "--artifact", str(artifact),
+                "--replicates", "2", "--output", str(manifest),
+                "--results", str(Path(temporary) / "results"),
+            ], check=True, capture_output=True, text=True)
+            with manifest.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2 * 3 * 2 + 2 * 2 * 2)
+            self.assertEqual({row["campaign_mode"] for row in rows},
+                             {"learned-extremes"})
+            self.assertEqual({float(row["theta0"]) for row in rows},
+                             {0.0125, 0.2, 2.0})
+            self.assertNotIn(1.0, {float(row["theta0"]) for row in rows})
+
+        learned_submitter = (ROOT / "hpc" / "submit_hcs_learned_low.sh").read_text()
+        self.assertIn("--theta0 0.0125 --theta0 0.2", learned_submitter)
+        self.assertIn("12 * 2 * REPLICATES", learned_submitter)
+        self.assertIn('"$MANIFEST" "$ARTIFACT" false true true',
+                      learned_submitter)
 
     def test_negishi_environment_includes_hcs_plot_dependency(self):
         setup = (ROOT / "hpc" / "setup_negishi_env.sh").read_text()

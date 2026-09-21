@@ -36,6 +36,18 @@ def design(mode: str, artifact: Path):
         alphas, ars = surface_axes(artifact)
         return tuple((a, ar) for a in alphas for ar in ars), SEEDS[:4], \
             ("scaled",), 4000, 200.0, 100.0, 5.0
+    if mode == "sweep":
+        # Paper-style cross design (cf. Megias & Santos 2023, Figs. 4-5 with
+        # AR in place of beta).  alpha sweeps at three AR, AR sweeps at the
+        # calibrated alpha nodes, with alpha=1 as the exact-equipartition
+        # (Gaussian) control.  AR<=1.2 is excluded: those near-sphere nodes
+        # have not reached a stationary HCS in any affordable run.
+        alpha_sweep = tuple((a, ar) for ar in (1.5, 2.0, 3.0)
+                            for a in (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00))
+        ar_sweep = tuple((a, ar) for a in (0.50, 0.80, 0.95, 1.00)
+                         for ar in (1.35, 2.5))
+        return alpha_sweep + ar_sweep, SEEDS[:10], ("scaled",), 10000, \
+            1100.0, 100.0, 2.0
     if mode == "map":
         _, ars = surface_axes(artifact)
         alphas = tuple(np.round(np.arange(0.50, 1.00, 0.05), 2))
@@ -56,8 +68,8 @@ def design(mode: str, artifact: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("engineering", "domain-pilot", "map",
-                                            "tails", "sphere-controls"),
+    parser.add_argument("--mode", choices=("engineering", "domain-pilot", "sweep",
+                                            "map", "tails", "sphere-controls"),
                         default="engineering")
     parser.add_argument("--artifact", required=True)
     parser.add_argument("--output", required=True)

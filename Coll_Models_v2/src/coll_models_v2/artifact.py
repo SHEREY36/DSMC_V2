@@ -28,7 +28,11 @@ from .fit_coefficients import (
     fit_correction_coefficients,
 )
 from .response import CENTRAL_AMPLITUDE
-from .correction_support import HELDOUT_AMPLITUDE, assess_heldout_support
+from .correction_support import (
+    HELDOUT_AMPLITUDE,
+    assess_angular_support,
+    assess_heldout_support,
+)
 from .projections import (
     _legendre_nodes,
     _bridge_spline,
@@ -177,7 +181,8 @@ def _baseline_source_digest(nodes: list[dict]) -> str:
         node for node in nodes if int(node.get("ensemble_id", 0)) == 0])
 
 
-def write_coefficient_rows(node_estimate_directories, output_path) -> dict:
+def write_coefficient_rows(node_estimate_directories, output_path,
+                           release_policy: str = "strict") -> dict:
     """Compile the expensive response/support fit once for all array tasks."""
     directories = ([node_estimate_directories]
                    if isinstance(node_estimate_directories, (str, os.PathLike))
@@ -188,13 +193,14 @@ def write_coefficient_rows(node_estimate_directories, output_path) -> dict:
     keys = [_node_key(node) for node in nodes]
     if len(keys) != len(set(keys)):
         raise ValueError("coefficient inputs contain duplicate grid/ensemble keys")
-    rows = _fit_coefficient_rows(nodes)
+    rows = _fit_coefficient_rows(nodes, release_policy=release_policy)
     payload = {
         "schema": "correction-coefficient-surface-v1",
         "source_digest": _coefficient_source_digest(nodes),
         "baseline_source_digest": _baseline_source_digest(nodes),
         "n_source_nodes": len(nodes),
         "n_coefficient_nodes": len(rows),
+        "release_policy": release_policy,
         "coefficient_rows": rows,
     }
     target = Path(output_path)
@@ -215,6 +221,10 @@ def _coefficient_rows_from_cache(nodes: list[dict], path,
     if payload.get("schema") != "correction-coefficient-surface-v1" \
             or actual_digest != expected_digest:
         raise ValueError("stale or mismatched correction coefficient cache")
+    if payload.get("release_policy", "strict") != "strict":
+        raise ValueError(
+            "selective evidence coefficients cannot enter a production artifact; "
+            "use build_selective_evidence_artifact.py")
     rows = payload.get("coefficient_rows", [])
     expected = ({_node_key(node)[:3] for node in nodes
                  if int(node.get("ensemble_id", 0)) != 0}
@@ -227,7 +237,10 @@ def _coefficient_rows_from_cache(nodes: list[dict], path,
     return rows
 
 
-def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
+def _fit_coefficient_rows(nodes: list[dict],
+                          release_policy: str = "strict") -> list[dict]:
+    if release_policy not in ("strict", "validated-angular-only-v1"):
+        raise ValueError(f"unsupported correction release policy: {release_policy}")
     rows = []
     grouped = defaultdict(list)
     for node in nodes:
@@ -238,7 +251,7 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
         fitted = fit_correction_coefficients(group)
         if not fitted["identifiable"]:
             raise ValueError(f"excitation design is rank deficient at {key}")
-        if not fitted["linearity_pass"]:
+        if release_policy == "strict" and not fitted["linearity_pass"]:
             raise ValueError(
                 f"multivariate natural-parameter response is nonlinear at {key}")
         baseline = next(node for node in group
@@ -248,11 +261,46 @@ def _fit_coefficient_rows(nodes: list[dict]) -> list[dict]:
                              for node in excited
                              if abs(float(node["excitation"]["eta"]))
                              > CENTRAL_AMPLITUDE + 1.0e-12}, reverse=True)
-        validations = [assess_heldout_support(
-            baseline, excited, fitted, amplitude) for amplitude in candidates]
-        support = next((item for item in validations if item["pass"]),
-                       {"pass": False, "amplitude": CENTRAL_AMPLITUDE,
-                        "reason": "no_larger_amplitude_passed"})
+        if release_policy == "validated-angular-only-v1":
+            deployed = np.asarray(fitted["beta_deployed"], dtype=bool)
+            # The completed full-domain gate showed that the current energy
+            # response degrades held-out conditional laws.  Hold all four
+            # energy rows at zero; this evidence artifact tests only the
+            # independently successful angular response.
+            deployed[:4] = False
+            for index, name in enumerate(("eta1", "eta2"), start=4):
+                parameter = fitted["parameter_fits"][name]
+                if parameter.get("material_response", False) \
+                        and not parameter.get("linearity_pass", False):
+                    deployed[index] = False
+            central = [node for node in excited
+                       if np.isclose(abs(float(node["excitation"]["eta"])),
+                                     CENTRAL_AMPLITUDE)]
+            training_pass = bool(central and all(
+                node.get("qa", {}).get("sentinel_pass", False)
+                for node in central))
+            if not training_pass:
+                deployed[:] = False
+            fitted["beta_deployed"] = deployed.tolist()
+            validations = [assess_angular_support(
+                baseline, excited, fitted, amplitude) for amplitude in candidates]
+            support = next((item for item in validations if item["pass"]),
+                           {"pass": False, "amplitude": CENTRAL_AMPLITUDE,
+                            "reason": "no_independent_angular_support"})
+            if not support["pass"]:
+                deployed[4:] = False
+                fitted["beta_deployed"] = deployed.tolist()
+            fitted["release_policy"] = release_policy
+            fitted["energy_release"] = "held_back_distribution_validation_failure"
+            fitted["angular_training_sentinel_pass"] = training_pass
+            fitted["angular_release"] = bool(
+                training_pass and support["pass"] and np.any(deployed[4:]))
+        else:
+            validations = [assess_heldout_support(
+                baseline, excited, fitted, amplitude) for amplitude in candidates]
+            support = next((item for item in validations if item["pass"]),
+                           {"pass": False, "amplitude": CENTRAL_AMPLITUDE,
+                            "reason": "no_larger_amplitude_passed"})
         trust_amplitude = (float(support["amplitude"]) if support["pass"]
                            else CENTRAL_AMPLITUDE)
         trust_features = np.asarray([

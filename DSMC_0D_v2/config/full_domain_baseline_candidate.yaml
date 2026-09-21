@@ -1,0 +1,52 @@
+# Frozen full-domain schema-2.4 candidate selected by the 2026-09-18 local
+# HCS/USF evidence comparison.  Invariant corrections are deliberately off:
+# energy response failed distribution validation and angular response did not
+# improve paired USF dynamics across flows.
+schema_version: "2.2.0"
+
+particle:
+  AR: 2.0
+  radius: 0.5
+  mass: 1.0
+
+system:
+  kTt: 1.0
+  kTr: 1.0
+  alpha: 0.8
+  eta: 1.0
+  phi: 0.001
+  domain: [50.0, 50.0, 50.0]
+  C_alpha: 1.0
+
+time:
+  dt: 0.01
+  dtau: 0.1
+  t_end: 10.0
+  tau_end: null
+  equilibration_time: 0.0
+
+flow:
+  mode: hcs
+  shear_rate: 0.0
+
+simulation:
+  seeds: [42]
+  output_dir: results/
+  sphere_collision: false
+  use_isotropic_eps: true
+
+preprocessing:
+  model_root: DSMC_0D_v2/models
+  dissipation:
+    beta_a: 1.21
+    beta_b: 3.67
+
+microscopic_closure:
+  routing: variational_v2
+  angular: variational_v2
+  artifact: models/microscopic_closure_v2_usf_candidate/closure_v2.npz
+  invariant_corrections: false
+  state_update_cpp: 0.05
+  routing_artifact: models/microscopic_closure_v2/routing16_v2.json
+  vss_artifact: models/microscopic_closure_v2/vss_rank2_v2.json
+  rotational_direction_artifact: models/microscopic_closure_v2/rotational_direction_v2.npz

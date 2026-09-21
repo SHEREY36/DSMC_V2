@@ -119,13 +119,28 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                  isotropic_rotation=(
                                      config.get("microscopic_closure", {}).get("routing")
                                      == "variational_v2"))
-    routing, angular, closure = _closure_from_config(config)
+    exact_initial_temperatures = bool(config.get("simulation", {}).get(
+        "exact_initial_temperatures", False))
+    if exact_initial_temperatures and not sphere:
+        state.set_modal_temperatures(ktt, ktr, params.mass)
+    elastic_limit = config.get("microscopic_closure", {}).get(
+        "elastic_limit", "exact_bl")
+    if elastic_limit not in ("exact_bl", "closure"):
+        raise ValueError("microscopic_closure.elastic_limit must be exact_bl or closure")
+    if not sphere and alpha >= 1.0 and elastic_limit == "exact_bl":
+        # alpha=1 is a singular point of the fitted closure (no loss, and the
+        # near-sphere exchange is too slow to reach equipartition in any
+        # affordable run). It gets its own exact block and never queries the
+        # artifact, so it cannot fail closed at the hull boundary either.
+        routing, angular, closure = "elastic_bl", "legacy", None
+    else:
+        routing, angular, closure = _closure_from_config(config)
     if sphere:
         models = kernel = None
     else:
         dissipation = config["preprocessing"]["dissipation"]
         model_root = config["preprocessing"].get("model_root", "models")
-        if routing == "variational_v2":
+        if routing in ("variational_v2", "elastic_bl"):
             models = FrozenLossModel(model_root, float(dissipation["beta_a"]),
                                      float(dissipation["beta_b"]))
         else:
@@ -291,7 +306,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         normal, cr = -normal, -cr
                     speed = float(np.linalg.norm(vrel))
                     pair_before = None
-                    if audit_enabled and not sphere:
+                    if audit_enabled and not sphere and routing != "elastic_bl":
                         pair_before = _pair_modal_energies(
                             state, p1, p2, v1, v2, params.mass)
                         pair_total = pair_before[0] + pair_before[1]
@@ -420,6 +435,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "orientation_output": (None if orientation_path is None
                                else str(orientation_path)),
         "hcs_rescale_temperature": hcs_rescale,
+        "exact_initial_temperatures": exact_initial_temperatures,
         "non_gaussian": non_gaussian_summary,
     }
     if audit_enabled:
@@ -471,6 +487,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         else:
             diagnostics["collision_audit"] = {
                 "post_ntc_pairs": post_ntc, "accepted_pairs": 0}
+    diagnostics["elastic_limit"] = elastic_limit
     diagnostics["runtime_gate"] = (runtime_gate_status(diagnostics)
-                                   if routing == "variational_v2" else None)
+                                   if routing in ("variational_v2", "elastic_bl")
+                                   else None)
     return diagnostics

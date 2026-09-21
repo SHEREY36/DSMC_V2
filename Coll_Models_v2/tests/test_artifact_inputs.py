@@ -3,11 +3,30 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from coll_models_v2.artifact import _load_node_estimates
+from coll_models_v2.artifact import (
+    _coefficient_rows_from_cache,
+    _coefficient_source_digest,
+    _load_node_estimates,
+)
 from coll_models_v2.estimate import NODE_ESTIMATE_CONTRACT
 
 
 class ArtifactInputTests(unittest.TestCase):
+    def test_selective_evidence_cache_cannot_enter_production_builder(self):
+        nodes = [{"alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
+                  "ensemble_id": 0}]
+        payload = {
+            "schema": "correction-coefficient-surface-v1",
+            "release_policy": "validated-angular-only-v1",
+            "source_digest": _coefficient_source_digest(nodes),
+            "coefficient_rows": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "coefficients.json"
+            path.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "selective evidence"):
+                _coefficient_rows_from_cache(nodes, path)
+
     def test_precomputed_node_must_cover_exact_shards(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

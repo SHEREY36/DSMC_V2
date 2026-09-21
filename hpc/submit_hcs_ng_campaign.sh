@@ -5,9 +5,11 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 MODE=${1:-engineering}
-ARTIFACT=${2:-models/microscopic_closure_v2_candidate/closure_v2.npz}
+ARTIFACT=${2:-models/microscopic_closure_v2_usf_candidate/closure_v2.npz}
 TAG=${3:-${MODE}_v1}
-HCS_SUMMARY=${4:-}
+# Fourth argument: the engineering-pilot summary for MODE=sweep, otherwise
+# the full-domain HCS validation summary.
+GATE_SUMMARY=${4:-}
 MANIFEST="manifests/hcs_ng_${TAG}.csv"
 RESULTS="results/hcs_ng_${TAG}"
 SUMMARY="$RESULTS/summary.json"
@@ -23,8 +25,10 @@ PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh \
 CHECK=(--manifest "$MANIFEST" --artifact "$ARTIFACT")
 if [[ "$MODE" == "engineering" ]]; then
   CHECK+=(--allow-engineering)
-elif [[ -n "$HCS_SUMMARY" ]]; then
-  CHECK+=(--hcs-summary "$HCS_SUMMARY")
+elif [[ "$MODE" == "sweep" && -n "$GATE_SUMMARY" ]]; then
+  CHECK+=(--pilot-summary "$GATE_SUMMARY")
+elif [[ -n "$GATE_SUMMARY" ]]; then
+  CHECK+=(--hcs-summary "$GATE_SUMMARY")
 fi
 PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh hpc/check_hcs_ng_prerequisites.py "${CHECK[@]}"
 ROWS=$(( $(wc -l < "$MANIFEST") - 1 ))

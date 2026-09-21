@@ -39,6 +39,15 @@ def main() -> None:
     parser.add_argument("--config", default="DSMC_0D_v2/config/default.yaml")
     parser.add_argument("--artifact", default="models/microscopic_closure_v2/closure_v2.npz")
     parser.add_argument("--enable-invariant-corrections", action="store_true")
+    parser.add_argument(
+        "--exact-initial-temperatures", action="store_true",
+        help=("normalize the finite ensemble to the requested modal "
+              "temperatures; required for exact closure-hull boundary starts"))
+    parser.add_argument(
+        "--rescale-hcs-temperature", action="store_true",
+        help=("uniformly rescale both velocity modes during HCS evolution; "
+              "this changes physical time but preserves collision-count "
+              "dynamics and prevents numerical freezing"))
     args = parser.parse_args()
 
     row = row_at(Path(args.manifest), args.task)
@@ -67,6 +76,10 @@ def main() -> None:
                             "t_end": 10000.0, "tau_end": float(row["tau_end"]),
                             "equilibration_time": 0.0})
     config["flow"] = {"mode": "hcs", "shear_rate": 0.0}
+    config.setdefault("simulation", {})["exact_initial_temperatures"] = bool(
+        args.exact_initial_temperatures)
+    config["simulation"]["hcs_rescale_temperature"] = bool(
+        args.rescale_hcs_temperature)
     config["microscopic_closure"].update({
         "routing": "variational_v2", "angular": "variational_v2",
         "artifact": args.artifact,

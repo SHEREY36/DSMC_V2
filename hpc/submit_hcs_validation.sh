@@ -10,6 +10,10 @@ DEPENDENCY=${3:-}
 MODE=${HCS_MODE:-compact}
 RESULTS=${HCS_RESULTS:-results/hcs_validation}
 CORRECTIONS=${HCS_CORRECTIONS:-}
+if [[ "$MODE" == "learned-extremes" ]]; then
+  echo "use hpc/submit_hcs_learned_low.sh for boundary-safe learned-node validation" >&2
+  exit 2
+fi
 if [[ -z "$CORRECTIONS" ]]; then
   [[ "$MODE" == "full-domain" ]] && CORRECTIONS=true || CORRECTIONS=false
 fi

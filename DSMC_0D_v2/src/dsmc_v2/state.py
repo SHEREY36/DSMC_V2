@@ -81,6 +81,31 @@ class ParticleState:
         self.omega *= scale
         self.rotational_energy *= scale * scale
 
+    def set_modal_temperatures(self, ttr: float, trot: float, mass: float) -> None:
+        """Normalize a finite ensemble to declared translational/rotational T.
+
+        Maxwellian draws have O(N**-1/2) fluctuations in their realized modal
+        temperatures.  Usually those fluctuations are useful independent
+        initial conditions.  A validation initialized on an exact boundary of
+        a calibrated closure hull instead needs the requested macroscopic
+        state exactly; otherwise a valid random draw can start just outside
+        the model for a purely finite-sample reason.
+        """
+        target_ttr, target_trot = float(ttr), float(trot)
+        if not np.isfinite(target_ttr) or target_ttr <= 0.0:
+            raise ValueError("target translational temperature must be positive")
+        if not np.isfinite(target_trot) or target_trot <= 0.0:
+            raise ValueError("target rotational temperature must be positive")
+        current_ttr, current_trot, _ = self.temperatures(float(mass))
+        if current_ttr <= 0.0 or current_trot <= 0.0:
+            raise ValueError("cannot normalize a state with non-positive temperature")
+        velocity_scale = np.sqrt(target_ttr / current_ttr)
+        rotation_scale = np.sqrt(target_trot / current_trot)
+        self.velocity *= velocity_scale
+        self.omega *= rotation_scale
+        self.rotational_energy *= rotation_scale * rotation_scale
+        self.normalize_constraints()
+
     def orientation_tensor(self) -> np.ndarray:
         """Return the traceless nematic tensor Q=<uu>-I/3."""
         second_moment = self.axis.T @ self.axis / float(self.count)

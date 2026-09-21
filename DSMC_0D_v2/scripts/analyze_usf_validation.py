@@ -204,10 +204,11 @@ def summarize(rows: list[dict[str, str]], references: dict,
                 / np.sqrt(np.mean(theta_ref**2))),
             "physics_pass": all(case["physics_pass"] for case in selected),
         }
-    correction_improves_stress = (
-        "uncorrected" not in by_arm
-        or by_arm["corrected"]["stress_relative_rmse"]
-        < by_arm["uncorrected"]["stress_relative_rmse"])
+    correction_improves_stress = bool(
+        "corrected" in by_arm and (
+            "uncorrected" not in by_arm
+            or by_arm["corrected"]["stress_relative_rmse"]
+            < by_arm["uncorrected"]["stress_relative_rmse"]))
     corrected_pass = by_arm.get("corrected", {}).get("physics_pass", False)
     performance_pass = all(
         record["closure_overhead_fraction"] < 0.15 for record, _ in loaded
@@ -283,9 +284,10 @@ def plot_summary(summary: dict, loaded: list, figure: Path) -> None:
             ax.set_xlabel(r"coefficient of restitution $\alpha$")
             ax.grid(alpha=0.2)
     handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False)
     fig.suptitle("Frozen-artifact uniform-shear validation", y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.legend(handles, labels, loc="upper center", ncol=len(labels),
+               bbox_to_anchor=(0.5, 0.965), frameon=False)
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
     figure.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(figure, dpi=180, bbox_inches="tight")
     plt.close(fig)

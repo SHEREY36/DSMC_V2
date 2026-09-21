@@ -23,8 +23,9 @@ def _analysis_module():
 
 
 def _test_artifact(tmp_path):
-    surface = np.array([[alpha, 1.0, ar]
+    surface = np.array([[alpha, theta, ar]
                         for alpha in (0.5, 0.8, 0.95, 1.0)
+                        for theta in (0.2, 1.0, 2.0)
                         for ar in (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)])
     beta = np.array([[alpha, theta, ar]
                      for alpha in (0.8, 0.95, 1.0)
@@ -150,3 +151,50 @@ def test_full_domain_correction_preflight_fails_closed(tmp_path):
     np.savez_compressed(artifact, surface_coordinates=surface,
                         beta_coordinates=surface)
     assert subprocess.run(command).returncode == 0
+
+
+def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
+    _, rows = make_manifest(tmp_path, "sweep", _test_artifact(tmp_path))
+    cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
+    assert len(cases) == 29 and len(rows) == 29 * 10
+    assert min(ar for _, ar in cases) == 1.35
+    assert {alpha for alpha, ar in cases if ar == 2.0} == {
+        0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0}
+    assert {ar for alpha, ar in cases if alpha == 0.8} == {1.35, 1.5, 2.0, 2.5, 3.0}
+    assert {int(row["particles"]) for row in rows} == {10000}
+    assert {row["arm"] for row in rows} == {"scaled"}
+
+
+def test_sweep_requires_passing_pilot_on_same_bytes(tmp_path):
+    surface = np.array([[alpha, theta, ar]
+                        for alpha in (0.5, 0.8, 0.95, 1.0)
+                        for theta in (0.2, 1.0, 2.0)
+                        for ar in (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)])
+    artifact = tmp_path / "full.npz"
+    # No beta surface: the sweep must not depend on the correction hull.
+    np.savez_compressed(artifact, surface_coordinates=surface)
+    manifest, _ = make_manifest(tmp_path, "sweep", artifact)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    pilot = tmp_path / "pilot.json"
+    command = [sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+               "--manifest", str(manifest), "--artifact", str(artifact)]
+    missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert missing.returncode != 0 and "pilot-summary" in missing.stderr
+    for payload, ok in (
+            ({"mode": "engineering", "physics_campaign_pass": False,
+              "artifact_sha256": digest}, False),
+            ({"mode": "engineering", "physics_campaign_pass": True,
+              "artifact_sha256": "0" * 64}, False),
+            ({"mode": "engineering", "physics_campaign_pass": True,
+              "artifact_sha256": digest}, True)):
+        pilot.write_text(json.dumps(payload))
+        result = subprocess.run(command + ["--pilot-summary", str(pilot)],
+                                cwd=ROOT, text=True, capture_output=True)
+        assert (result.returncode == 0) == ok, result.stderr
+
+
+def test_ng_runner_disables_invariant_corrections():
+    text = (ROOT / "DSMC_0D_v2/scripts/run_hcs_ng_task.py").read_text()
+    assert "invariant_corrections=True" not in text
+    assert "invariant_corrections=False" in text
+    assert "full_domain_baseline_candidate.yaml" in text

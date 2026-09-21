@@ -17,6 +17,11 @@ def rotational_collision_number(theta: float, alpha: float) -> float:
     return 1.67 if alpha >= 1.0 else 0.39 * theta**2 + 0.09 * theta + 1.67
 
 
+# Hong & Morris exchange number for the exact elastic block: one pair
+# collision in Z_r exchanges energy between translation and rotation.
+ELASTIC_ROTATIONAL_COLLISION_NUMBER = 5.0 / 3.0
+
+
 def rank0_ftr(c_alpha: float, theta: float) -> float:
     return float(c_alpha) * 3.0 * theta / (3.0 * theta + 2.0)
 
@@ -78,6 +83,7 @@ class SpherocylinderKernel:
         self.cell_variational = None
         self.negative_energy_repairs = 0
         self.closure_seconds = 0.0
+        self.elastic_rotational_collision_number = ELASTIC_ROTATIONAL_COLLISION_NUMBER
 
     def set_cell_routing(self, value: float | None) -> None:
         self.cell_routing = value
@@ -185,9 +191,53 @@ class SpherocylinderKernel:
         return (np.pi * d * d + 2.0 * d * length * (s1 + s2)
                 + length * length * triple)
 
+    def elastic_collide(self, state, p1: int, p2: int, normal: np.ndarray,
+                        v1: np.ndarray, v2: np.ndarray, vrel: np.ndarray,
+                        relative_speed: float) -> int:
+        """Exact elastic (alpha=1) block, independent of the fitted closure.
+
+        The loop follows Hong & Morris: with probability 1/Z_r the pair
+        exchanges energy, otherwise it scatters with its modal energies
+        unchanged. On exchange eps_tr' ~ Beta(2,2) and the rotational share is
+        split uniformly between the two particles. With the NTC acceptance
+        proportional to |g.n| (rate proportional to g) these are the
+        Borgnakke-Larsen detailed-balance laws for 3 relative-translational
+        and 2+2 rotational degrees of freedom, so theta=1 is the stationary
+        state exactly and at every aspect ratio. The relaxation *rate* is set
+        by Z_r, not by the particle shape.
+        """
+        vcom = 0.5 * (v1 + v2)
+        v1com, v2com = v1 - vcom, v2 - vcom
+        etr = 0.5 * self.params.mass * (np.dot(v1com, v1com) + np.dot(v2com, v2com))
+        erot = state.rotational_energy[p1] + state.rotational_energy[p2]
+        total = etr + erot
+        if total <= 0.0:
+            return 0
+        if self.vss_rng.random() < 1.0 / self.elastic_rotational_collision_number:
+            eps_tr = self.vss_rng.beta(2.0, 2.0)
+            eps_r1 = self.vss_rng.random()
+            etr, erot = eps_tr * total, (1.0 - eps_tr) * total
+            state.rotational_energy[p1] = eps_r1 * erot
+            state.rotational_energy[p2] = (1.0 - eps_r1) * erot
+            # Uniform tangent spin direction: the 2-DOF Maxwellian conditional
+            # on the axis carries no preferred direction.
+            state.set_spin_directions((p1, p2), self.direction_rng.normal(size=(2, 3)))
+        ghat = vrel / max(relative_speed, 1.0e-30)
+        mu = abs(float(np.dot(normal, ghat)))
+        epsilon = (self.vss_rng.uniform(0.0, 2.0 * np.pi)
+                   if self.isotropic_epsilon else 0.0)
+        magnitude = 2.0 * np.sqrt(etr / self.params.mass)
+        gpost = legacy_scatter(vrel, normal, chi_hs(mu, 1.0), magnitude, epsilon)
+        state.velocity[p1] = vcom + 0.5 * gpost
+        state.velocity[p2] = vcom - 0.5 * gpost
+        return 2
+
     def collide(self, state, p1: int, p2: int, normal: np.ndarray,
                 v1: np.ndarray, v2: np.ndarray, vrel: np.ndarray,
                 relative_speed: float, time: float, theta: float) -> int:
+        if self.routing_mode == "elastic_bl":
+            return self.elastic_collide(state, p1, p2, normal, v1, v2, vrel,
+                                        relative_speed)
         vcom = 0.5 * (v1 + v2)
         v1com, v2com = v1 - vcom, v2 - vcom
         etr_i = 0.5 * self.params.mass * (np.dot(v1com, v1com) + np.dot(v2com, v2com))

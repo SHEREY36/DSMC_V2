@@ -61,6 +61,17 @@ class StateTests(unittest.TestCase):
         for index in (5, 6, 9):
             self.assertAlmostEqual(features[index], 0.0, delta=2.0e-3)
 
+    def test_set_modal_temperatures_removes_finite_ensemble_error(self):
+        np.random.seed(912)
+        state = initialize_particles(
+            257, 0.03, 2.4, 1.0, 0.7, np.random.default_rng(913),
+            isotropic_rotation=True)
+        state.set_modal_temperatures(0.025, 2.0, 1.0)
+        ttr, trot, _ = state.temperatures(1.0)
+        self.assertAlmostEqual(ttr, 0.025, places=14)
+        self.assertAlmostEqual(trot, 2.0, places=14)
+        state.normalize_constraints()
+
 
 if __name__ == "__main__":
     unittest.main()

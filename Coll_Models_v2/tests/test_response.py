@@ -7,10 +7,68 @@ from coll_models_v2.fit_coefficients import (
     fit_correction_coefficients,
     fit_lambda1_coefficients,
 )
+from coll_models_v2.artifact import _fit_coefficient_rows
+from coll_models_v2.excitation import EXCITATION_FAMILIES
 from dsmc_v2_contracts import FEATURE_NAMES
 
 
 class ResponseFitTests(unittest.TestCase):
+    @staticmethod
+    def _linear_response_node_group(sentinel_pass=True):
+        center = np.zeros(len(FEATURE_NAMES))
+        baseline = {
+            "alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
+            "ensemble_id": 0,
+            "cell_features": dict(zip(FEATURE_NAMES, center)),
+            "energy": {"lambda1": 0.0, "lambda2": 0.0,
+                       "lambda3": 0.0, "lambda4": 0.0},
+            "angular": {"eta1": 0.0, "eta2": 0.0},
+            "uncertainty": {name: {"standard_error": 1.0e-5}
+                            for _, name in CORRECTION_PARAMETERS},
+        }
+        nodes = [baseline]
+        for family in EXCITATION_FAMILIES:
+            feature_index = FEATURE_NAMES.index(family.removesuffix("_opposed"))
+            for eta in (-0.5, -0.25, 0.25, 0.5):
+                delta = np.zeros(len(FEATURE_NAMES))
+                delta[feature_index] = eta
+                nodes.append({
+                    "alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
+                    "ensemble_id": len(nodes),
+                    "cell_features": dict(zip(FEATURE_NAMES, delta)),
+                    "energy": {"lambda1": 0.1 * eta,
+                               "lambda2": -0.1 * eta,
+                               "lambda3": 0.2 * eta,
+                               "lambda4": -0.2 * eta},
+                    "angular": {"eta1": 0.15 * eta,
+                                "eta2": -0.12 * eta},
+                    "uncertainty": {name: {"standard_error": 1.0e-5}
+                                    for _, name in CORRECTION_PARAMETERS},
+                    "excitation": {"family": family, "eta": eta},
+                    "qa": {"sentinel_pass": (
+                        sentinel_pass or not np.isclose(abs(eta), 0.25))},
+                })
+        return nodes
+
+    def test_angular_evidence_policy_holds_back_every_energy_row(self):
+        rows = _fit_coefficient_rows(
+            self._linear_response_node_group(),
+            release_policy="validated-angular-only-v1")
+        self.assertEqual(len(rows), 1)
+        deployed = np.asarray(rows[0]["beta_deployed"], dtype=bool)
+        self.assertFalse(np.any(deployed[:4]))
+        self.assertTrue(np.all(deployed[4:]))
+        self.assertTrue(rows[0]["angular_release"])
+        self.assertEqual(rows[0]["trust_amplitude"], 0.5)
+
+    def test_angular_evidence_policy_fails_closed_on_training_sentinel(self):
+        rows = _fit_coefficient_rows(
+            self._linear_response_node_group(sentinel_pass=False),
+            release_policy="validated-angular-only-v1")
+        self.assertFalse(np.any(np.asarray(rows[0]["beta_deployed"])))
+        self.assertFalse(rows[0]["angular_release"])
+        self.assertEqual(rows[0]["trust_amplitude"], 0.25)
+
     def test_multivariate_fit_recovers_all_natural_parameter_responses(self):
         center = np.zeros(len(FEATURE_NAMES))
         truth = np.vstack([

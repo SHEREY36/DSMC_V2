@@ -23,7 +23,8 @@ SHEAR_RATES = {
 
 
 def campaign_rows(mode: str, results: Path, particles: int,
-                  tau_end: float, state_update_cpp: float = 0.05
+                  tau_end: float, state_update_cpp: float = 0.05,
+                  replicates: int = 4
                   ) -> list[dict[str, object]]:
     """Return independent one-core jobs without changing any discretization."""
     if mode == "pilot":
@@ -34,15 +35,24 @@ def campaign_rows(mode: str, results: Path, particles: int,
         aspect_ratios = (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)
         alphas = tuple(sorted(SHEAR_RATES))
         arms = ("corrected",)
+    elif mode == "evidence":
+        # Short paired comparison at truth-backed interior nodes.  This mode
+        # is intentionally ineligible for the deployment verdict produced by
+        # analyze_usf_validation.py.
+        aspect_ratios = (2.0, 3.0)
+        alphas = (0.80, 0.95)
+        arms = ("uncorrected", "corrected")
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
     seeds = (260913101, 260913211, 260913307, 260913419)
+    if not 1 <= replicates <= len(seeds):
+        raise ValueError(f"replicates must be in [1, {len(seeds)}]")
     rows: list[dict[str, object]] = []
     for ar in aspect_ratios:
         for alpha in alphas:
             for arm in arms:
-                for replicate, seed in enumerate(seeds):
+                for replicate, seed in enumerate(seeds[:replicates]):
                     prefix = results / (
                         f"AR_{ar:.2f}_alpha_{alpha:.2f}_{arm}_rep_{replicate:02d}")
                     rows.append({
@@ -64,12 +74,18 @@ def campaign_rows(mode: str, results: Path, particles: int,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("pilot", "full"), default="pilot")
+    parser.add_argument("--mode", choices=("pilot", "evidence", "full"),
+                        default="pilot")
     parser.add_argument("--output", default="manifests/usf_validation_pilot.csv")
     parser.add_argument("--results", default="results/usf_validation_pilot")
     parser.add_argument("--particles", type=int, default=4000)
     parser.add_argument("--tau-end", type=float, default=80.0)
     parser.add_argument("--state-update-cpp", type=float, default=0.05)
+    parser.add_argument("--replicates", type=int, default=4)
+    parser.add_argument("--alpha", type=float, action="append", default=[])
+    parser.add_argument("--aspect-ratio", type=float, action="append", default=[])
+    parser.add_argument("--arm", choices=("corrected", "uncorrected"),
+                        action="append", default=[])
     args = parser.parse_args()
     if args.particles < 100:
         raise SystemExit("USF validation requires at least 100 particles")
@@ -81,7 +97,18 @@ def main() -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     rows = campaign_rows(args.mode, Path(args.results), args.particles,
-                         args.tau_end, args.state_update_cpp)
+                         args.tau_end, args.state_update_cpp, args.replicates)
+    if args.alpha:
+        rows = [row for row in rows if float(row["alpha"]) in set(args.alpha)]
+    if args.aspect_ratio:
+        rows = [row for row in rows
+                if float(row["aspect_ratio"]) in set(args.aspect_ratio)]
+    if args.arm:
+        rows = [row for row in rows if row["arm"] in set(args.arm)]
+    if not rows:
+        parser.error("validation filters selected no USF rows")
+    for task_id, row in enumerate(rows):
+        row["task_id"] = task_id
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()

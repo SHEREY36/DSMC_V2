@@ -81,6 +81,9 @@ def replicate_record(row: dict[str, str]) -> dict:
         tau_int = integrated_autocorrelation_time(clean)
         record["observables"][name] = {
             "mean": float(np.mean(clean)),
+            "signed_early_late_drift": float(np.mean(clean[-third:])
+                                             - np.mean(clean[:third])),
+            "drift_scale": scale,
             "relative_early_late_drift": drift / scale,
             "integrated_autocorrelation_samples": tau_int,
             "effective_time_samples": float(len(clean) / tau_int),
@@ -182,6 +185,146 @@ def make_figure(cases: list[dict], output: Path) -> None:
     plt.close(fig)
 
 
+# Fixed categorical order (reference palette slots 1-4) plus a marker per
+# series so identity never rests on colour alone.
+SERIES_STYLE = (("#2a78d6", "o"), ("#eb6834", "s"), ("#1baf7a", "^"),
+                ("#eda100", "D"))
+CALIBRATED_ALPHA = (0.5, 0.8, 0.95, 1.0)
+SWEEP_ROWS = (("theta", r"$\theta^H$"), ("a20", r"$a_{20}^H$"),
+              ("a02", r"$a_{02}^H$"), ("a11", r"$a_{11}^H$"))
+
+
+def _sweep_panel(ax, cases, name, fixed_key, fixed_values, x_key):
+    for (color, marker), fixed in zip(SERIES_STYLE, fixed_values):
+        subset = sorted((case for case in cases
+                         if np.isclose(case[fixed_key], fixed)
+                         and case["observables"][name] is not None),
+                        key=lambda case: case[x_key])
+        if not subset:
+            continue
+        x = np.array([case[x_key] for case in subset])
+        y = np.array([case["observables"][name]["mean"] for case in subset])
+        ci = np.array([case["observables"][name]["realization_bootstrap_95ci"]
+                       for case in subset], dtype=float)
+        label = (rf"AR$={fixed:g}$" if fixed_key == "aspect_ratio"
+                 else ("elastic" if fixed >= 1.0 else rf"$\alpha={fixed:g}$"))
+        ax.plot(x, y, color=color, lw=2.0, label=label)
+        ax.fill_between(x, ci[:, 0], ci[:, 1], color=color, alpha=0.15, lw=0)
+        # Open markers: alpha interpolated between calibrated artifact nodes.
+        calibrated = np.array([any(np.isclose(case["alpha"], CALIBRATED_ALPHA))
+                               for case in subset])
+        ax.plot(x[calibrated], y[calibrated], marker, color=color, ms=8,
+                ls="none", mec="white", mew=1.0)
+        ax.plot(x[~calibrated], y[~calibrated], marker, color=color, ms=8,
+                ls="none", mfc="white", mew=1.5)
+    if name != "theta":
+        ax.axhline(0.0, color="0.55", lw=0.8, zorder=0)
+    else:
+        ax.axhline(1.0, color="0.55", lw=0.8, zorder=0)
+    ax.grid(alpha=0.15)
+
+
+def make_sweep_figure(cases: list[dict], output: Path) -> None:
+    """Paper-style figure: rows are observables, columns the two sweeps."""
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(4, 2, figsize=(9.0, 11.0), sharex="col", squeeze=False)
+    for row, (name, label) in enumerate(SWEEP_ROWS):
+        _sweep_panel(axes[row, 0], cases, name, "aspect_ratio", (1.5, 2.0, 3.0), "alpha")
+        _sweep_panel(axes[row, 1], cases, name, "alpha", (0.5, 0.8, 0.95, 1.0),
+                     "aspect_ratio")
+        axes[row, 0].set_ylabel(label)
+    axes[-1, 0].set_xlabel(r"$\alpha$")
+    axes[-1, 1].set_xlabel("AR")
+    axes[0, 0].set_title(r"vs $\alpha$ (open: interpolated $\alpha$)", fontsize=10)
+    axes[0, 1].set_title("vs aspect ratio", fontsize=10)
+    for column in range(2):
+        axes[0, column].legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _pooled_density(items: list[dict], name: str):
+    edges, counts = None, None
+    for item in items:
+        path = item.get("histograms_file")
+        if not path or not Path(path).is_file():
+            continue
+        with np.load(path) as data:
+            edges = data[f"{name}_edges"]
+            counts = data[f"{name}_counts"] if counts is None else counts + data[f"{name}_counts"]
+    if counts is None or counts.sum() == 0:
+        return None
+    width = np.diff(edges)
+    centers = (0.5 * (edges[:-1] + edges[1:]) if name == "c"
+               else np.sqrt(edges[:-1] * edges[1:]))
+    density = counts / (counts.sum() * width)
+    # Remove the radial Jacobian so the curves are phi_c(c), phi_w(w), and the
+    # distribution of x=c^2w^2, matching Megias & Santos Eqs. (5.1).
+    if name == "c":
+        density = density / (4.0 * np.pi * centers**2)
+    elif name == "w":
+        density = density / (2.0 * np.pi * centers)
+    # Bins with a handful of counts carry ~30% Poisson noise and read as
+    # spurious structure on a log axis; show only resolved bins.
+    keep = counts >= 20
+    return centers[keep], density[keep]
+
+
+def make_tail_figure(records: list, output: Path) -> None:
+    """Marginal distributions on a 3x3 alpha x AR grid (cf. paper Fig. 6)."""
+    import matplotlib.pyplot as plt
+    from scipy.special import kv
+
+    by_case = defaultdict(list)
+    for row, record in records:
+        by_case[(float(row["alpha"]), float(row["aspect_ratio"]))].append(record)
+    ars, alphas = (1.5, 2.0, 3.0), (0.5, 0.8, 0.95)
+    fig, axes = plt.subplots(3, 3, figsize=(12.0, 10.0), squeeze=False)
+    maxwell = {
+        "c": lambda c: np.pi**-1.5 * np.exp(-c**2),
+        "w": lambda w: np.exp(-w**2) / np.pi,
+        # Eq. (5.3c) with d_t=3, d_r=2.
+        "x": lambda x: 0.5 * (4.0 * np.pi) * (2.0 * np.pi) * np.pi**-2.5
+        * x**0.25 * kv(0.5, 2.0 * np.sqrt(x)),
+    }
+    labels = {"c": (r"$c$", r"$\phi_c$"), "w": (r"$w$", r"$\phi_w$"),
+              "x": (r"$c^2w^2$", r"$\phi_{cw}$")}
+    for row, name in enumerate(("c", "w", "x")):
+        for column, ar in enumerate(ars):
+            ax = axes[row, column]
+            grid = None
+            for (color, marker), alpha in zip(SERIES_STYLE, alphas):
+                pooled = _pooled_density(by_case.get((alpha, ar), []), name)
+                if pooled is None:
+                    continue
+                x, y = pooled
+                grid = x if grid is None else grid
+                ax.plot(x, y, marker, color=color, ms=3, ls="none",
+                        label=rf"$\alpha={alpha:g}$")
+            if grid is not None:
+                ref = np.linspace(grid.min(), grid.max(), 400) if name == "c" \
+                    else np.geomspace(grid.min(), grid.max(), 400)
+                ax.plot(ref, maxwell[name](ref), color="0.2", lw=1.2, label="Maxwellian")
+            ax.set_yscale("log")
+            if name != "c":
+                ax.set_xscale("log")
+            ax.set_xlabel(labels[name][0]); ax.set_ylabel(labels[name][1])
+            if row == 0:
+                ax.set_title(rf"AR$={ar:g}$", fontsize=10)
+            ax.grid(alpha=0.15)
+    for ax in axes[0]:
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(frameon=False, fontsize=8)
+            break
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
@@ -208,12 +351,29 @@ def main() -> None:
                       if item["observables"][name] is not None]
             drifts = [item["observables"][name]["relative_early_late_drift"]
                       for item in items if item["observables"][name] is not None]
+            signed = np.array([item["observables"][name]["signed_early_late_drift"]
+                               for item in items
+                               if item["observables"][name] is not None])
+            scales = [item["observables"][name]["drift_scale"]
+                      for item in items if item["observables"][name] is not None]
             observables[name] = None if not values else {
                 "mean": float(np.mean(values)),
                 "replicate_stderr": (float(np.std(values, ddof=1) / np.sqrt(len(values)))
                                      if len(values) > 1 else 0.0),
                 "realization_bootstrap_95ci": bootstrap_ci(values),
                 "maximum_relative_early_late_drift": float(max(drifts)),
+                # Stationarity is judged on the replicate ensemble: a single
+                # realization's early/late difference is dominated by Monte
+                # Carlo noise whenever the cumulant itself is near zero.
+                "replicate_mean_drift": float(np.mean(signed)),
+                "replicate_mean_drift_stderr": (
+                    float(np.std(signed, ddof=1) / np.sqrt(len(signed)))
+                    if len(signed) > 1 else 0.0),
+                "drift_tolerance": float(max(
+                    0.10 * max(abs(float(np.mean(values))),
+                               min(scales)),
+                    3.0 * (float(np.std(signed, ddof=1) / np.sqrt(len(signed)))
+                           if len(signed) > 1 else 0.0))),
             }
         runtime_pass = all(
             item["result"].get("negative_energy_repairs", 0) == 0
@@ -225,7 +385,8 @@ def main() -> None:
             item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
         stationarity_pass = all(
-            value is None or value["maximum_relative_early_late_drift"] <= 0.10
+            value is None
+            or abs(value["replicate_mean_drift"]) <= value["drift_tolerance"]
             for value in observables.values())
         tails = {name: sum(int(item["tail_counts"].get(name, 0)) for item in items)
                  for name in ("c", "w", "x")}
@@ -262,7 +423,7 @@ def main() -> None:
             tolerance = max(0.02, 3.0 * np.hypot(left["replicate_stderr"],
                                                  right["replicate_stderr"]))
             comparisons[name] = {"absolute_difference": error, "tolerance": tolerance,
-                                 "pass": error <= tolerance}
+                                 "pass": bool(error <= tolerance)}
             passed &= error <= tolerance
         equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
                             "pass": bool(passed), "observables": comparisons})
@@ -284,7 +445,13 @@ def main() -> None:
     output = Path(args.output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     if args.figure:
-        make_figure(cases, Path(args.figure))
+        figure = Path(args.figure)
+        if mode == "sweep":
+            scaled = [case for case in cases if case["arm"] == "scaled"]
+            make_sweep_figure(scaled, figure)
+            make_tail_figure(records, figure.with_name(figure.stem + "_tails.png"))
+        else:
+            make_figure(cases, figure)
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

@@ -54,12 +54,14 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
     target = None if not row["target_theta"] else float(row["target_theta"])
     alpha = float(row["alpha"])
     total_change = float(total[-1] / total[0] - 1.0)
+    temperature_rescaled = bool(diagnostics.get("hcs_rescale_temperature", False))
     # Inelastic HCS cools forever; elastic HCS conserves total energy.  Asking
     # alpha=1 to cool would reject the exact physical limit for the wrong
     # reason.  Two percent is far above roundoff yet tight enough to catch a
     # genuinely dissipative elastic implementation.
     energy_behavior_pass = (
-        abs(total_change) <= 0.02 if np.isclose(alpha, 1.0)
+        abs(total_change) <= 0.02
+        if temperature_rescaled or np.isclose(alpha, 1.0)
         else total_change < 0.0)
     result = {
         "task_id": int(row["task_id"]), "tier": row["tier"],
@@ -71,6 +73,7 @@ def analyse(row: dict[str, str]) -> tuple[dict, np.ndarray]:
         "late_relative_drift": drift,
         "relative_target_error": None if target is None else abs(mean - target) / target,
         "relative_total_energy_change": total_change,
+        "hcs_rescale_temperature": temperature_rescaled,
         "energy_behavior_pass": bool(energy_behavior_pass and np.all(total > 0.0)),
         "bounded": bool(np.all(np.isfinite(theta)) and np.all(theta > 0.0)
                         and np.max(theta) < 10.0),
@@ -201,7 +204,10 @@ def main() -> None:
                "artifact_sha256": (next(iter(artifact_digests))
                                    if artifact_consistent else None),
                "artifact_consistent": artifact_consistent,
+               "evidence_only": campaign_mode in ("evidence", "learned-extremes"),
                "runs": records, "cases": cases,
+               "all_cases_physics_pass": bool(
+                   artifact_consistent and all_cases_physics_pass),
                "physics_gate_pass": bool(artifact_consistent and all(
                    case["physics_pass"] for case in cases
                    if case["tier"] == "gate")),
@@ -211,7 +217,9 @@ def main() -> None:
                "full_domain_physics_gate_pass": bool(
                    campaign_mode == "full-domain" and artifact_consistent
                    and all_cases_physics_pass),
-               "production_gate_pass": bool(artifact_consistent and all(
+               "production_gate_pass": bool(
+                   campaign_mode not in ("evidence", "learned-extremes")
+                   and artifact_consistent and all(
                    case["production_pass"] for case in cases
                    if case["tier"] == "gate"))}
     summary_path = Path(args.summary)
@@ -220,17 +228,21 @@ def main() -> None:
 
     gate_keys = [(1.0, 2.0), (0.95, 2.0), (0.8, 2.0),
                  (1.0, 3.0), (0.95, 3.0), (0.8, 3.0)]
-    available = (sorted(grouped) if campaign_mode == "full-domain"
+    available = (sorted(grouped)
+                 if campaign_mode in ("full-domain", "learned-extremes")
                  else [key for key in gate_keys if key in grouped])
-    ncols = 4 if campaign_mode == "full-domain" else 3
+    ncols = 4 if campaign_mode in ("full-domain", "learned-extremes") else 3
     nrows = max(1, int(np.ceil(len(available) / ncols)))
     fig, axes = plt.subplots(nrows, ncols, figsize=(12.0, 3.5 * nrows), squeeze=False)
-    colors = {0.75: "#0072B2", 1.25: "#D55E00"}
+    theta_starts = sorted({float(row["theta0"]) for row, _ in series})
+    color_values = plt.get_cmap("viridis")(
+        np.linspace(0.08, 0.92, max(len(theta_starts), 2)))
+    colors = dict(zip(theta_starts, color_values))
     for ax, key in zip(axes.flat, available):
         alpha, ar = key
         matching = [(row, values) for row, values in series
                     if float(row["alpha"]) == alpha and float(row["aspect_ratio"]) == ar]
-        for theta0 in sorted(colors):
+        for theta0 in theta_starts:
             replicates = [values for row, values in matching
                           if float(row["theta0"]) == theta0]
             if not replicates:

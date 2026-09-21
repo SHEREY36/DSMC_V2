@@ -156,3 +156,62 @@ def assess_heldout_support(baseline: dict, excited: list[dict], fitted: dict,
             "n_observations": len(heldout), "n_expected": expected,
             "tangent_maximum_tolerance": TANGENT_MAXIMUM_TOLERANCE,
             **metrics}
+
+
+def assess_angular_support(baseline: dict, excited: list[dict], fitted: dict,
+                           amplitude: float = HELDOUT_AMPLITUDE) -> dict:
+    """Validate the angular response independently of held-back energy rows.
+
+    The full response gate deliberately couples energy and angle for production
+    release.  An evidence candidate needs a narrower question: whether the two
+    angular natural-parameter rows improve an independent amplitude while all
+    energy corrections remain identically zero.  This function answers only
+    that question and cannot promote an artifact to deployment status.
+    """
+    heldout = [node for node in excited
+               if node.get("excitation") is not None
+               and np.isclose(abs(float(node["excitation"]["eta"])), amplitude)]
+    expected = 2 * len(EXCITATION_FAMILIES)
+    if len(heldout) != expected:
+        return {"pass": False, "amplitude": amplitude,
+                "n_observations": len(heldout), "n_expected": expected,
+                "reason": "incomplete_heldout_design"}
+
+    parameter_names = tuple(fitted["parameter_order"])
+    eta_indices = [parameter_names.index(name) for name in ("eta1", "eta2")]
+    beta = (np.asarray(fitted["beta"], dtype=float)
+            * np.asarray(fitted["beta_deployed"], dtype=bool))
+    center = np.asarray(fitted["feature_center"], dtype=float)
+    probability = np.linspace(0.0, 1.0, 65)
+    baseline_errors, corrected_errors = [], []
+    for node in heldout:
+        features = np.asarray([node["cell_features"][name]
+                               for name in FEATURE_NAMES])
+        delta = beta @ (features - center)
+        exact = angular_quantiles(np.array([
+            node["angular"]["eta1"], node["angular"]["eta2"]]), probability)
+        base = angular_quantiles(np.array([
+            baseline["angular"]["eta1"], baseline["angular"]["eta2"]]),
+            probability)
+        predicted_parameters = np.array([
+            float(baseline["angular"][name]) + float(delta[index])
+            for name, index in zip(("eta1", "eta2"), eta_indices)])
+        corrected = angular_quantiles(predicted_parameters, probability)
+        baseline_errors.append(float(np.mean(np.abs(base - exact))))
+        corrected_errors.append(float(np.mean(np.abs(corrected - exact))))
+
+    parameter_fits = fitted["parameter_fits"]
+    linear = all((not parameter_fits[name].get("material_response", False))
+                 or parameter_fits[name].get("linearity_pass", False)
+                 for name in ("eta1", "eta2"))
+    baseline_p95 = _percentile(baseline_errors, 0.95)
+    corrected_p95 = _percentile(corrected_errors, 0.95)
+    return {
+        "pass": bool(linear and corrected_p95 < baseline_p95),
+        "amplitude": amplitude,
+        "n_observations": len(heldout),
+        "n_expected": expected,
+        "parameter_linearity_pass": bool(linear),
+        "baseline_angular_w1_p95": baseline_p95,
+        "corrected_angular_w1_p95": corrected_p95,
+    }

@@ -37,7 +37,8 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--task", required=True, type=int)
     parser.add_argument("--artifact", required=True)
-    parser.add_argument("--config", default="DSMC_0D_v2/config/default.yaml")
+    parser.add_argument("--config",
+                        default="DSMC_0D_v2/config/full_domain_baseline_candidate.yaml")
     args = parser.parse_args()
     row = row_at(Path(args.manifest), args.task)
     artifact = Path(args.artifact)
@@ -56,7 +57,9 @@ def main() -> None:
     else:
         config["microscopic_closure"].update(
             routing="variational_v2", angular="variational_v2",
-            artifact=str(artifact), invariant_corrections=True,
+            # Frozen baseline decision (2026-09-18): the correction response
+            # failed distribution validation, so it is off for every task.
+            artifact=str(artifact), invariant_corrections=False,
             state_update_cpp=float(row.get("state_update_cpp", 0.0) or 0.0))
     params = particle_parameters(config)
     particles = int(row["particles"])
@@ -79,6 +82,10 @@ def main() -> None:
     prefix = Path(row["output_prefix"])
     trajectory = Path(str(prefix) + ".txt")
     result = run_simulation(config, int(row["seed"]), trajectory)
+    if not sphere and alpha < 1.0 and result.get("routing") != "variational_v2":
+        raise RuntimeError("inelastic HCS-NG task did not run the frozen closure")
+    if alpha >= 1.0 and not sphere and result.get("routing") != "elastic_bl":
+        raise RuntimeError("elastic HCS-NG task did not run the exact elastic block")
     result["artifact"] = str(artifact)
     result["artifact_sha256"] = sha256(artifact)
     result["campaign"] = {
