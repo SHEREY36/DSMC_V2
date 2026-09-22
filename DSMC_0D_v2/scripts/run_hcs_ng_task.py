@@ -49,7 +49,7 @@ def main() -> None:
     config["system"].update(alpha=alpha, kTt=1.0, kTr=1.0,
                             domain=[64.0, 64.0, 64.0])
     config.setdefault("simulation", {})["sphere_collision"] = sphere
-    config["simulation"]["hcs_rescale_temperature"] = row["arm"] == "scaled"
+    config["simulation"]["hcs_rescale_temperature"] = row["arm"] in ("scaled", "dt_half")
     if sphere:
         config["microscopic_closure"].update(
             routing="legacy_rank0", angular="legacy",
@@ -68,7 +68,7 @@ def main() -> None:
     if math.ceil(config["system"]["phi"] * volume / params.volume) != particles:
         raise RuntimeError("failed to derive requested particle count")
     delta = float(row["sample_delta_tau"])
-    config["time"].update(dt=0.01, dtau=min(1.0, delta), t_end=100000.0,
+    config["time"].update(dt=float(row.get("dt") or 0.01), dtau=min(1.0, delta), t_end=100000.0,
                           tau_end=float(row["tau_end"]), equilibration_time=0.0)
     config["flow"] = {"mode": "hcs", "shear_rate": 0.0}
     config.setdefault("diagnostics", {})["collision_audit"] = True
@@ -78,6 +78,13 @@ def main() -> None:
         "sample_end_tau": float(row["sample_end_tau"]),
         "sample_delta_tau": delta,
         "minimum_tail_count": 1000,
+        # Rods in this model are only weakly non-Gaussian (|a| <~ 0.07, a02<0
+        # at small AR): beyond c=4 or w=6 even 5e7 particle-samples hold ~25
+        # and 0 events, as for a Maxwellian.  These thresholds sit where the
+        # data resolve thousands of events; fits there describe the
+        # intermediate regime, not a proven asymptote.
+        "c_tail_threshold": 3.0, "w_tail_threshold": 3.0,
+        "x_tail_threshold": 20.0,
     }
     prefix = Path(row["output_prefix"])
     trajectory = Path(str(prefix) + ".txt")
@@ -94,7 +101,9 @@ def main() -> None:
               else row[key])
         for key in ("mode", "arm", "alpha", "aspect_ratio", "replicate",
                     "seed", "particles")
+        if key in row
     }
+    result["campaign"]["dt"] = float(config["time"]["dt"])
     output = Path(str(prefix) + ".json")
     output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))

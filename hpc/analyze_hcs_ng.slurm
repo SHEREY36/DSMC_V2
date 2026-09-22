@@ -21,4 +21,4 @@ mkdir -p "$MPLCONFIGDIR"
 PYTHONPATH="$ROOT/contracts/python:$ROOT/DSMC_0D_v2/src" \
   hpc/python.sh DSMC_0D_v2/scripts/analyze_hcs_ng_campaign.py \
     --manifest "${1:?manifest required}" --output "${2:?summary required}" \
-    --figure "${3:?figure required}"
+    --figure "${3:?figure required}" --allow-missing

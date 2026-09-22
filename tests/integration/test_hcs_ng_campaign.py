@@ -156,13 +156,24 @@ def test_full_domain_correction_preflight_fails_closed(tmp_path):
 def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
     _, rows = make_manifest(tmp_path, "sweep", _test_artifact(tmp_path))
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
-    assert len(cases) == 29 and len(rows) == 29 * 10
+    assert len(cases) == 29 and len(rows) == 29 * 10 + 3 * 10
     assert min(ar for _, ar in cases) == 1.35
+    control = [row for row in rows if row["arm"] == "dt_half"]
+    assert {float(row["dt"]) for row in control} == {0.005}
+    assert {(float(r["alpha"]), float(r["aspect_ratio"])) for r in control} == {
+        (0.5, 1.35), (0.5, 3.0), (1.0, 3.0)}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.01}
     assert {alpha for alpha, ar in cases if ar == 2.0} == {
         0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0}
     assert {ar for alpha, ar in cases if alpha == 0.8} == {1.35, 1.5, 2.0, 2.5, 3.0}
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["arm"] for row in rows} == {"scaled"}
+    assert {row["arm"] for row in rows} == {"scaled", "dt_half"}
+
+
+def test_ng_analysis_runs_after_any_array_outcome():
+    submit = (ROOT / "hpc/submit_hcs_ng_campaign.sh").read_text()
+    assert '--dependency="afterany:$JOB"' in submit
+    assert "--allow-missing" in (ROOT / "hpc/analyze_hcs_ng.slurm").read_text()
 
 
 def test_sweep_requires_passing_pilot_on_same_bytes(tmp_path):

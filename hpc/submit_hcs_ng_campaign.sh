@@ -39,9 +39,11 @@ CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TAS
 RAW=$(sbatch --parsable --array="0-$((TASKS - 1))%$CONCURRENT" \
   --export="ALL,HCS_NG_STRIDE=$TASKS" hpc/hcs_ng_array.slurm "$MANIFEST" "$ARTIFACT")
 JOB=${RAW%%;*}
-QA_RAW=$(sbatch --parsable --kill-on-invalid-dep=yes --dependency="afterok:$JOB" \
+# afterany: a partial campaign must still be summarized (missing tasks are
+# listed and force a false verdict) instead of the QA job silently vanishing.
+QA_RAW=$(sbatch --parsable --dependency="afterany:$JOB" \
   hpc/analyze_hcs_ng.slurm "$MANIFEST" "$SUMMARY" "$FIGURE")
 QA=${QA_RAW%%;*}
 echo "hcs_ng_job=$JOB ($ROWS virtual tasks; concurrency=$CONCURRENT)"
-echo "hcs_ng_analysis_job=$QA (afterok:$JOB)"
+echo "hcs_ng_analysis_job=$QA (afterany:$JOB)"
 echo "Inspect $SUMMARY before submitting a larger mode."

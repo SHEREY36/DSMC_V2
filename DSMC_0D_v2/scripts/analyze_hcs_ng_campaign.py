@@ -191,7 +191,16 @@ SERIES_STYLE = (("#2a78d6", "o"), ("#eb6834", "s"), ("#1baf7a", "^"),
                 ("#eda100", "D"))
 CALIBRATED_ALPHA = (0.5, 0.8, 0.95, 1.0)
 SWEEP_ROWS = (("theta", r"$\theta^H$"), ("a20", r"$a_{20}^H$"),
-              ("a02", r"$a_{02}^H$"), ("a11", r"$a_{11}^H$"))
+              ("a02", r"$a_{02}^H$"), ("a11", r"$a_{11}^H$"),
+              ("A_cu", r"$\langle (\mathbf{c}\cdot\hat{\mathbf{u}})^2 - c^2/3\rangle$"))
+
+
+def ihs_a2(alpha):
+    """First Sonine coefficient of smooth inelastic hard spheres in 3D
+    (van Noije & Ernst 1998): the reference for a20 without rotation."""
+    alpha = np.asarray(alpha, dtype=float)
+    return (16.0 * (1.0 - alpha) * (1.0 - 2.0 * alpha**2)
+            / (241.0 - 177.0 * alpha + 30.0 * alpha**2 * (1.0 - alpha)))
 
 
 def _sweep_panel(ax, cases, name, fixed_key, fixed_values, x_key):
@@ -228,12 +237,18 @@ def make_sweep_figure(cases: list[dict], output: Path) -> None:
     """Paper-style figure: rows are observables, columns the two sweeps."""
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(4, 2, figsize=(9.0, 11.0), sharex="col", squeeze=False)
+    fig, axes = plt.subplots(len(SWEEP_ROWS), 2, figsize=(9.0, 13.0),
+                             sharex="col", squeeze=False)
     for row, (name, label) in enumerate(SWEEP_ROWS):
         _sweep_panel(axes[row, 0], cases, name, "aspect_ratio", (1.5, 2.0, 3.0), "alpha")
         _sweep_panel(axes[row, 1], cases, name, "alpha", (0.5, 0.8, 0.95, 1.0),
                      "aspect_ratio")
         axes[row, 0].set_ylabel(label)
+        if name == "a20":
+            grid = np.linspace(0.5, 1.0, 101)
+            (ihs,) = axes[row, 0].plot(grid, ihs_a2(grid), color="0.35", lw=1.2,
+                                       ls="--", label="smooth IHS (Sonine)")
+            axes[row, 0].legend(handles=[ihs], frameon=False, fontsize=8)
     axes[-1, 0].set_xlabel(r"$\alpha$")
     axes[-1, 1].set_xlabel("AR")
     axes[0, 0].set_title(r"vs $\alpha$ (open: interpolated $\alpha$)", fontsize=10)
@@ -246,7 +261,8 @@ def make_sweep_figure(cases: list[dict], output: Path) -> None:
     plt.close(fig)
 
 
-def _pooled_density(items: list[dict], name: str):
+def _pooled_ratio(items: list[dict], name: str):
+    """Pooled marginal divided by its Maxwellian, with Poisson 1-sigma."""
     edges, counts = None, None
     for item in items:
         path = item.get("histograms_file")
@@ -254,68 +270,93 @@ def _pooled_density(items: list[dict], name: str):
             continue
         with np.load(path) as data:
             edges = data[f"{name}_edges"]
-            counts = data[f"{name}_counts"] if counts is None else counts + data[f"{name}_counts"]
+            counts = (data[f"{name}_counts"] if counts is None
+                      else counts + data[f"{name}_counts"])
     if counts is None or counts.sum() == 0:
         return None
-    width = np.diff(edges)
+    total = counts.sum()
+    # Expected Maxwellian counts per bin from the exact CDF of each variable
+    # (3 translational and 2 rotational degrees of freedom).
+    from scipy.special import erf, kv
+    from scipy.integrate import quad
+    if name == "c":
+        cdf = lambda c: erf(c) - 2.0 * c * np.exp(-c * c) / np.sqrt(np.pi)
+        expected = total * np.diff(cdf(edges))
+    elif name == "w":
+        expected = total * np.diff(1.0 - np.exp(-edges**2))
+    else:
+        pdf = lambda x: (0.5 * (4.0 * np.pi) * (2.0 * np.pi) * np.pi**-2.5
+                         * x**0.25 * kv(0.5, 2.0 * np.sqrt(x)))
+        expected = total * np.array([quad(pdf, lo, hi)[0]
+                                     for lo, hi in zip(edges[:-1], edges[1:])])
     centers = (0.5 * (edges[:-1] + edges[1:]) if name == "c"
                else np.sqrt(edges[:-1] * edges[1:]))
-    density = counts / (counts.sum() * width)
-    # Remove the radial Jacobian so the curves are phi_c(c), phi_w(w), and the
-    # distribution of x=c^2w^2, matching Megias & Santos Eqs. (5.1).
-    if name == "c":
-        density = density / (4.0 * np.pi * centers**2)
-    elif name == "w":
-        density = density / (2.0 * np.pi * centers)
-    # Bins with a handful of counts carry ~30% Poisson noise and read as
-    # spurious structure on a log axis; show only resolved bins.
-    keep = counts >= 20
-    return centers[keep], density[keep]
+    # Show only bins resolved to better than ~20%.
+    keep = (counts >= 25) & (expected > 0.0)
+    ratio = counts[keep] / expected[keep]
+    return centers[keep], ratio, ratio / np.sqrt(counts[keep])
 
 
 def make_tail_figure(records: list, output: Path) -> None:
-    """Marginal distributions on a 3x3 alpha x AR grid (cf. paper Fig. 6)."""
+    """phi/phi_Maxwell on a 3x3 alpha x AR grid (cf. paper Fig. 6).
+
+    The deviations here are percent-level, so the ratio to the Maxwellian is
+    shown instead of log densities, where every curve would overlap the
+    Gaussian; bands are Poisson 1-sigma and dashed lines the Sonine form
+    built from each case's measured a20 or a02.
+    """
     import matplotlib.pyplot as plt
-    from scipy.special import kv
 
     by_case = defaultdict(list)
     for row, record in records:
-        by_case[(float(row["alpha"]), float(row["aspect_ratio"]))].append(record)
+        if row["arm"] == "scaled":
+            by_case[(float(row["alpha"]), float(row["aspect_ratio"]))].append(record)
     ars, alphas = (1.5, 2.0, 3.0), (0.5, 0.8, 0.95)
-    fig, axes = plt.subplots(3, 3, figsize=(12.0, 10.0), squeeze=False)
-    maxwell = {
-        "c": lambda c: np.pi**-1.5 * np.exp(-c**2),
-        "w": lambda w: np.exp(-w**2) / np.pi,
-        # Eq. (5.3c) with d_t=3, d_r=2.
-        "x": lambda x: 0.5 * (4.0 * np.pi) * (2.0 * np.pi) * np.pi**-2.5
-        * x**0.25 * kv(0.5, 2.0 * np.sqrt(x)),
-    }
-    labels = {"c": (r"$c$", r"$\phi_c$"), "w": (r"$w$", r"$\phi_w$"),
-              "x": (r"$c^2w^2$", r"$\phi_{cw}$")}
+    labels = {"c": (r"$c$", r"$\phi_c/\phi_{c,M}$"),
+              "w": (r"$w$", r"$\phi_w/\phi_{w,M}$"),
+              "x": (r"$c^2w^2$", r"$\phi_{cw}/\phi_{cw,M}$")}
+    fig, axes = plt.subplots(3, 3, figsize=(12.0, 9.5), sharey="row", squeeze=False)
     for row, name in enumerate(("c", "w", "x")):
         for column, ar in enumerate(ars):
             ax = axes[row, column]
-            grid = None
             for (color, marker), alpha in zip(SERIES_STYLE, alphas):
-                pooled = _pooled_density(by_case.get((alpha, ar), []), name)
+                pooled = _pooled_ratio(by_case.get((alpha, ar), []), name)
                 if pooled is None:
                     continue
-                x, y = pooled
-                grid = x if grid is None else grid
-                ax.plot(x, y, marker, color=color, ms=3, ls="none",
-                        label=rf"$\alpha={alpha:g}$")
-            if grid is not None:
-                ref = np.linspace(grid.min(), grid.max(), 400) if name == "c" \
-                    else np.geomspace(grid.min(), grid.max(), 400)
-                ax.plot(ref, maxwell[name](ref), color="0.2", lw=1.2, label="Maxwellian")
-            ax.set_yscale("log")
+                x, ratio, error = pooled
+                ax.plot(x, ratio, color=color, lw=1.6, label=rf"$\alpha={alpha:g}$")
+                ax.fill_between(x, ratio - error, ratio + error, color=color,
+                                alpha=0.18, lw=0)
+                # Sonine form with this case's measured cumulant, Eqs. (5.4a,b)
+                # for d_t=3, d_r=2: where the data leave it, cumulants beyond
+                # fourth order carry the tail.
+                items = by_case[(alpha, ar)]
+                cumulant = {"c": "a20", "w": "a02"}.get(name)
+                if cumulant:
+                    value = float(np.mean([item["observables"][cumulant]["mean"]
+                                           for item in items]))
+                    grid = np.linspace(x.min(), x.max(), 200) if name == "c" \
+                        else np.geomspace(x.min(), x.max(), 200)
+                    sonine = (1.0 + value * (4 * grid**4 - 20 * grid**2 + 15) / 8.0
+                              if name == "c" else
+                              1.0 + value * (4 * grid**4 - 16 * grid**2 + 8) / 8.0)
+                    ax.plot(grid, sonine, color=color, lw=1.0, ls="--")
+            ax.axhline(1.0, color="0.35", lw=0.9)
+            # Truncated Sonine forms turn negative far out (their breakdown);
+            # keep the axis on the measured range.
+            low, high = ax.get_ylim()
+            ax.set_ylim(max(low, 0.3), min(high, 2.0))
             if name != "c":
                 ax.set_xscale("log")
-            ax.set_xlabel(labels[name][0]); ax.set_ylabel(labels[name][1])
+                # below these the log bins hold too few counts to read
+                ax.set_xlim(left=0.05 if name == "w" else 1.0e-3)
+            ax.set_xlabel(labels[name][0])
+            if column == 0:
+                ax.set_ylabel(labels[name][1])
             if row == 0:
                 ax.set_title(rf"AR$={ar:g}$", fontsize=10)
             ax.grid(alpha=0.15)
-    for ax in axes[0]:
+    for ax in axes.flat:
         if ax.get_legend_handles_labels()[0]:
             ax.legend(frameon=False, fontsize=8)
             break
@@ -330,6 +371,9 @@ def main() -> None:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--figure")
+    parser.add_argument("--allow-missing", action="store_true",
+                        help="summarize the completed tasks and report the rest; "
+                             "the campaign verdict is then always false")
     args = parser.parse_args()
     rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
     records, missing = [], []
@@ -338,8 +382,10 @@ def main() -> None:
             records.append((row, replicate_record(row)))
         except FileNotFoundError:
             missing.append(int(row["task_id"]))
-    if missing:
+    if missing and not args.allow_missing:
         raise SystemExit(f"missing HCS-NG outputs for tasks {missing[:20]}")
+    if not records:
+        raise SystemExit("no completed HCS-NG tasks to summarize")
     grouped = defaultdict(list)
     for row, record in records:
         grouped[(float(row["alpha"]), float(row["aspect_ratio"]), row["arm"])].append(record)
@@ -412,23 +458,30 @@ def main() -> None:
     for case in cases:
         by_physical[(case["alpha"], case["aspect_ratio"])][case["arm"]] = case
     for physical, arms in sorted(by_physical.items()):
-        if "scaled" not in arms or "unscaled" not in arms:
-            continue
-        comparisons, passed = {}, True
-        for name in OBSERVABLES:
-            left, right = arms["scaled"]["observables"][name], arms["unscaled"]["observables"][name]
-            if left is None or right is None:
+        for control in ("unscaled", "dt_half"):
+            if "scaled" not in arms or control not in arms:
                 continue
-            error = abs(left["mean"] - right["mean"])
-            tolerance = max(0.02, 3.0 * np.hypot(left["replicate_stderr"],
-                                                 right["replicate_stderr"]))
-            comparisons[name] = {"absolute_difference": error, "tolerance": tolerance,
-                                 "pass": bool(error <= tolerance)}
-            passed &= error <= tolerance
-        equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
-                            "pass": bool(passed), "observables": comparisons})
+            comparisons, passed = {}, True
+            for name in OBSERVABLES:
+                left, right = arms["scaled"]["observables"][name], arms[control]["observables"][name]
+                if left is None or right is None:
+                    continue
+                error = abs(left["mean"] - right["mean"])
+                combined = 3.0 * np.hypot(left["replicate_stderr"],
+                                          right["replicate_stderr"])
+                # The engineering pilot is small-N, so it keeps an absolute
+                # floor; the time-step control must resolve biases well below
+                # the O(0.01) cumulants it protects.
+                tolerance = (max(0.002, combined) if control == "dt_half"
+                             else max(0.02, combined))
+                comparisons[name] = {"absolute_difference": error, "tolerance": tolerance,
+                                     "pass": bool(error <= tolerance)}
+                passed &= error <= tolerance
+            equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
+                                "control_arm": control,
+                                "pass": bool(passed), "observables": comparisons})
     mode = rows[0]["mode"] if rows else None
-    physics_verdict = (bool(cases)
+    physics_verdict = (bool(cases) and not missing
                        and all(case["sampling_complete"] and case["runtime_pass"]
                                and case["stationarity_pass"] for case in cases)
                        and all(item["pass"] for item in equivalence))
@@ -437,6 +490,7 @@ def main() -> None:
     artifact_hashes = sorted({item[1]["result"].get("artifact_sha256")
                               for item in records})
     summary = {"mode": mode, "n_tasks": len(rows), "n_cases": len(cases),
+               "n_completed_tasks": len(records), "missing_tasks": missing,
                "artifact_sha256": artifact_hashes[0] if len(artifact_hashes) == 1 else None,
                "physics_campaign_pass": physics_verdict,
                "production_campaign_pass": production_verdict,

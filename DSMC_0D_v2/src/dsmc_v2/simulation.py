@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import resource
 import time as wallclock
 from contextlib import nullcontext
 from pathlib import Path
@@ -166,6 +167,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     initial_ttr, _, initial_total = state.temperatures(params.mass)
     rescale_reference = initial_ttr if sphere else initial_total
     vrmax = 5.0 * np.sqrt(2.0) * np.sqrt(ktt / params.mass)
+    initial_vrmax = vrmax
+    # A rescaled HCS is stationary, so the majorant in thermal units must stay
+    # O(5-10).  Anything this far out is a runaway, not a velocity tail: fail
+    # fast with a diagnosis instead of growing the candidate arrays to OOM.
+    majorant_runaway_ratio = float(config.get("simulation", {}).get(
+        "majorant_runaway_ratio", 25.0))
+    ntc_candidates = ntc_violations = ntc_steps = 0
     time, collisions, output_index = 0.0, 0, 0
     workspace = NTCWorkspace(capacity=1024, seed=seed)
     output_path = Path(output_path)
@@ -225,6 +233,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             tau = collisions / float(count)
             if tau >= output_index * dtau:
                 _write_row(handle, time, tau, state, params.mass)
+                handle.flush()   # a killed task keeps its trajectory
                 non_gaussian.maybe_sample(time, tau, state)
                 if pressure_handle is not None:
                     kinetic = compute_pij_k(state.velocity, params.mass, volume)
@@ -293,9 +302,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             n_candidates = candidate_count(count, params.sigma_c * inflation,
                                            vrmax, volume, dt)
             vrmax_temp = 0.0
+            ntc_steps += 1
             if n_candidates > 0:
                 vrmax_temp, accepted = workspace.screen_candidates(
                     state.velocity, count, n_candidates, vrmax)
+                ntc_candidates += n_candidates
+                ntc_violations += workspace.last_violations
                 for position in accepted:
                     p1, p2 = int(workspace.p1[position]), int(workspace.p2[position])
                     normal = workspace.eij[position].copy()
@@ -366,8 +378,6 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         accumulate_pij_c(pressure_accumulator, v1, v2,
                                          state.velocity[p1], params.mass, speed,
                                          eij_override=normal)
-            if vrmax < vrmax_temp:
-                vrmax = vrmax_temp
             if hcs_rescale:
                 current_ttr, _, current_total = state.temperatures(params.mass)
                 current_reference = current_ttr if sphere else current_total
@@ -376,9 +386,22 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         "cannot rescale an HCS state with non-positive temperature")
                 scale = math.sqrt(rescale_reference / current_reference)
                 state.rescale_thermal_state(scale)
-                # Every relative speed, including the current NTC majorant,
-                # receives exactly the same similarity factor.
-                vrmax *= scale
+                # The rescale exactly undoes this step's collisional cooling,
+                # so the relative-speed distribution is stationary and the
+                # majorant must NOT be multiplied by scale: doing so ratchets
+                # it up by the cooling factor every step, exp(0.077(1-a^2)tau)
+                # in total, which is what OOM-killed every alpha<=0.9 task.
+                # Only this step's observed maximum, carried to the rescaled
+                # velocities, may raise it.
+                vrmax = max(vrmax, vrmax_temp * scale)
+                thermal = math.sqrt(2.0 * current_reference * scale * scale
+                                    / params.mass)
+                if vrmax > majorant_runaway_ratio * thermal:
+                    raise RuntimeError(
+                        f"NTC majorant runaway: vrmax={vrmax:.4g} is "
+                        f"{vrmax / thermal:.1f} thermal speeds at tau={tau:.1f}")
+            elif vrmax < vrmax_temp:
+                vrmax = vrmax_temp
             state.advance_axes(dt)
             time += dt
     non_gaussian_summary = non_gaussian.close()
@@ -435,6 +458,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "orientation_output": (None if orientation_path is None
                                else str(orientation_path)),
         "hcs_rescale_temperature": hcs_rescale,
+        "ntc": {
+            "initial_vrmax": initial_vrmax, "final_vrmax": vrmax,
+            "final_vrmax_over_initial": vrmax / initial_vrmax,
+            "mean_candidates_per_step": ntc_candidates / max(ntc_steps, 1),
+            "acceptance_fraction": collisions / 2.0 / max(ntc_candidates, 1),
+            "majorant_violations": ntc_violations,
+            "majorant_violation_fraction": ntc_violations / max(collisions / 2.0, 1.0),
+        },
+        # Linux reports ru_maxrss in KiB.
+        "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
         "exact_initial_temperatures": exact_initial_temperatures,
         "non_gaussian": non_gaussian_summary,
     }

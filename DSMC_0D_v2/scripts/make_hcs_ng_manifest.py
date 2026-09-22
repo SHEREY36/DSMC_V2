@@ -13,8 +13,15 @@ import numpy as np
 FIELDS = (
     "task_id", "mode", "arm", "alpha", "aspect_ratio", "replicate",
     "seed", "particles", "tau_end", "sample_start_tau", "sample_end_tau",
-    "sample_delta_tau", "state_update_cpp", "output_prefix",
+    "sample_delta_tau", "state_update_cpp", "dt", "output_prefix",
 )
+# Time-step control for the sweep: the strongest dissipation at both ends of
+# the AR range, plus the exact elastic block, rerun at half the time step.
+# NTC screens each step's candidates on pre-step velocities, so a particle
+# that collides twice in one step is accepted on a stale relative speed; the
+# resulting bias scales with collisions per particle per step and must be
+# shown to be below the non-Gaussian signal.
+DT_CONTROL_CASES = ((0.50, 1.35), (0.50, 3.00), (1.00, 3.00))
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
          260917159, 260917267, 260917373, 260917481, 260917589,
@@ -92,7 +99,21 @@ def main() -> None:
                     "particles": particles, "tau_end": tau_end,
                     "sample_start_tau": start, "sample_end_tau": tau_end,
                     "sample_delta_tau": delta,
-                    "state_update_cpp": 0.05,
+                    "state_update_cpp": 0.05, "dt": 0.01,
+                    "output_prefix": str(Path(args.results) / tag),
+                })
+    if args.mode == "sweep":
+        for alpha, ar in DT_CONTROL_CASES:
+            for replicate, seed in enumerate(seeds):
+                tag = f"alpha_{alpha:.2f}_AR_{ar:.2f}_dt_half_rep_{replicate:03d}"
+                rows.append({
+                    "task_id": len(rows), "mode": args.mode, "arm": "dt_half",
+                    "alpha": f"{alpha:.2f}", "aspect_ratio": f"{ar:.2f}",
+                    "replicate": replicate, "seed": seed,
+                    "particles": particles, "tau_end": tau_end,
+                    "sample_start_tau": start, "sample_end_tau": tau_end,
+                    "sample_delta_tau": delta,
+                    "state_update_cpp": 0.05, "dt": 0.005,
                     "output_prefix": str(Path(args.results) / tag),
                 })
     output = Path(args.output)
