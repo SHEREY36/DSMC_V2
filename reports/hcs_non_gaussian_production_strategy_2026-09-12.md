@@ -1,5 +1,10 @@
 # HCS non-Gaussian campaign: implementation and production strategy
 
+> Superseded for submission by
+> `reports/HCS_NG_CAMPAIGN_AUDIT_2026-09-22.md`.  This document records the
+> protocol-v1 design and should not be used to submit the current angular-only
+> HCS campaign.
+
 ## Decision
 
 The non-Gaussian measurement and campaign machinery is ready.  The present

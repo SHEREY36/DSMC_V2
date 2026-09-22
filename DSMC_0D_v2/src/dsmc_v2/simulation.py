@@ -173,7 +173,19 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     # fast with a diagnosis instead of growing the candidate arrays to OOM.
     majorant_runaway_ratio = float(config.get("simulation", {}).get(
         "majorant_runaway_ratio", 25.0))
+    # A candidate list much larger than the particle population is both a
+    # memory hazard and a time-discretisation warning: many accepted pairs can
+    # then reuse particles whose velocities have already changed in this
+    # step.  Bound the allocation *before* NTCWorkspace grows.  The default is
+    # intentionally generous for existing runs and can be tightened by
+    # campaign fixtures after a pilot has measured the normal workload.
+    max_ntc_candidates = int(config.get("simulation", {}).get(
+        "max_ntc_candidates_per_step", max(100_000, 50 * count)))
+    if max_ntc_candidates <= 0:
+        raise ValueError("simulation.max_ntc_candidates_per_step must be positive")
     ntc_candidates = ntc_violations = ntc_steps = 0
+    ntc_collision_pairs = ntc_repeated_particle_pairs = 0
+    peak_ntc_candidates = 0
     time, collisions, output_index = 0.0, 0, 0
     workspace = NTCWorkspace(capacity=1024, seed=seed)
     output_path = Path(output_path)
@@ -301,6 +313,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                          else 1.0)
             n_candidates = candidate_count(count, params.sigma_c * inflation,
                                            vrmax, volume, dt)
+            peak_ntc_candidates = max(peak_ntc_candidates, n_candidates)
+            if n_candidates > max_ntc_candidates:
+                raise RuntimeError(
+                    "NTC candidate ceiling exceeded before allocation: "
+                    f"requested={n_candidates}, ceiling={max_ntc_candidates}, "
+                    f"vrmax={vrmax:.6g}, inflation={inflation:.6g}, "
+                    f"tau={collisions / float(count):.3f}")
             vrmax_temp = 0.0
             ntc_steps += 1
             if n_candidates > 0:
@@ -308,6 +327,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     state.velocity, count, n_candidates, vrmax)
                 ntc_candidates += n_candidates
                 ntc_violations += workspace.last_violations
+                # DSMC is a small-dt method: a particle selected for two
+                # *actual* collisions in one step sees an already-updated
+                # velocity on the second event. Its frequency is therefore a
+                # direct and inexpensive time-step quality diagnostic.
+                step_collision_particles: set[int] = set()
                 for position in accepted:
                     p1, p2 = int(workspace.p1[position]), int(workspace.p2[position])
                     normal = workspace.eij[position].copy()
@@ -328,8 +352,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                             audit["post_ntc_z_sum"] += pair_z
                             audit["post_ntc_energy_sum"] += pair_total
                             audit["post_ntc_ez_sum"] += pair_total * pair_z
+                    added = 0
                     if sphere:
-                        collisions += _sphere_collision(state, p1, p2, normal, v1, v2, cr, alpha)
+                        added = _sphere_collision(
+                            state, p1, p2, normal, v1, v2, cr, alpha)
+                        collisions += added
                     elif routing == "variational_v2" and not kernel.accept_orientation(
                             state.axis[p1], state.axis[p2],
                             vrel / max(speed, 1.0e-30),
@@ -374,6 +401,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                 (2.0 / 3.0) * (expected_etr_f - etr_i)
                                 - theta * (expected_erot_f - erot_i))
                             audit["theta_energy_sum"] += total_i * theta
+                    if added:
+                        ntc_collision_pairs += 1
+                        if (p1 in step_collision_particles
+                                or p2 in step_collision_particles):
+                            ntc_repeated_particle_pairs += 1
+                        step_collision_particles.update((p1, p2))
                     if pressure_accumulator is not None:
                         accumulate_pij_c(pressure_accumulator, v1, v2,
                                          state.velocity[p1], params.mass, speed,
@@ -462,9 +495,20 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             "initial_vrmax": initial_vrmax, "final_vrmax": vrmax,
             "final_vrmax_over_initial": vrmax / initial_vrmax,
             "mean_candidates_per_step": ntc_candidates / max(ntc_steps, 1),
+            "peak_candidates_per_step": peak_ntc_candidates,
+            "candidate_ceiling_per_step": max_ntc_candidates,
             "acceptance_fraction": collisions / 2.0 / max(ntc_candidates, 1),
+            "actual_collision_pairs": ntc_collision_pairs,
+            "repeated_particle_pairs_same_step": ntc_repeated_particle_pairs,
+            "repeated_particle_pair_fraction": (
+                ntc_repeated_particle_pairs / max(ntc_collision_pairs, 1)),
             "majorant_violations": ntc_violations,
-            "majorant_violation_fraction": ntc_violations / max(collisions / 2.0, 1.0),
+            # Candidate fraction measures how often the proposal majorant was
+            # actually exceeded.  Keep the older accepted-pair normalisation
+            # as a conservative diagnostic for compatibility with prior runs.
+            "majorant_violation_fraction": ntc_violations / max(ntc_candidates, 1),
+            "majorant_violations_per_accepted_pair": (
+                ntc_violations / max(collisions / 2.0, 1.0)),
         },
         # Linux reports ru_maxrss in KiB.
         "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,

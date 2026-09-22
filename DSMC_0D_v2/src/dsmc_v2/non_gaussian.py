@@ -11,7 +11,8 @@ import numpy as np
 
 
 MOMENT_FIELDS = (
-    "time", "tau", "Ttr", "Trot", "theta", "c2", "c4", "c6",
+    "time", "tau", "Ttr", "Trot", "theta", "theta_tr_over_rot",
+    "theta_rot_over_tr", "c2", "c4", "c6",
     "w2", "w4", "w6", "c2w2", "a20", "a02", "a11", "A_cu",
     "A_cw_quadrupolar",
 )
@@ -57,8 +58,17 @@ def reduced_observables(velocity: np.ndarray, omega: np.ndarray,
     axes = axis / np.linalg.norm(axis, axis=1)[:, None]
     acu = np.einsum("ni,ni->n", c, axes)**2 - c2_values / 3.0
     cw = np.einsum("ni,ni->n", c, w)
+    theta_tr_over_rot = ttr / trot
     result.update(
-        Trot=trot, theta=ttr / trot, w=np.sqrt(w2_values),
+        Trot=trot,
+        # ``theta`` is retained as the closure coordinate used everywhere in
+        # this repository.  Megias & Santos (2023) use the reciprocal
+        # convention, so write both explicitly to prevent a visually
+        # plausible but physically inverted paper comparison.
+        theta=theta_tr_over_rot,
+        theta_tr_over_rot=theta_tr_over_rot,
+        theta_rot_over_tr=1.0 / theta_tr_over_rot,
+        w=np.sqrt(w2_values),
         w2_values=w2_values, x_values=x_values,
         w2=float(np.mean(w2_values)), w4=float(np.mean(w2_values**2)),
         w6=float(np.mean(w2_values**3)), c2w2=c2w2,

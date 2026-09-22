@@ -37,10 +37,11 @@ def _test_artifact(tmp_path):
     return artifact
 
 
-def make_manifest(tmp_path, mode, artifact):
+def make_manifest(tmp_path, mode, artifact, model_variant="baseline"):
     manifest = tmp_path / f"{mode}.csv"
     subprocess.run([
         sys.executable, str(MAKE), "--mode", mode, "--artifact", str(artifact),
+        "--model-variant", model_variant,
         "--output", str(manifest), "--results", str(tmp_path / "results")],
         check=True, cwd=ROOT)
     with manifest.open(newline="") as handle:
@@ -49,10 +50,13 @@ def make_manifest(tmp_path, mode, artifact):
 
 def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     _, rows = make_manifest(tmp_path, "engineering", _test_artifact(tmp_path))
-    assert len(rows) == 24
-    assert {row["arm"] for row in rows} == {"scaled", "unscaled"}
-    assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 3
-    assert {int(row["particles"]) for row in rows} == {2000}
+    assert len(rows) == 120
+    assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
+    assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
+    assert {int(row["particles"]) for row in rows} == {10000}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v2"}
+    assert {row["model_variant"] for row in rows} == {"baseline"}
+    assert {row["invariant_corrections"] for row in rows} == {"false"}
 
 
 def test_domain_pilot_uses_every_artifact_alpha_ar_pair(tmp_path):
@@ -79,6 +83,32 @@ def test_current_artifact_allows_engineering_but_blocks_domain_pilot(tmp_path):
         cwd=ROOT, text=True, capture_output=True)
     assert blocked.returncode != 0
     assert "hcs-summary" in blocked.stderr
+
+
+def test_angular_evidence_preflight_requires_matching_evidence_manifest(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    with np.load(artifact, allow_pickle=False) as data:
+        surface = np.asarray(data["surface_coordinates"])
+    np.savez_compressed(artifact, surface_coordinates=surface,
+                        beta_coordinates=surface)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    manifest, _ = make_manifest(
+        tmp_path, "engineering", artifact, model_variant="angular_evidence")
+    command = [
+        sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+        "--manifest", str(manifest), "--artifact", str(artifact),
+        "--allow-engineering",
+    ]
+    missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert missing.returncode != 0
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "artifact_sha256": digest,
+        "artifact_status": "evidence_only_not_deployable",
+        "release_policy": "validated-angular-only-v1",
+        "n_energy_release_nodes": 0,
+    }))
+    accepted = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert accepted.returncode == 0, accepted.stderr
 
 
 def test_scientific_preflight_rejects_compact_gate_and_accepts_full_gate(tmp_path):
@@ -156,18 +186,15 @@ def test_full_domain_correction_preflight_fails_closed(tmp_path):
 def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
     _, rows = make_manifest(tmp_path, "sweep", _test_artifact(tmp_path))
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
-    assert len(cases) == 29 and len(rows) == 29 * 10 + 3 * 10
-    assert min(ar for _, ar in cases) == 1.35
-    control = [row for row in rows if row["arm"] == "dt_half"]
-    assert {float(row["dt"]) for row in control} == {0.005}
-    assert {(float(r["alpha"]), float(r["aspect_ratio"])) for r in control} == {
-        (0.5, 1.35), (0.5, 3.0), (1.0, 3.0)}
+    assert len(cases) == 37 and len(rows) == 37 * 10
+    assert min(ar for _, ar in cases) == 1.1
     assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.01}
     assert {alpha for alpha, ar in cases if ar == 2.0} == {
         0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0}
-    assert {ar for alpha, ar in cases if alpha == 0.8} == {1.35, 1.5, 2.0, 2.5, 3.0}
+    assert {ar for alpha, ar in cases if alpha == 0.8} == {
+        1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0}
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["arm"] for row in rows} == {"scaled", "dt_half"}
+    assert {row["arm"] for row in rows} == {"scaled"}
 
 
 def test_ng_analysis_runs_after_any_array_outcome():
@@ -192,20 +219,33 @@ def test_sweep_requires_passing_pilot_on_same_bytes(tmp_path):
     missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert missing.returncode != 0 and "pilot-summary" in missing.stderr
     for payload, ok in (
-            ({"mode": "engineering", "physics_campaign_pass": False,
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "study_campaign_pass": False,
               "artifact_sha256": digest}, False),
-            ({"mode": "engineering", "physics_campaign_pass": True,
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "study_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "engineering", "physics_campaign_pass": True,
-              "artifact_sha256": digest}, True)):
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "study_campaign_pass": True, "artifact_sha256": digest,
+              "n_tasks": 120, "n_completed_tasks": 120,
+              "scaled_unscaled_equivalence": [
+                  {"alpha": alpha, "aspect_ratio": ar,
+                   "control_arm": control, "pass": True}
+                  for control in ("unscaled", "dt_half")
+                  for alpha, ar in ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
+                                    (0.95, 2.0), (1.00, 3.0))
+              ]}, True)):
         pilot.write_text(json.dumps(payload))
         result = subprocess.run(command + ["--pilot-summary", str(pilot)],
                                 cwd=ROOT, text=True, capture_output=True)
         assert (result.returncode == 0) == ok, result.stderr
 
 
-def test_ng_runner_disables_invariant_corrections():
+def test_ng_runner_uses_manifest_correction_variant():
     text = (ROOT / "DSMC_0D_v2/scripts/run_hcs_ng_task.py").read_text()
-    assert "invariant_corrections=True" not in text
-    assert "invariant_corrections=False" in text
+    assert 'row.get("invariant_corrections"' in text
+    assert "invariant_corrections=invariant_corrections" in text
     assert "full_domain_baseline_candidate.yaml" in text

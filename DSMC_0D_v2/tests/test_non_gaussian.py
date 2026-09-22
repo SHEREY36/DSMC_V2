@@ -26,6 +26,8 @@ def test_maxwellian_reduced_cumulants_are_zero():
     assert abs(values["a11"]) < 0.015
     assert abs(values["A_cu"]) < 0.015
     assert abs(values["A_cw_quadrupolar"]) < 0.015
+    assert np.isclose(values["theta"], values["theta_tr_over_rot"])
+    assert np.isclose(values["theta_tr_over_rot"] * values["theta_rot_over_tr"], 1.0)
     assert np.isclose(values["c2"], 1.5, atol=1e-12)
     assert np.isclose(values["w2"], 1.0, atol=1e-12)
 
@@ -38,7 +40,8 @@ def test_similarity_rescale_preserves_all_reduced_observables():
     state.normalize_constraints()
     after = reduced_observables(
         state.velocity, state.omega, state.axis, 1.0, 1.0)
-    for name in ("theta", "c2", "c4", "c6", "w2", "w4", "w6",
+    for name in ("theta", "theta_tr_over_rot", "theta_rot_over_tr",
+                 "c2", "c4", "c6", "w2", "w4", "w6",
                  "c2w2", "a20", "a02", "a11", "A_cu",
                  "A_cw_quadrupolar"):
         assert np.isclose(before[name], after[name], rtol=2e-13, atol=2e-13)

@@ -5,8 +5,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 MODE=${1:-engineering}
-ARTIFACT=${2:-models/microscopic_closure_v2_usf_candidate/closure_v2.npz}
-TAG=${3:-${MODE}_v1}
+MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
+ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v2}
 # Fourth argument: the engineering-pilot summary for MODE=sweep, otherwise
 # the full-domain HCS validation summary.
 GATE_SUMMARY=${4:-}
@@ -21,7 +22,8 @@ fi
 mkdir -p logs "$RESULTS"
 PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh \
   DSMC_0D_v2/scripts/make_hcs_ng_manifest.py \
-  --mode "$MODE" --artifact "$ARTIFACT" --output "$MANIFEST" --results "$RESULTS"
+  --mode "$MODE" --model-variant "$MODEL_VARIANT" --artifact "$ARTIFACT" \
+  --output "$MANIFEST" --results "$RESULTS"
 CHECK=(--manifest "$MANIFEST" --artifact "$ARTIFACT")
 if [[ "$MODE" == "engineering" ]]; then
   CHECK+=(--allow-engineering)
@@ -36,7 +38,17 @@ MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '$1 == "MaxArraySize" {print 
 MAX_ARRAY=${MAX_ARRAY:-1000}
 TASKS=$ROWS; (( TASKS > MAX_ARRAY )) && TASKS=$MAX_ARRAY
 CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TASKS
+MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
+case "$MODE" in
+  engineering) DEFAULT_WALLTIME=02:00:00 ;;
+  domain-pilot) DEFAULT_WALLTIME=04:00:00 ;;
+  sweep|map) DEFAULT_WALLTIME=08:00:00 ;;
+  tails|sphere-controls) DEFAULT_WALLTIME=10:00:00 ;;
+esac
+WALLTIME=${HCS_NG_WALLTIME:-$DEFAULT_WALLTIME}
+QOS=${HCS_NG_QOS:-normal}
 RAW=$(sbatch --parsable --array="0-$((TASKS - 1))%$CONCURRENT" \
+  --mem="$MEMORY" --time="$WALLTIME" --qos="$QOS" \
   --export="ALL,HCS_NG_STRIDE=$TASKS" hpc/hcs_ng_array.slurm "$MANIFEST" "$ARTIFACT")
 JOB=${RAW%%;*}
 # afterany: a partial campaign must still be summarized (missing tasks are
@@ -46,4 +58,5 @@ QA_RAW=$(sbatch --parsable --dependency="afterany:$JOB" \
 QA=${QA_RAW%%;*}
 echo "hcs_ng_job=$JOB ($ROWS virtual tasks; concurrency=$CONCURRENT)"
 echo "hcs_ng_analysis_job=$QA (afterany:$JOB)"
+echo "model=$MODEL_VARIANT artifact=$ARTIFACT memory/task=$MEMORY walltime=$WALLTIME qos=$QOS"
 echo "Inspect $SUMMARY before submitting a larger mode."

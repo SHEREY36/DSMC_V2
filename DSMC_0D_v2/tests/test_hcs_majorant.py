@@ -1,4 +1,5 @@
 import yaml
+import pytest
 from pathlib import Path
 
 from dsmc_v2.particle import particle_parameters
@@ -30,4 +31,21 @@ def test_rescaled_hcs_keeps_ntc_majorant_stationary(tmp_path):
     assert result["cpp"] >= 60.0
     assert ntc["final_vrmax_over_initial"] < 1.5, ntc
     assert ntc["majorant_violation_fraction"] < 1.0e-4, ntc
+    assert ntc["actual_collision_pairs"] == result["collisions"] // 2
+    assert ntc["repeated_particle_pair_fraction"] < 0.02, ntc
     assert result["peak_rss_mib"] > 0.0
+
+
+def test_ntc_candidate_ceiling_fails_before_workspace_growth(tmp_path):
+    config = yaml.safe_load(
+        (ROOT / "DSMC_0D_v2/config/full_domain_baseline_candidate.yaml").read_text())
+    config["particle"]["AR"] = 1.0
+    config["simulation"].update(
+        sphere_collision=True, hcs_rescale_temperature=True,
+        max_ntc_candidates_per_step=1)
+    config["microscopic_closure"].update(routing="legacy_rank0", angular="legacy")
+    config["system"].update(alpha=0.5, kTt=1.0, kTr=1.0,
+                            phi=0.05, domain=[10.0, 10.0, 10.0])
+    config["time"].update(dt=0.1, dtau=1.0, t_end=10.0, tau_end=1.0)
+    with pytest.raises(RuntimeError, match="candidate ceiling exceeded before allocation"):
+        run_simulation(config, 9, tmp_path / "ceiling.txt")

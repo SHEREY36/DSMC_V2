@@ -6,8 +6,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
-#SBATCH --time=24:00:00
+# One schema-2.4 closure process peaks near 0.7 GiB in the measured pilot.
+# 1.5 GiB leaves >2x headroom while allowing all 128 one-core tasks to share
+# a standard 256-GiB Negishi node without memory-driven core fragmentation.
+#SBATCH --mem=1500M
+#SBATCH --time=08:00:00
 #SBATCH --signal=B:TERM@120
 #SBATCH --output=logs/hcs_ng_%A_%a.out
 #SBATCH --error=logs/hcs_ng_%A_%a.err

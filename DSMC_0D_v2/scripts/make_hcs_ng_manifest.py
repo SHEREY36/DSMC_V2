@@ -5,23 +5,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 from pathlib import Path
 
 import numpy as np
 
 
 FIELDS = (
-    "task_id", "mode", "arm", "alpha", "aspect_ratio", "replicate",
+    "task_id", "protocol_version", "mode", "arm", "model_variant",
+    "invariant_corrections", "artifact_sha256", "alpha", "aspect_ratio", "replicate",
     "seed", "particles", "tau_end", "sample_start_tau", "sample_end_tau",
-    "sample_delta_tau", "state_update_cpp", "dt", "output_prefix",
+    "sample_delta_tau", "state_update_cpp", "dt",
+    "max_ntc_candidates_per_step", "output_prefix",
 )
-# Time-step control for the sweep: the strongest dissipation at both ends of
-# the AR range, plus the exact elastic block, rerun at half the time step.
-# NTC screens each step's candidates on pre-step velocities, so a particle
-# that collides twice in one step is accepted on a stale relative speed; the
-# resulting bias scales with collisions per particle per step and must be
-# shown to be below the non-Gaussian signal.
-DT_CONTROL_CASES = ((0.50, 1.35), (0.50, 3.00), (1.00, 3.00))
+PROTOCOL_VERSION = "hcs-ng-v2"
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
          260917159, 260917267, 260917373, 260917481, 260917589,
@@ -35,10 +32,27 @@ def surface_axes(artifact: Path) -> tuple[tuple[float, ...], tuple[float, ...]]:
             tuple(np.unique(coordinates[:, 2]).tolist()))
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def design(mode: str, artifact: Path):
     if mode == "engineering":
-        cases = ((0.80, 2.0), (0.95, 2.0), (0.80, 3.0))
-        return cases, SEEDS[:4], ("scaled", "unscaled"), 2000, 40.0, 20.0, 2.0
+        # Validate the similarity thermostat and dt before paying for the
+        # sweep.  The two alpha=0.5 cases bracket shape at maximum cooling;
+        # alpha=1 exercises the separate Hong-Morris elastic block.
+        cases = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
+                 (0.95, 2.0), (1.00, 3.0))
+        # Use the production particle count: candidate concurrency and the
+        # same-step particle-reuse rate depend on N.  Eight paired seeds make
+        # the numerical-control checks sensitive at a declared resolution
+        # without spending production-length trajectories on the pilot.
+        return cases, SEEDS[:8], ("scaled", "unscaled", "dt_half"), \
+            10000, 60.0, 30.0, 2.0
     if mode == "domain-pilot":
         alphas, ars = surface_axes(artifact)
         return tuple((a, ar) for a in alphas for ar in ars), SEEDS[:4], \
@@ -47,14 +61,17 @@ def design(mode: str, artifact: Path):
         # Paper-style cross design (cf. Megias & Santos 2023, Figs. 4-5 with
         # AR in place of beta).  alpha sweeps at three AR, AR sweeps at the
         # calibrated alpha nodes, with alpha=1 as the exact-equipartition
-        # (Gaussian) control.  AR<=1.2 is excluded: those near-sphere nodes
-        # have not reached a stationary HCS in any affordable run.
+        # (Gaussian) control.  The long window includes AR=1.1 and 1.2: the
+        # artifact's slowest predicted relaxation time is about 108 cpp, so
+        # sampling from tau=500 gives more than four relaxation times before
+        # the first retained snapshot and tau=1500 covers the near-sphere
+        # part of the calibrated domain instead of silently deleting it.
         alpha_sweep = tuple((a, ar) for ar in (1.5, 2.0, 3.0)
                             for a in (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00))
         ar_sweep = tuple((a, ar) for a in (0.50, 0.80, 0.95, 1.00)
-                         for ar in (1.35, 2.5))
+                         for ar in (1.10, 1.20, 1.35, 2.5))
         return alpha_sweep + ar_sweep, SEEDS[:10], ("scaled",), 10000, \
-            1100.0, 100.0, 2.0
+            1500.0, 500.0, 5.0
     if mode == "map":
         _, ars = surface_axes(artifact)
         alphas = tuple(np.round(np.arange(0.50, 1.00, 0.05), 2))
@@ -79,13 +96,23 @@ def main() -> None:
                                             "map", "tails", "sphere-controls"),
                         default="engineering")
     parser.add_argument("--artifact", required=True)
+    parser.add_argument(
+        "--model-variant", choices=("angular_evidence", "baseline"),
+        default="angular_evidence",
+        help=("angular_evidence enables the validated angular-only response; "
+              "baseline uses the same sampler with invariant response disabled"),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--results", required=True)
     args = parser.parse_args()
     artifact = Path(args.artifact)
     if not artifact.is_file():
         raise SystemExit(f"missing artifact: {artifact}")
+    artifact_hash = sha256(artifact)
     cases, seeds, arms, particles, tau_end, start, delta = design(args.mode, artifact)
+    model_variant = ("sphere_exact" if args.mode == "sphere-controls"
+                     else args.model_variant)
+    corrections = model_variant == "angular_evidence"
     rows = []
     for alpha, ar in cases:
         for arm in arms:
@@ -93,27 +120,19 @@ def main() -> None:
                 tag = (f"alpha_{alpha:.2f}_AR_{ar:.2f}_{arm}_"
                        f"rep_{replicate:03d}")
                 rows.append({
-                    "task_id": len(rows), "mode": args.mode, "arm": arm,
+                    "task_id": len(rows), "protocol_version": PROTOCOL_VERSION,
+                    "mode": args.mode, "arm": arm,
+                    "model_variant": model_variant,
+                    "invariant_corrections": str(corrections).lower(),
+                    "artifact_sha256": artifact_hash,
                     "alpha": f"{alpha:.2f}", "aspect_ratio": f"{ar:.2f}",
                     "replicate": replicate, "seed": seed,
                     "particles": particles, "tau_end": tau_end,
                     "sample_start_tau": start, "sample_end_tau": tau_end,
                     "sample_delta_tau": delta,
-                    "state_update_cpp": 0.05, "dt": 0.01,
-                    "output_prefix": str(Path(args.results) / tag),
-                })
-    if args.mode == "sweep":
-        for alpha, ar in DT_CONTROL_CASES:
-            for replicate, seed in enumerate(seeds):
-                tag = f"alpha_{alpha:.2f}_AR_{ar:.2f}_dt_half_rep_{replicate:03d}"
-                rows.append({
-                    "task_id": len(rows), "mode": args.mode, "arm": "dt_half",
-                    "alpha": f"{alpha:.2f}", "aspect_ratio": f"{ar:.2f}",
-                    "replicate": replicate, "seed": seed,
-                    "particles": particles, "tau_end": tau_end,
-                    "sample_start_tau": start, "sample_end_tau": tau_end,
-                    "sample_delta_tau": delta,
-                    "state_update_cpp": 0.05, "dt": 0.005,
+                    "state_update_cpp": 0.05,
+                    "dt": 0.005 if arm == "dt_half" else 0.01,
+                    "max_ntc_candidates_per_step": max(100_000, 50 * particles),
                     "output_prefix": str(Path(args.results) / tag),
                 })
     output = Path(args.output)

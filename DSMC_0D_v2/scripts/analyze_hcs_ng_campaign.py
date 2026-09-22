@@ -12,7 +12,10 @@ from pathlib import Path
 import numpy as np
 
 
-OBSERVABLES = ("theta", "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar")
+OBSERVABLES = (
+    "theta_tr_over_rot", "theta_rot_over_tr",
+    "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
+)
 
 
 def integrated_autocorrelation_time(values: np.ndarray) -> float:
@@ -48,9 +51,19 @@ def load_series(path: Path) -> dict[str, np.ndarray]:
         rows = list(csv.DictReader(handle))
     result = {}
     for name in OBSERVABLES:
-        result[name] = np.array([
-            float(row[name]) if row.get(name, "") not in ("", None) else np.nan
-            for row in rows], dtype=float)
+        values = []
+        for row in rows:
+            raw = row.get(name, "")
+            # Protocol-v1 files used the ambiguous name ``theta`` for the
+            # closure convention Ttr/Trot.  Read them for forensic analysis,
+            # but every new file writes both conventions explicitly.
+            if raw in ("", None) and name == "theta_tr_over_rot":
+                raw = row.get("theta", "")
+            if raw in ("", None) and name == "theta_rot_over_tr":
+                legacy = row.get("theta", "")
+                raw = "" if legacy in ("", None) else 1.0 / float(legacy)
+            values.append(float(raw) if raw not in ("", None) else np.nan)
+        result[name] = np.asarray(values, dtype=float)
     return result
 
 
@@ -64,6 +77,10 @@ def replicate_record(row: dict[str, str]) -> dict:
     series = load_series(Path(str(prefix) + "_ng_moments.csv"))
     record = {
         "task_id": int(row["task_id"]), "result": result,
+        "replicate": int(row["replicate"]), "seed": int(row["seed"]),
+        "protocol_version": row.get("protocol_version", "hcs-ng-v1"),
+        "model_variant": row.get("model_variant", "baseline"),
+        "invariant_corrections": row.get("invariant_corrections", "false") == "true",
         "sampling_complete": bool(summary.get("sampling_complete", False)),
         "tail_counts": summary.get("tail_counts", {}),
         "tail_thresholds": summary.get("tail_thresholds", {}),
@@ -77,7 +94,8 @@ def replicate_record(row: dict[str, str]) -> dict:
             record["observables"][name] = None; continue
         third = max(1, len(clean) // 3)
         drift = abs(float(np.mean(clean[-third:]) - np.mean(clean[:third])))
-        scale = max(abs(float(np.mean(clean))), 0.05 if name != "theta" else 1e-12)
+        scale = max(abs(float(np.mean(clean))),
+                    1e-12 if name.startswith("theta_") else 0.05)
         tau_int = integrated_autocorrelation_time(clean)
         record["observables"][name] = {
             "mean": float(np.mean(clean)),
@@ -91,14 +109,9 @@ def replicate_record(row: dict[str, str]) -> dict:
     return record
 
 
-def pooled_tail_fit(items: list[dict], name: str) -> dict:
-    """Fit the declared asymptotic form only after the tail-count gate.
-
-    Particle histograms contain radial samples.  The vector marginal VDFs
-    therefore require removal of the radial Jacobian: c**2 for three
-    translational dimensions and w for two rotational dimensions.  The c VDF
-    is fitted as exp(-gamma*c); w and x are fitted as power laws.
-    """
+def _tail_fit_core(items: list[dict], name: str, threshold: float,
+                   minimum: int) -> dict:
+    """Pool histograms and fit one declared tail interval."""
     edges = counts = None
     for item in items:
         path = item.get("histograms_file")
@@ -108,23 +121,24 @@ def pooled_tail_fit(items: list[dict], name: str) -> dict:
             candidate_edges = np.asarray(data[f"{name}_edges"], dtype=float)
             candidate_counts = np.asarray(data[f"{name}_counts"], dtype=float)
         if edges is None:
-            edges = candidate_edges
-            counts = candidate_counts
+            edges, counts = candidate_edges, candidate_counts.copy()
         elif not np.array_equal(edges, candidate_edges):
             raise ValueError(f"inconsistent {name} histogram bins")
         else:
             counts += candidate_counts
-    tail_count = sum(int(item["tail_counts"].get(name, 0)) for item in items)
-    minimum = max(int(item["minimum_tail_count"]) for item in items)
-    threshold = max(float(item["tail_thresholds"].get(name, np.inf)) for item in items)
-    base = {"tail_count": tail_count, "minimum_tail_count": minimum,
-            "threshold": threshold, "fit_ready": False}
-    if edges is None or tail_count < minimum:
+    base = {"minimum_tail_count": int(minimum), "threshold": float(threshold),
+            "fit_ready": False}
+    if edges is None:
         return base
-    centers = np.sqrt(edges[:-1] * edges[1:]) if name != "c" \
-        else 0.5 * (edges[:-1] + edges[1:])
+    centers = (np.sqrt(edges[:-1] * edges[1:]) if name != "c"
+               else 0.5 * (edges[:-1] + edges[1:]))
     widths = np.diff(edges)
     mask = (centers >= threshold) & (counts > 0)
+    tail_count = int(np.sum(counts[centers >= threshold]))
+    base["tail_count"] = tail_count
+    if tail_count < minimum:
+        base["reason"] = "tail_count_below_gate"
+        return base
     if np.count_nonzero(mask) < 5:
         base["reason"] = "fewer_than_five_occupied_tail_bins"
         return base
@@ -151,10 +165,70 @@ def pooled_tail_fit(items: list[dict], name: str) -> dict:
     return base
 
 
+def pooled_tail_fit(items: list[dict], name: str) -> dict:
+    """Fit a tail descriptively and audit independent-replicate uncertainty.
+
+    Particle histograms contain radial samples.  The vector marginal VDFs
+    therefore require removal of the radial Jacobian: c**2 for three
+    translational dimensions and w for two rotational dimensions.  The c VDF
+    is fitted as exp(-gamma*c); w and x are fitted as power laws.  A fit is
+    not called asymptotic unless it is stable to raising the threshold and to
+    leave-one-realization-out jackknifing.
+    """
+    minimum = max(int(item["minimum_tail_count"]) for item in items)
+    threshold = max(float(item["tail_thresholds"].get(name, np.inf)) for item in items)
+    base = _tail_fit_core(items, name, threshold, minimum)
+    base["independent_replicates"] = len(items)
+    base["asymptotic_claim_ready"] = False
+    base["interpretation"] = "intermediate_range_only"
+    if not base.get("fit_ready"):
+        return base
+
+    jackknife = []
+    if len(items) >= 3:
+        for omitted in range(len(items)):
+            fit = _tail_fit_core(items[:omitted] + items[omitted + 1:], name,
+                                 threshold, minimum)
+            if fit.get("fit_ready"):
+                jackknife.append(float(fit["gamma"]))
+    if len(jackknife) == len(items):
+        values = np.asarray(jackknife)
+        center = float(np.mean(values))
+        error = float(np.sqrt((len(values) - 1.0) / len(values)
+                              * np.sum((values - center) ** 2)))
+        base["gamma_jackknife_standard_error"] = error
+        base["gamma_95ci"] = [float(base["gamma"] - 1.96 * error),
+                              float(base["gamma"] + 1.96 * error)]
+
+    sensitivity = []
+    for factor in (1.0, 1.15, 1.30):
+        fit = _tail_fit_core(items, name, threshold * factor, minimum)
+        sensitivity.append({"threshold_factor": factor,
+                            "threshold": threshold * factor,
+                            "fit_ready": bool(fit.get("fit_ready")),
+                            "gamma": fit.get("gamma"),
+                            "tail_count": fit.get("tail_count", 0)})
+    base["threshold_sensitivity"] = sensitivity
+    stable_threshold = all(item["fit_ready"] for item in sensitivity)
+    if stable_threshold:
+        gammas = np.asarray([item["gamma"] for item in sensitivity], dtype=float)
+        stable_threshold = (np.ptp(gammas)
+                            <= 0.25 * max(abs(float(base["gamma"])), 1.0e-12))
+    ci = base.get("gamma_95ci")
+    precise = (ci is not None and (ci[1] - ci[0])
+               <= 0.5 * max(abs(float(base["gamma"])), 1.0e-12))
+    base["asymptotic_claim_ready"] = bool(
+        len(items) >= 8 and stable_threshold and precise
+        and (base.get("weighted_r_squared") or 0.0) >= 0.95)
+    if base["asymptotic_claim_ready"]:
+        base["interpretation"] = "asymptotic_candidate"
+    return base
+
+
 def make_figure(cases: list[dict], output: Path) -> None:
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 3, figsize=(13.0, 7.2), squeeze=False)
+    fig, axes = plt.subplots(3, 3, figsize=(13.0, 10.2), squeeze=False)
     for ax, name in zip(axes.flat, OBSERVABLES):
         arms = sorted({case["arm"] for case in cases})
         for arm in arms:
@@ -175,6 +249,8 @@ def make_figure(cases: list[dict], output: Path) -> None:
         ax.set_xlabel(r"$\alpha$")
         ax.grid(alpha=0.2)
     handles, labels = axes.flat[0].get_legend_handles_labels()
+    for ax in axes.flat[len(OBSERVABLES):]:
+        ax.set_visible(False)
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=min(4, len(handles)),
                    frameon=False)
@@ -190,7 +266,8 @@ def make_figure(cases: list[dict], output: Path) -> None:
 SERIES_STYLE = (("#2a78d6", "o"), ("#eb6834", "s"), ("#1baf7a", "^"),
                 ("#eda100", "D"))
 CALIBRATED_ALPHA = (0.5, 0.8, 0.95, 1.0)
-SWEEP_ROWS = (("theta", r"$\theta^H$"), ("a20", r"$a_{20}^H$"),
+SWEEP_ROWS = (("theta_rot_over_tr", r"$\theta^H=T_{rot}/T_{tr}$"),
+              ("a20", r"$a_{20}^H$"),
               ("a02", r"$a_{02}^H$"), ("a11", r"$a_{11}^H$"),
               ("A_cu", r"$\langle (\mathbf{c}\cdot\hat{\mathbf{u}})^2 - c^2/3\rangle$"))
 
@@ -226,7 +303,7 @@ def _sweep_panel(ax, cases, name, fixed_key, fixed_values, x_key):
                 ls="none", mec="white", mew=1.0)
         ax.plot(x[~calibrated], y[~calibrated], marker, color=color, ms=8,
                 ls="none", mfc="white", mew=1.5)
-    if name != "theta":
+    if not name.startswith("theta_"):
         ax.axhline(0.0, color="0.55", lw=0.8, zorder=0)
     else:
         ax.axhline(1.0, color="0.55", lw=0.8, zorder=0)
@@ -261,40 +338,69 @@ def make_sweep_figure(cases: list[dict], output: Path) -> None:
     plt.close(fig)
 
 
-def _pooled_ratio(items: list[dict], name: str):
-    """Pooled marginal divided by its Maxwellian, with Poisson 1-sigma."""
-    edges, counts = None, None
-    for item in items:
-        path = item.get("histograms_file")
-        if not path or not Path(path).is_file():
-            continue
-        with np.load(path) as data:
-            edges = data[f"{name}_edges"]
-            counts = (data[f"{name}_counts"] if counts is None
-                      else counts + data[f"{name}_counts"])
-    if counts is None or counts.sum() == 0:
-        return None
-    total = counts.sum()
-    # Expected Maxwellian counts per bin from the exact CDF of each variable
-    # (3 translational and 2 rotational degrees of freedom).
+def _maxwell_bin_probabilities(edges: np.ndarray, name: str) -> np.ndarray:
+    """Exact Maxwellian bin probabilities for dt=3 and dr=2."""
     from scipy.special import erf, kv
     from scipy.integrate import quad
     if name == "c":
         cdf = lambda c: erf(c) - 2.0 * c * np.exp(-c * c) / np.sqrt(np.pi)
-        expected = total * np.diff(cdf(edges))
+        return np.diff(cdf(edges))
     elif name == "w":
-        expected = total * np.diff(1.0 - np.exp(-edges**2))
+        return np.diff(1.0 - np.exp(-edges**2))
+    pdf = lambda x: (0.5 * (4.0 * np.pi) * (2.0 * np.pi) * np.pi**-2.5
+                     * x**0.25 * kv(0.5, 2.0 * np.sqrt(x)))
+    return np.array([quad(pdf, lo, hi)[0]
+                     for lo, hi in zip(edges[:-1], edges[1:])])
+
+
+def _replicate_ratio(items: list[dict], name: str):
+    """Marginal/Maxwellian ratio with replicate-bootstrap uncertainty.
+
+    Snapshots within one DSMC realization share particles and are correlated,
+    so Poisson bands on pooled particle counts are pseudoreplication.  The
+    independent realization is the resampling unit here.
+    """
+    edges, replicate_counts, totals = None, [], []
+    for item in items:
+        path = item.get("histograms_file")
+        if not path or not Path(path).is_file():
+            continue
+        with np.load(path, allow_pickle=False) as data:
+            candidate_edges = np.asarray(data[f"{name}_edges"], dtype=float)
+            counts = np.asarray(data[f"{name}_counts"], dtype=float)
+            under = float(data[f"{name}_underflow"]) \
+                if f"{name}_underflow" in data else 0.0
+            over = float(data[f"{name}_overflow"]) \
+                if f"{name}_overflow" in data else 0.0
+        if edges is None:
+            edges = candidate_edges
+        elif not np.array_equal(edges, candidate_edges):
+            raise ValueError(f"inconsistent {name} histogram bins")
+        replicate_counts.append(counts)
+        totals.append(float(counts.sum() + under + over))
+    if edges is None or not replicate_counts:
+        return None
+    counts = np.asarray(replicate_counts)
+    totals = np.asarray(totals)
+    probabilities = _maxwell_bin_probabilities(edges, name)
+    pooled_counts = counts.sum(axis=0)
+    pooled_expected = totals.sum() * probabilities
+    keep = (pooled_counts >= 25) & (pooled_expected > 0.0)
+    if not np.any(keep):
+        return None
+    ratio = pooled_counts[keep] / pooled_expected[keep]
+    if len(counts) > 1:
+        rng = np.random.default_rng(260922 + {"c": 1, "w": 2, "x": 3}[name])
+        draw = rng.integers(0, len(counts), size=(4000, len(counts)))
+        boot_counts = counts[draw].sum(axis=1)[:, keep]
+        boot_totals = totals[draw].sum(axis=1)
+        boot_ratio = boot_counts / (boot_totals[:, None] * probabilities[keep])
+        lower, upper = np.quantile(boot_ratio, (0.025, 0.975), axis=0)
     else:
-        pdf = lambda x: (0.5 * (4.0 * np.pi) * (2.0 * np.pi) * np.pi**-2.5
-                         * x**0.25 * kv(0.5, 2.0 * np.sqrt(x)))
-        expected = total * np.array([quad(pdf, lo, hi)[0]
-                                     for lo, hi in zip(edges[:-1], edges[1:])])
+        lower = upper = ratio.copy()
     centers = (0.5 * (edges[:-1] + edges[1:]) if name == "c"
                else np.sqrt(edges[:-1] * edges[1:]))
-    # Show only bins resolved to better than ~20%.
-    keep = (counts >= 25) & (expected > 0.0)
-    ratio = counts[keep] / expected[keep]
-    return centers[keep], ratio, ratio / np.sqrt(counts[keep])
+    return centers[keep], ratio, lower, upper
 
 
 def make_tail_figure(records: list, output: Path) -> None:
@@ -302,8 +408,10 @@ def make_tail_figure(records: list, output: Path) -> None:
 
     The deviations here are percent-level, so the ratio to the Maxwellian is
     shown instead of log densities, where every curve would overlap the
-    Gaussian; bands are Poisson 1-sigma and dashed lines the Sonine form
-    built from each case's measured a20 or a02.
+    Gaussian.  Bands resample independent realizations (not correlated
+    particle snapshots), and dashed lines are the complete fourth-order
+    Sonine marginals from Megias & Santos Eqs. (5.4a-c), specialized to
+    three translational and two rotational degrees of freedom.
     """
     import matplotlib.pyplot as plt
 
@@ -320,27 +428,40 @@ def make_tail_figure(records: list, output: Path) -> None:
         for column, ar in enumerate(ars):
             ax = axes[row, column]
             for (color, marker), alpha in zip(SERIES_STYLE, alphas):
-                pooled = _pooled_ratio(by_case.get((alpha, ar), []), name)
+                pooled = _replicate_ratio(by_case.get((alpha, ar), []), name)
                 if pooled is None:
                     continue
-                x, ratio, error = pooled
+                x, ratio, lower, upper = pooled
                 ax.plot(x, ratio, color=color, lw=1.6, label=rf"$\alpha={alpha:g}$")
-                ax.fill_between(x, ratio - error, ratio + error, color=color,
+                ax.fill_between(x, lower, upper, color=color,
                                 alpha=0.18, lw=0)
-                # Sonine form with this case's measured cumulant, Eqs. (5.4a,b)
+                # Sonine form with this case's measured cumulants, Eqs. (5.4a-c)
                 # for d_t=3, d_r=2: where the data leave it, cumulants beyond
                 # fourth order carry the tail.
                 items = by_case[(alpha, ar)]
-                cumulant = {"c": "a20", "w": "a02"}.get(name)
-                if cumulant:
-                    value = float(np.mean([item["observables"][cumulant]["mean"]
-                                           for item in items]))
-                    grid = np.linspace(x.min(), x.max(), 200) if name == "c" \
-                        else np.geomspace(x.min(), x.max(), 200)
-                    sonine = (1.0 + value * (4 * grid**4 - 20 * grid**2 + 15) / 8.0
-                              if name == "c" else
-                              1.0 + value * (4 * grid**4 - 16 * grid**2 + 8) / 8.0)
-                    ax.plot(grid, sonine, color=color, lw=1.0, ls="--")
+                moments = {
+                    key: float(np.mean([item["observables"][key]["mean"]
+                                        for item in items]))
+                    for key in ("a20", "a02", "a11")
+                }
+                grid = np.linspace(x.min(), x.max(), 200) if name == "c" \
+                    else np.geomspace(x.min(), x.max(), 200)
+                if name == "c":
+                    sonine = (1.0 + moments["a20"]
+                              * (4 * grid**4 - 20 * grid**2 + 15) / 8.0)
+                elif name == "w":
+                    sonine = (1.0 + moments["a02"]
+                              * (4 * grid**4 - 16 * grid**2 + 8) / 8.0)
+                else:
+                    # Megias & Santos Eq. (5.4c), specialized to dt=3,
+                    # dr=2.  Both Bessel orders are 1/2, so their ratio is 1.
+                    a20, a02, a11 = (moments["a20"], moments["a02"], moments["a11"])
+                    joint = a20 + 2.0 * a11 + a02
+                    sonine = (1.0 + 0.5 * joint * grid + 15.0 * a20 / 8.0
+                              + 1.5 * a11 + a02
+                              - np.sqrt(grid) * (0.5 * (a20 + a02)
+                                                 + 1.25 * joint))
+                ax.plot(grid, sonine, color=color, lw=1.0, ls="--")
             ax.axhline(1.0, color="0.35", lw=0.9)
             # Truncated Sonine forms turn negative far out (their breakdown);
             # keep the axis on the measured range.
@@ -421,12 +542,24 @@ def main() -> None:
                     3.0 * (float(np.std(signed, ddof=1) / np.sqrt(len(signed)))
                            if len(signed) > 1 else 0.0))),
             }
-        runtime_pass = all(
+        closure_runtime_pass = all(
             item["result"].get("negative_energy_repairs", 0) == 0
             and item["result"].get("energy_axis_clamps", 0) == 0
             and item["result"].get("energy_monotonic_repairs", 0) == 0
             and item["result"].get("out_of_domain_fraction", 0.0) < 1.0e-3
             for item in items)
+        ntc_quality_pass = all(
+            item["result"].get("ntc") is not None
+            and float(item["result"]["ntc"].get(
+                "majorant_violation_fraction", np.inf)) <= 1.0e-7
+            and int(item["result"]["ntc"].get("peak_candidates_per_step", 10**30))
+            <= int(item["result"]["ntc"].get("candidate_ceiling_per_step", -1))
+            and float(item["result"]["ntc"].get(
+                "final_vrmax_over_initial", np.inf)) <= 3.0
+            and float(item["result"]["ntc"].get(
+                "repeated_particle_pair_fraction", np.inf)) <= 1.0e-2
+            for item in items)
+        runtime_pass = closure_runtime_pass and ntc_quality_pass
         performance_pass = all(
             item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
@@ -442,7 +575,22 @@ def main() -> None:
             "alpha": alpha, "aspect_ratio": ar, "arm": arm,
             "n_replicates": len(items),
             "sampling_complete": all(item["sampling_complete"] for item in items),
-            "runtime_pass": runtime_pass, "performance_pass": performance_pass,
+            "runtime_pass": runtime_pass,
+            "closure_runtime_pass": closure_runtime_pass,
+            "ntc_quality_pass": ntc_quality_pass,
+            "maximum_ntc_majorant_violation_fraction": max(
+                float((item["result"].get("ntc") or {}).get(
+                    "majorant_violation_fraction", np.inf)) for item in items),
+            "maximum_ntc_candidates_per_step": max(
+                int((item["result"].get("ntc") or {}).get(
+                    "peak_candidates_per_step", -1)) for item in items),
+            "maximum_repeated_particle_pair_fraction": max(
+                float((item["result"].get("ntc") or {}).get(
+                    "repeated_particle_pair_fraction", np.inf))
+                for item in items),
+            "maximum_peak_rss_mib": max(
+                float(item["result"].get("peak_rss_mib", np.inf)) for item in items),
+            "performance_pass": performance_pass,
             "maximum_closure_overhead_fraction": max(
                 float(item["result"].get("closure_overhead_fraction", 0.0))
                 for item in items),
@@ -455,46 +603,109 @@ def main() -> None:
 
     equivalence = []
     by_physical = defaultdict(dict)
-    for case in cases:
-        by_physical[(case["alpha"], case["aspect_ratio"])][case["arm"]] = case
+    for (alpha, ar, arm), items in grouped.items():
+        by_physical[(alpha, ar)][arm] = {
+            (item["replicate"], item["seed"]): item for item in items}
     for physical, arms in sorted(by_physical.items()):
         for control in ("unscaled", "dt_half"):
             if "scaled" not in arms or control not in arms:
                 continue
+            paired_keys = sorted(set(arms["scaled"]) & set(arms[control]))
             comparisons, passed = {}, True
             for name in OBSERVABLES:
-                left, right = arms["scaled"]["observables"][name], arms[control]["observables"][name]
-                if left is None or right is None:
+                differences = []
+                for key in paired_keys:
+                    left = arms["scaled"][key]["observables"][name]
+                    right = arms[control][key]["observables"][name]
+                    if left is not None and right is not None:
+                        differences.append(left["mean"] - right["mean"])
+                if not differences:
                     continue
-                error = abs(left["mean"] - right["mean"])
-                combined = 3.0 * np.hypot(left["replicate_stderr"],
-                                          right["replicate_stderr"])
-                # The engineering pilot is small-N, so it keeps an absolute
-                # floor; the time-step control must resolve biases well below
-                # the O(0.01) cumulants it protects.
-                tolerance = (max(0.002, combined) if control == "dt_half"
-                             else max(0.02, combined))
-                comparisons[name] = {"absolute_difference": error, "tolerance": tolerance,
-                                     "pass": bool(error <= tolerance)}
-                passed &= error <= tolerance
+                differences = np.asarray(differences, dtype=float)
+                mean_difference = float(np.mean(differences))
+                paired_stderr = (float(np.std(differences, ddof=1)
+                                       / np.sqrt(len(differences)))
+                                 if len(differences) > 1 else 0.0)
+                error = abs(mean_difference)
+                floor = 0.01 if name.startswith("theta_") else 0.002
+                statistical_resolution = 3.0 * paired_stderr
+                # A large standard error must not make the control easier to
+                # pass.  First require consistency with zero at three SE, but
+                # also cap that statistical resolution.  Formal equivalence
+                # at the tighter practical floor is reported separately; it
+                # is not manufactured from a non-significant difference.
+                resolution_limit = 0.02 if name.startswith("theta_") else 0.01
+                tolerance = max(floor, statistical_resolution)
+                consistency_pass = error <= tolerance
+                precision_pass = (len(differences) >= 4
+                                  and statistical_resolution <= resolution_limit)
+                practical_equivalence_95 = (
+                    error + 1.96 * paired_stderr <= floor)
+                comparisons[name] = {"paired_mean_difference": mean_difference,
+                                     "absolute_difference": error,
+                                     "paired_stderr": paired_stderr,
+                                     "n_pairs": len(differences),
+                                     "practical_floor": floor,
+                                     "statistical_resolution_3se": statistical_resolution,
+                                     "resolution_limit": resolution_limit,
+                                     "tolerance": tolerance,
+                                     "statistical_consistency_pass": bool(
+                                         consistency_pass),
+                                     "precision_pass": bool(precision_pass),
+                                     "practical_equivalence_95": bool(
+                                         practical_equivalence_95),
+                                     "pass": bool(consistency_pass
+                                                  and precision_pass)}
+                passed &= consistency_pass and precision_pass
             equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
                                 "control_arm": control,
+                                "comparison_kind": (
+                                    "paired_consistency_with_precision_gate"),
+                                "paired_realizations": len(paired_keys),
                                 "pass": bool(passed), "observables": comparisons})
     mode = rows[0]["mode"] if rows else None
+    protocols = sorted({row.get("protocol_version", "hcs-ng-v1") for row in rows})
+    variants = sorted({row.get("model_variant", "baseline") for row in rows})
+    correction_flags = sorted({row.get("invariant_corrections", "false")
+                               for row in rows})
+    control_coverage_pass = True
+    if mode == "engineering":
+        physical_cases = {(float(row["alpha"]), float(row["aspect_ratio"]))
+                          for row in rows}
+        for control in ("unscaled", "dt_half"):
+            covered = {(item["alpha"], item["aspect_ratio"])
+                       for item in equivalence
+                       if item["control_arm"] == control and item["pass"]}
+            control_coverage_pass &= covered == physical_cases
     physics_verdict = (bool(cases) and not missing
                        and all(case["sampling_complete"] and case["runtime_pass"]
                                and case["stationarity_pass"] for case in cases)
-                       and all(item["pass"] for item in equivalence))
-    production_verdict = physics_verdict and all(
+                       and all(item["pass"] for item in equivalence)
+                       and control_coverage_pass)
+    performance_verdict = bool(cases) and all(
         case["performance_pass"] for case in cases)
-    artifact_hashes = sorted({item[1]["result"].get("artifact_sha256")
-                              for item in records})
-    summary = {"mode": mode, "n_tasks": len(rows), "n_cases": len(cases),
+    study_verdict = physics_verdict and performance_verdict
+    # The angular artifact is deliberately evidence-only.  A successful HCS
+    # study validates this campaign, not general cross-flow deployment.
+    deployment_eligible = variants == ["baseline"]
+    production_verdict = study_verdict and deployment_eligible
+    artifact_hashes = sorted({value for _, item in records
+                              if (value := item["result"].get("artifact_sha256"))})
+    summary = {"protocol_version": protocols[0] if len(protocols) == 1 else None,
+               "mode": mode,
+               "model_variant": variants[0] if len(variants) == 1 else None,
+               "invariant_corrections": (
+                   correction_flags[0] == "true" if len(correction_flags) == 1 else None),
+               "n_tasks": len(rows), "n_cases": len(cases),
                "n_completed_tasks": len(records), "missing_tasks": missing,
                "artifact_sha256": artifact_hashes[0] if len(artifact_hashes) == 1 else None,
                "physics_campaign_pass": physics_verdict,
+               "engineering_control_coverage_pass": control_coverage_pass,
+               "performance_campaign_pass": performance_verdict,
+               "study_campaign_pass": study_verdict,
+               "artifact_deployment_eligible": deployment_eligible,
                "production_campaign_pass": production_verdict,
-               "campaign_pass": production_verdict, "cases": cases,
+               "campaign_pass": study_verdict, "cases": cases,
                "scaled_unscaled_equivalence": equivalence}
     output = Path(args.output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
