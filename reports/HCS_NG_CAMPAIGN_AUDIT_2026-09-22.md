@@ -9,7 +9,7 @@ NTC majorant grow monotonically. Of 290 submitted tasks, 100 completed and 190
 did not produce final results. The completed tasks are useful forensic data,
 but they do not have the artifact or protocol requested for the HCS study.
 
-The replacement is protocol `hcs-ng-v2`:
+The replacement is protocol `hcs-ng-v3`:
 
 - use `models/microscopic_closure_v2_angular_evidence/closure_v2.npz`;
 - enable only its validated angular response (`validated-angular-only-v1`);
@@ -22,6 +22,13 @@ The replacement is protocol `hcs-ng-v2`:
 This is an HCS evidence campaign. The angular artifact remains
 `evidence_only_not_deployable`; success here must not be described as USF or
 cross-flow validation.
+
+Protocol v2 completed all 120 engineering tasks without execution errors, but
+correctly blocked production: at `alpha=0.5, AR=3`, seven of eight paired seeds
+showed a shift in rotational kurtosis between `dt=0.01` and `dt=0.005`. The
+paired mean was `-0.002525 +/- 0.000796` (standard error; two-sided `p=0.0157`).
+Protocol v3 therefore makes `dt=0.005` the uniform production step and compares
+it against `dt=0.0025` before releasing the sweep.
 
 ## What failed in job 43344190
 
@@ -86,13 +93,14 @@ parameterization, not the trajectory in collision-count time.
 The NTC acceptance probability is invariant only if its speed majorant is in
 the same velocity units as the current state. In a stationary rescaled HCS it
 must remain statistically stationary; it must not accumulate the product of
-all earlier reheating factors. Protocol v2 checks both majorant violations and
-the pre-allocation candidate ceiling.
+all earlier reheating factors. Protocol v3 bounds majorant exceedances per
+accepted collision, the thermal-unit majorant, and the pre-allocation candidate
+ceiling.
 
-Protocol v2 also counts actual collision pairs that reuse either particle in
+Protocol v3 also counts actual collision pairs that reuse either particle in
 one DSMC step. This is a direct time-discretization diagnostic: the engineering
 gate requires the repeated-pair fraction to remain below 1%. The paired
-`dt=0.005` arm is the stronger, observable-level convergence test; the reuse
+`dt=0.0025` arm is the stronger, observable-level convergence test; the reuse
 counter explains a failure instead of silently treating the step size as
 innocuous.
 
@@ -110,8 +118,10 @@ uses
 \]
 
 The repository closure coordinate is the reciprocal convention,
-`T_tr/T_rot`. Protocol v2 writes both ratios explicitly and plots
-`T_rot/T_tr` in the paper-style figure. The sphere-only cumulant involving
+`T_tr/T_rot`. Protocol v3 writes both ratios explicitly and plots
+`T_rot/T_tr` in the paper-style figure, but numerical controls use
+`log(T_tr/T_rot)`, whose absolute difference is invariant under taking the
+reciprocal. The sphere-only cumulant involving
 `(c dot w)^2` as an independent equal-dimensional invariant is not transferred
 unchanged. Instead the campaign retains the spherocylinder material-axis
 signals
@@ -152,7 +162,7 @@ the rotational energy is split uniformly between the two particles. This
 conserves total pair energy and has equipartition as its invariant state. The
 elastic cases are controls, not the target scientific regime.
 
-## Protocol-v2 staged design
+## Protocol-v3 staged design
 
 ### Engineering gate
 
@@ -162,11 +172,11 @@ and the exact elastic block:
 `(alpha,AR)={(0.5,1.35),(0.5,3),(0.8,2),(0.95,2),(1,3)}`.
 
 Each uses eight paired seeds, the production population `N=10000`, and three
-arms: rescaled `dt=0.01`, unscaled `dt=0.01`, and rescaled `dt=0.005`. The gate
-requires complete output,
-stationarity, zero runtime repairs, no closure-domain exits, an NTC violation
-fraction no larger than `1e-7`, a stationary majorant, less than 1% same-step
-particle reuse, and paired statistical consistency. The numerical-control
+arms: rescaled `dt=0.005`, unscaled `dt=0.005`, and rescaled `dt=0.0025`. The
+gate requires complete output, stationarity, zero runtime repairs, no
+closure-domain exits, at most `1e-5` majorant exceedances per accepted pair, a
+stationary majorant, less than 1% same-step particle reuse, and paired
+statistical consistency. The numerical-control
 comparison has an explicit three-standard-error resolution ceiling of `0.01`
 for cumulants/correlations and `0.02` for temperature ratios. It separately
 reports whether the 95% interval establishes the tighter practical-equivalence
@@ -181,15 +191,16 @@ The sweep has 37 physical cases and ten independent realizations per case:
 - `AR={1.1,1.2,1.35,2.5}` at calibrated
   `alpha={0.5,0.8,0.95,1}`.
 
-Every task uses `N=10000`, runs to `tau=1500`, and samples `tau=500..1500`
+Every task uses `N=10000`, `dt=0.005`, runs to `tau=1500`, and samples `tau=500..1500`
 every 5 collisions per particle. Including `AR=1.1` and `1.2` is deliberate:
 the slowest artifact-predicted HCS relaxation time is about 108 collisions per
 particle, so the first retained sample occurs after more than four such times.
 
-The local timing point scales to roughly 3.8 core-hours for the most expensive
-full task if cost is linear in `N*tau`. Thus 370 tasks are about 1,400
-core-hours: approximately 5.5 hours of ideal execution at 256 concurrent cores
-or 11 hours at 128 cores, before queueing and case-to-case variation. The
+Protocol-v2 timings show that halving the step increases wall time by about
+8-23%, not twofold, because candidate-processing work is nearly unchanged.
+Budget roughly 4.5 core-hours for the most expensive full task and about 1,650
+core-hours for the sweep: approximately 6.5 hours of ideal execution at 256
+concurrent cores or 13 hours at 128 cores, before queueing and case variation. The
 submission requests eight hours per sweep task and 1.5 GiB per task.
 
 Parallelism is exclusively across independent cases and realizations. Each
@@ -223,11 +234,11 @@ HCS_NG_MAX_CORES=120 \
 bash hpc/submit_hcs_ng_campaign.sh \
   engineering \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  engineering_angular_v2
+  engineering_angular_v3
 ```
 
 After
-`results/hcs_ng_engineering_angular_v2/summary.json` reports
+`results/hcs_ng_engineering_angular_v3/summary.json` reports
 `study_campaign_pass: true`, submit:
 
 ```bash
@@ -235,13 +246,13 @@ HCS_NG_MAX_CORES=256 \
 bash hpc/submit_hcs_ng_campaign.sh \
   sweep \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  sweep_angular_v2 \
-  results/hcs_ng_engineering_angular_v2/summary.json
+  sweep_angular_v3 \
+  results/hcs_ng_engineering_angular_v3/summary.json
 ```
 
-Do not point protocol v2 at the old `hcs_ng_engineering_baseline_v1` summary.
-The preflight rejects its old protocol, model variant, and missing half-step
-coverage even though its historical top-level verdict was true.
+Do not point protocol v3 at either the old `hcs_ng_engineering_baseline_v1`
+summary or the failed `hcs_ng_engineering_angular_v2` summary. The preflight
+requires a complete, passing protocol-v3 pilot using the same artifact bytes.
 
 ## Relevant implementation
 
@@ -249,7 +260,7 @@ coverage even though its historical top-level verdict was true.
   pre-allocation NTC ceiling;
 - `DSMC_0D_v2/src/dsmc_v2/non_gaussian.py`: explicit temperature-ratio
   conventions and streaming reduced observables;
-- `DSMC_0D_v2/scripts/make_hcs_ng_manifest.py`: staged protocol-v2 designs;
+- `DSMC_0D_v2/scripts/make_hcs_ng_manifest.py`: staged protocol-v3 designs;
 - `DSMC_0D_v2/scripts/run_hcs_ng_task.py`: artifact/correction routing and
   provenance;
 - `DSMC_0D_v2/scripts/analyze_hcs_ng_campaign.py`: replicate-level statistics,

@@ -18,7 +18,9 @@ FIELDS = (
     "sample_delta_tau", "state_update_cpp", "dt",
     "max_ntc_candidates_per_step", "output_prefix",
 )
-PROTOCOL_VERSION = "hcs-ng-v2"
+PROTOCOL_VERSION = "hcs-ng-v3"
+PRODUCTION_DT = 0.005
+CONVERGENCE_DT = 0.0025
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
          260917159, 260917267, 260917373, 260917481, 260917589,
@@ -131,7 +133,11 @@ def main() -> None:
                     "sample_start_tau": start, "sample_end_tau": tau_end,
                     "sample_delta_tau": delta,
                     "state_update_cpp": 0.05,
-                    "dt": 0.005 if arm == "dt_half" else 0.01,
+                    # Protocol v2 found a statistically resolved a02 shift at
+                    # AR=3 between dt=0.01 and 0.005.  Production therefore
+                    # uses 0.005 uniformly, while the engineering half-step
+                    # arm checks it against 0.0025.
+                    "dt": CONVERGENCE_DT if arm == "dt_half" else PRODUCTION_DT,
                     "max_ntc_candidates_per_step": max(100_000, 50 * particles),
                     "output_prefix": str(Path(args.results) / tag),
                 })

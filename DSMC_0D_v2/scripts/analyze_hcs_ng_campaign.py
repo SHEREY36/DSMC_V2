@@ -16,6 +16,18 @@ OBSERVABLES = (
     "theta_tr_over_rot", "theta_rot_over_tr",
     "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
 )
+LOG_THETA = "log_theta_tr_over_rot"
+ANALYSIS_OBSERVABLES = OBSERVABLES + (LOG_THETA,)
+# Report both temperature-ratio conventions, but never gate them twice with
+# the same absolute tolerance.  log(theta) changes only sign under reciprocal
+# convention, so its absolute difference is coordinate-invariant.
+CONTROL_OBSERVABLES = (
+    LOG_THETA, "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
+)
+STATIONARITY_OBSERVABLES = (
+    "theta_tr_over_rot", "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
+)
+MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR = 1.0e-5
 
 
 def integrated_autocorrelation_time(values: np.ndarray) -> float:
@@ -64,6 +76,8 @@ def load_series(path: Path) -> dict[str, np.ndarray]:
                 raw = "" if legacy in ("", None) else 1.0 / float(legacy)
             values.append(float(raw) if raw not in ("", None) else np.nan)
         result[name] = np.asarray(values, dtype=float)
+    theta = result["theta_tr_over_rot"]
+    result[LOG_THETA] = np.where(theta > 0.0, np.log(theta), np.nan)
     return result
 
 
@@ -513,7 +527,7 @@ def main() -> None:
     cases = []
     for (alpha, ar, arm), items in sorted(grouped.items()):
         observables = {}
-        for name in OBSERVABLES:
+        for name in ANALYSIS_OBSERVABLES:
             values = [item["observables"][name]["mean"] for item in items
                       if item["observables"][name] is not None]
             drifts = [item["observables"][name]["relative_early_late_drift"]
@@ -551,7 +565,8 @@ def main() -> None:
         ntc_quality_pass = all(
             item["result"].get("ntc") is not None
             and float(item["result"]["ntc"].get(
-                "majorant_violation_fraction", np.inf)) <= 1.0e-7
+                "majorant_violations_per_accepted_pair", np.inf))
+            <= MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR
             and int(item["result"]["ntc"].get("peak_candidates_per_step", 10**30))
             <= int(item["result"]["ntc"].get("candidate_ceiling_per_step", -1))
             and float(item["result"]["ntc"].get(
@@ -564,9 +579,10 @@ def main() -> None:
             item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
         stationarity_pass = all(
-            value is None
-            or abs(value["replicate_mean_drift"]) <= value["drift_tolerance"]
-            for value in observables.values())
+            observables[name] is None
+            or abs(observables[name]["replicate_mean_drift"])
+            <= observables[name]["drift_tolerance"]
+            for name in STATIONARITY_OBSERVABLES)
         tails = {name: sum(int(item["tail_counts"].get(name, 0)) for item in items)
                  for name in ("c", "w", "x")}
         tail_fits = {name: pooled_tail_fit(items, name)
@@ -581,6 +597,13 @@ def main() -> None:
             "maximum_ntc_majorant_violation_fraction": max(
                 float((item["result"].get("ntc") or {}).get(
                     "majorant_violation_fraction", np.inf)) for item in items),
+            "maximum_ntc_majorant_violations_per_accepted_pair": max(
+                float((item["result"].get("ntc") or {}).get(
+                    "majorant_violations_per_accepted_pair", np.inf))
+                for item in items),
+            "maximum_final_vrmax_over_initial": max(
+                float((item["result"].get("ntc") or {}).get(
+                    "final_vrmax_over_initial", np.inf)) for item in items),
             "maximum_ntc_candidates_per_step": max(
                 int((item["result"].get("ntc") or {}).get(
                     "peak_candidates_per_step", -1)) for item in items),
@@ -612,7 +635,7 @@ def main() -> None:
                 continue
             paired_keys = sorted(set(arms["scaled"]) & set(arms[control]))
             comparisons, passed = {}, True
-            for name in OBSERVABLES:
+            for name in CONTROL_OBSERVABLES:
                 differences = []
                 for key in paired_keys:
                     left = arms["scaled"][key]["observables"][name]
@@ -627,14 +650,15 @@ def main() -> None:
                                        / np.sqrt(len(differences)))
                                  if len(differences) > 1 else 0.0)
                 error = abs(mean_difference)
-                floor = 0.01 if name.startswith("theta_") else 0.002
+                is_temperature_ratio = name == LOG_THETA
+                floor = 0.01 if is_temperature_ratio else 0.002
                 statistical_resolution = 3.0 * paired_stderr
                 # A large standard error must not make the control easier to
                 # pass.  First require consistency with zero at three SE, but
                 # also cap that statistical resolution.  Formal equivalence
                 # at the tighter practical floor is reported separately; it
                 # is not manufactured from a non-significant difference.
-                resolution_limit = 0.02 if name.startswith("theta_") else 0.01
+                resolution_limit = 0.02 if is_temperature_ratio else 0.01
                 tolerance = max(floor, statistical_resolution)
                 consistency_pass = error <= tolerance
                 precision_pass = (len(differences) >= 4
@@ -664,6 +688,10 @@ def main() -> None:
                                 "paired_realizations": len(paired_keys),
                                 "pass": bool(passed), "observables": comparisons})
     mode = rows[0]["mode"] if rows else None
+    arm_dt = {
+        arm: sorted({float(row["dt"]) for row in rows if row["arm"] == arm})
+        for arm in sorted({row["arm"] for row in rows})
+    }
     protocols = sorted({row.get("protocol_version", "hcs-ng-v1") for row in rows})
     variants = sorted({row.get("model_variant", "baseline") for row in rows})
     correction_flags = sorted({row.get("invariant_corrections", "false")
@@ -693,6 +721,7 @@ def main() -> None:
                               if (value := item["result"].get("artifact_sha256"))})
     summary = {"protocol_version": protocols[0] if len(protocols) == 1 else None,
                "mode": mode,
+               "arm_dt": arm_dt,
                "model_variant": variants[0] if len(variants) == 1 else None,
                "invariant_corrections": (
                    correction_flags[0] == "true" if len(correction_flags) == 1 else None),

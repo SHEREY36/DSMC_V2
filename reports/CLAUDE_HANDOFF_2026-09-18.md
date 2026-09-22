@@ -4,8 +4,9 @@
 > this hand-off have been superseded for the non-Gaussian HCS study by
 > `reports/HCS_NG_CAMPAIGN_AUDIT_2026-09-22.md`.  The new protocol uses the
 > angular-evidence artifact for an explicitly evidence-only HCS campaign,
-> validates rescaling and half-step convergence before the sweep, and rejects
-> the old baseline engineering summary as a gate.  USF remains non-gating.
+> uses `dt=0.005` with a `dt=0.0025` convergence arm, validates rescaling before
+> the sweep, and rejects the old baseline and protocol-v2 engineering summaries
+> as gates.  USF remains non-gating.
 
 This document is the continuation point for a new agent.  It separates what is
 scientifically established from what is only diagnostic, records the local

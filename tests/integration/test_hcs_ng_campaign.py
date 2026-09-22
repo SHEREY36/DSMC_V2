@@ -54,9 +54,12 @@ def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v2"}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v3"}
     assert {row["model_variant"] for row in rows} == {"baseline"}
     assert {row["invariant_corrections"] for row in rows} == {"false"}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "unscaled"} == {0.005}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.0025}
 
 
 def test_domain_pilot_uses_every_artifact_alpha_ar_pair(tmp_path):
@@ -166,6 +169,22 @@ def test_tail_fit_removes_radial_jacobian_and_obeys_count_gate(tmp_path):
     assert not module.pooled_tail_fit([blocked], "c")["fit_ready"]
 
 
+def test_temperature_ratio_gate_is_reciprocal_invariant(tmp_path):
+    module = _analysis_module()
+    moments = tmp_path / "moments.csv"
+    moments.write_text(
+        "theta_tr_over_rot,theta_rot_over_tr\n"
+        "0.25,4.0\n"
+        "0.5,2.0\n"
+    )
+    series = module.load_series(moments)
+    assert np.allclose(series[module.LOG_THETA], np.log([0.25, 0.5]))
+    assert module.LOG_THETA in module.CONTROL_OBSERVABLES
+    assert "theta_tr_over_rot" not in module.CONTROL_OBSERVABLES
+    assert "theta_rot_over_tr" not in module.CONTROL_OBSERVABLES
+    assert module.MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR == 1.0e-5
+
+
 def test_full_domain_correction_preflight_fails_closed(tmp_path):
     surface = np.array([[0.8, 0.2, 2.0], [0.8, 1.0, 2.0],
                         [0.95, 0.2, 3.0], [0.95, 1.0, 3.0]])
@@ -188,7 +207,7 @@ def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
     assert len(cases) == 37 and len(rows) == 37 * 10
     assert min(ar for _, ar in cases) == 1.1
-    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.01}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
     assert {alpha for alpha, ar in cases if ar == 2.0} == {
         0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0}
     assert {ar for alpha, ar in cases if alpha == 0.8} == {
@@ -221,15 +240,23 @@ def test_sweep_requires_passing_pilot_on_same_bytes(tmp_path):
     for payload, ok in (
             ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
               "model_variant": "baseline", "invariant_corrections": False,
+              "study_campaign_pass": True, "artifact_sha256": digest,
+              "arm_dt": {"scaled": [0.005], "unscaled": [0.005],
+                         "dt_half": [0.0025]},
+              "n_tasks": 120, "n_completed_tasks": 120}, False),
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v3",
+              "model_variant": "baseline", "invariant_corrections": False,
               "study_campaign_pass": False,
               "artifact_sha256": digest}, False),
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v3",
               "model_variant": "baseline", "invariant_corrections": False,
               "study_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v2",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v3",
               "model_variant": "baseline", "invariant_corrections": False,
               "study_campaign_pass": True, "artifact_sha256": digest,
+              "arm_dt": {"scaled": [0.005], "unscaled": [0.005],
+                         "dt_half": [0.0025]},
               "n_tasks": 120, "n_completed_tasks": 120,
               "scaled_unscaled_equivalence": [
                   {"alpha": alpha, "aspect_ratio": ar,

@@ -7,7 +7,7 @@ cd "$ROOT"
 MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
-TAG=${3:-${MODE}_${MODEL_VARIANT}_v2}
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v3}
 # Fourth argument: the engineering-pilot summary for MODE=sweep, otherwise
 # the full-domain HCS validation summary.
 GATE_SUMMARY=${4:-}

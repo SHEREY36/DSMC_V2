@@ -13,7 +13,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 
-PROTOCOL_VERSION = "hcs-ng-v2"
+PROTOCOL_VERSION = "hcs-ng-v3"
 
 
 def digest(path: Path) -> str:
@@ -40,6 +40,16 @@ def main() -> None:
     if len(modes) != 1:
         raise SystemExit("manifest mixes campaign modes")
     mode = modes.pop()
+    arm_dt = {}
+    for row in rows:
+        arm_dt.setdefault(row["arm"], set()).add(float(row["dt"]))
+    expected_dt = ({"scaled": {0.005}, "unscaled": {0.005},
+                    "dt_half": {0.0025}}
+                   if mode == "engineering"
+                   else {"scaled": {0.005}} if mode == "sweep" else None)
+    if expected_dt is not None and arm_dt != expected_dt:
+        raise SystemExit(
+            f"{mode} manifest has wrong protocol-v3 step sizes: {arm_dt}")
     protocols = {row.get("protocol_version", "") for row in rows}
     if protocols != {PROTOCOL_VERSION}:
         raise SystemExit(
@@ -99,7 +109,10 @@ def main() -> None:
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("engineering pilot did not use these artifact bytes")
         if pilot.get("n_tasks") != 120:
-            raise SystemExit("engineering pilot does not contain the 120-task protocol-v2 design")
+            raise SystemExit("engineering pilot does not contain the 120-task protocol-v3 design")
+        if pilot.get("arm_dt") != {
+                "scaled": [0.005], "unscaled": [0.005], "dt_half": [0.0025]}:
+            raise SystemExit("engineering pilot used the wrong protocol-v3 step sizes")
         if pilot.get("n_completed_tasks") != pilot.get("n_tasks"):
             raise SystemExit("engineering pilot is incomplete")
         controls = pilot.get("scaled_unscaled_equivalence", [])
