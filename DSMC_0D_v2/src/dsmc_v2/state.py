@@ -72,11 +72,15 @@ class ParticleState:
         Velocities and angular velocities have the same inverse-time scaling.
         The separately stored rotational energy must therefore receive the
         square of that factor.  Keeping all three arrays synchronized is
-        essential once particle axes are advanced with ``omega``.
+        essential once particle axes are advanced with ``omega``.  Work in
+        the zero-momentum frame before reheating: otherwise roundoff in the
+        conserved centre-of-mass velocity is amplified by every rescale and
+        eventually masquerades as translational temperature.
         """
         scale = float(scale)
         if not np.isfinite(scale) or scale <= 0.0:
             raise ValueError("thermal-state scale must be finite and positive")
+        self.velocity -= np.mean(self.velocity, axis=0)
         self.velocity *= scale
         self.omega *= scale
         self.rotational_energy *= scale * scale
@@ -101,7 +105,9 @@ class ParticleState:
             raise ValueError("cannot normalize a state with non-positive temperature")
         velocity_scale = np.sqrt(target_ttr / current_ttr)
         rotation_scale = np.sqrt(target_trot / current_trot)
-        self.velocity *= velocity_scale
+        mean_velocity = np.mean(self.velocity, axis=0)
+        self.velocity = mean_velocity + velocity_scale * (
+            self.velocity - mean_velocity)
         self.omega *= rotation_scale
         self.rotational_energy *= rotation_scale * rotation_scale
         self.normalize_constraints()
@@ -113,7 +119,11 @@ class ParticleState:
 
     def temperatures(self, mass: float) -> tuple[float, float, float]:
         n = self.count
-        ttr = mass * np.sum(self.velocity**2) / (3.0 * n)
+        # Granular temperature is the kinetic energy of peculiar velocity.
+        # The uniform centre-of-mass mode is conserved momentum, not heat.
+        # np.var performs the centered reduction without retaining another
+        # N-by-3 peculiar-velocity array on every DSMC time step.
+        ttr = mass * np.sum(np.var(self.velocity, axis=0)) / 3.0
         trot = np.sum(self.rotational_energy) / n
         return float(ttr), float(trot), float((3.0 * ttr + 2.0 * trot) / 5.0)
 

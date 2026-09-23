@@ -40,6 +40,9 @@ def runtime_gate_status(diagnostics: dict) -> dict:
         reasons.append("energy_axis_clamps_not_zero")
     if int(diagnostics.get("energy_monotonic_repairs", 0)) != 0:
         reasons.append("energy_monotonic_repairs_not_zero")
+    if float(diagnostics.get(
+            "maximum_bulk_to_thermal_temperature_ratio", 0.0)) >= 1.0e-12:
+        reasons.append("bulk_to_thermal_temperature_ratio_not_below_1e-12")
     return {
         "pass": not reasons,
         "reasons": reasons,
@@ -49,6 +52,7 @@ def runtime_gate_status(diagnostics: dict) -> dict:
             "closure_overhead_fraction_exclusive_maximum": 0.15,
             "energy_axis_clamps": 0,
             "energy_monotonic_repairs": 0,
+            "bulk_to_thermal_temperature_ratio_exclusive_maximum": 1.0e-12,
         },
     }
 
@@ -216,6 +220,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         config, output_path, count, params.mass, params.inertia, sphere)
     theta_minimum, theta_maximum = np.inf, -np.inf
     minimum_theta_hull_log_margin = np.inf
+    maximum_bulk_to_thermal_temperature_ratio = 0.0
     theta_guard_fraction = float(config.get("simulation", {}).get(
         "closure_theta_guard_fraction", 0.0))
     if not 0.0 <= theta_guard_fraction < 0.5:
@@ -443,6 +448,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                          eij_override=normal)
             if hcs_rescale:
                 current_ttr, _, current_total = state.temperatures(params.mass)
+                mean_velocity = np.mean(state.velocity, axis=0)
+                bulk_temperature = (params.mass * float(np.dot(
+                    mean_velocity, mean_velocity)) / 3.0)
+                maximum_bulk_to_thermal_temperature_ratio = max(
+                    maximum_bulk_to_thermal_temperature_ratio,
+                    bulk_temperature / max(current_ttr, 1.0e-30))
                 current_reference = current_ttr if sphere else current_total
                 if current_reference <= 0.0:
                     raise FloatingPointError(
@@ -529,6 +540,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             None if not np.isfinite(minimum_theta_hull_log_margin)
             else minimum_theta_hull_log_margin),
         "closure_theta_guard_fraction": theta_guard_fraction,
+        "maximum_bulk_to_thermal_temperature_ratio": (
+            maximum_bulk_to_thermal_temperature_ratio),
+        "final_center_of_mass_speed": float(np.linalg.norm(
+            np.mean(state.velocity, axis=0))),
         "ntc": {
             "initial_vrmax": initial_vrmax, "final_vrmax": vrmax,
             "final_vrmax_over_initial": vrmax / initial_vrmax,

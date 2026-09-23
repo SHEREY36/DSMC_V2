@@ -14,7 +14,7 @@ cd "$ROOT"
 MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
-TAG=${3:-${MODE}_${MODEL_VARIANT}_v4}
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v5}
 # Fourth argument: engineering summary for MODE=stability-sentinel; sentinel
 # summary for MODE=stability; full stability summary for sweep/map; passing
 # sweep summary for tails; or full-domain HCS summary for domain-pilot.

@@ -336,9 +336,10 @@ class VariationalArtifactTests(unittest.TestCase):
             "closure_overhead_fraction": 0.15,
             "energy_axis_clamps": 1,
             "energy_monotonic_repairs": 1,
+            "maximum_bulk_to_thermal_temperature_ratio": 1.0e-12,
         })
         self.assertFalse(rejected["pass"])
-        self.assertEqual(len(rejected["reasons"]), 5)
+        self.assertEqual(len(rejected["reasons"]), 6)
 
     def test_variational_loss_loader_has_no_gmm_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:

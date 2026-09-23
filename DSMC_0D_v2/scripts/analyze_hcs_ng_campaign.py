@@ -28,6 +28,7 @@ STATIONARITY_OBSERVABLES = (
     LOG_THETA, "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
 )
 MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR = 1.0e-5
+MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO = 1.0e-12
 MINIMUM_THETA_HULL_LOG_MARGIN = 0.02
 MINIMUM_STATIONARITY_SAMPLES = 15
 STATIONARITY_ABSOLUTE_TOLERANCE = {
@@ -721,6 +722,13 @@ def main() -> None:
             and item["result"].get("energy_monotonic_repairs", 0) == 0
             and item["result"].get("out_of_domain_fraction", 0.0) < 1.0e-3
             for item in items)
+        legacy_engineering_bulk = (
+            rows and rows[0]["mode"] == "engineering"
+            and all(item["protocol_version"] == "hcs-ng-v3" for item in items))
+        bulk_frame_pass = legacy_engineering_bulk or all(
+            float(item["result"].get(
+                "maximum_bulk_to_thermal_temperature_ratio", np.inf))
+            < MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO for item in items)
         ntc_quality_pass = all(
             item["result"].get("ntc") is not None
             and float(item["result"]["ntc"].get(
@@ -733,7 +741,7 @@ def main() -> None:
             and float(item["result"]["ntc"].get(
                 "repeated_particle_pair_fraction", np.inf)) <= 1.0e-2
             for item in items)
-        runtime_pass = closure_runtime_pass and ntc_quality_pass
+        runtime_pass = closure_runtime_pass and ntc_quality_pass and bulk_frame_pass
         performance_pass = all(
             item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
@@ -793,6 +801,11 @@ def main() -> None:
             "theta_domain_margin_pass": theta_domain_margin_pass,
             "runtime_pass": runtime_pass,
             "closure_runtime_pass": closure_runtime_pass,
+            "bulk_frame_pass": bulk_frame_pass,
+            "maximum_bulk_to_thermal_temperature_ratio": max(
+                float(item["result"].get(
+                    "maximum_bulk_to_thermal_temperature_ratio", 0.0))
+                for item in items),
             "ntc_quality_pass": ntc_quality_pass,
             "maximum_ntc_majorant_violation_fraction": max(
                 float((item["result"].get("ntc") or {}).get(

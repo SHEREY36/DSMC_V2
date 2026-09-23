@@ -33,6 +33,8 @@ def test_rescaled_hcs_keeps_ntc_majorant_stationary(tmp_path):
     assert ntc["majorant_violation_fraction"] < 1.0e-4, ntc
     assert ntc["actual_collision_pairs"] == result["collisions"] // 2
     assert ntc["repeated_particle_pair_fraction"] < 0.02, ntc
+    assert result["maximum_bulk_to_thermal_temperature_ratio"] < 1.0e-24
+    assert result["final_center_of_mass_speed"] < 1.0e-14
     assert result["peak_rss_mib"] > 0.0
 
 

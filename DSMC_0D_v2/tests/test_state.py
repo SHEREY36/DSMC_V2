@@ -72,6 +72,22 @@ class StateTests(unittest.TestCase):
         self.assertAlmostEqual(trot, 2.0, places=14)
         state.normalize_constraints()
 
+    def test_temperature_is_galilean_invariant_and_rescale_removes_com_roundoff(self):
+        np.random.seed(1307)
+        state = initialize_particles(
+            257, 0.7, 1.3, 1.0, 0.7, np.random.default_rng(1308),
+            isotropic_rotation=True)
+        before = state.temperatures(1.0)
+        state.velocity += np.array([4.0, -3.0, 2.0])
+        shifted = state.temperatures(1.0)
+        np.testing.assert_allclose(shifted, before, rtol=2.0e-14, atol=2.0e-14)
+        state.rescale_thermal_state(2.5)
+        np.testing.assert_allclose(np.mean(state.velocity, axis=0), 0.0,
+                                   atol=1.0e-14)
+        after = state.temperatures(1.0)
+        self.assertAlmostEqual(after[0], before[0] * 2.5**2, places=13)
+        self.assertAlmostEqual(after[1], before[1] * 2.5**2, places=13)
+
 
 if __name__ == "__main__":
     unittest.main()

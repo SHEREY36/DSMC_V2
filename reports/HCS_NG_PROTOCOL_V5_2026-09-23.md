@@ -1,4 +1,4 @@
-# HCS non-Gaussian protocol v4 - 2026-09-23
+# HCS non-Gaussian protocol v5 - 2026-09-23
 
 ## Decision
 
@@ -12,16 +12,40 @@ metastable plateau. The exit time approximately collapsed when expressed as
 
 with failure near `chi=400..500`. A local `alpha=0.5, AR=2` A/B test failed at
 approximately the same time with the angular response both enabled and
-disabled and at `N=800` as in the `N=10000` production trajectories. Thus the
-domain boundary and angular response are not the cause; they expose a
-long-time defect of the iterated energy-partition dynamics. The completed
-`alpha=0.9` and `0.95` runs are also provisional because the same scaling can
-delay an exit beyond `tau=1500`.
+disabled and at `N=800` as in the `N=10000` production trajectories.
 
-Protocol v4 does not extend the hull or impose a target temperature ratio.
-Either action would manufacture a stationary state. It instead fails closed
-until the unchanged microscopic model demonstrates a real long-time HCS
-attractor.
+The permanent cause is now identified. The similarity thermostat computed
+`Ttr` from raw velocity rather than peculiar velocity. Pair collisions
+conserve the centre-of-mass velocity, so roundoff in that neutral mode was not
+collisionally cooled but was multiplied by every reheating step. At the old
+exit, 47--90 percent of the reported translational temperature was bulk
+centre-of-mass kinetic energy across the failed cases. For example, at
+`alpha=0.5, AR=2, tau=585`, the raw calculation gave `Ttr=1.141` while the
+peculiar calculation gave `Ttr=0.484`, with the same `Trot=0.776`. Thus the
+closure received a false ratio of 1.47 while the physical ratio was 0.624.
+The collapse with `(1-alpha^2)tau` is the signature of cumulative similarity
+reheating of this conserved numerical mode, not evidence of a delayed
+energy-kernel instability.
+
+The state now defines granular temperature from peculiar velocity and
+projects the HCS state back to its exactly zero-momentum frame before each
+similarity rescale. This operation is Galilean invariant and does not alter
+relative velocities, modal collision energies, or non-Gaussian moments. The
+completed `alpha=0.9` and `0.95` trends were sampled before substantial bulk
+contamination, but they remain provisional until the corrected campaign
+passes the long-time gates.
+
+An accelerated mechanism control (`alpha=0.5`, `AR=2`, `N=400`, `dt=0.05`)
+reached `tau=700`, beyond the old `tau~588` exit. It retained a positive
+normalized hull margin of `0.231`, a maximum bulk/thermal temperature ratio of
+`2.0e-32`, `vrmax/vrmax_initial=1.0`, and zero majorant violations. This is a
+diagnostic confirmation of the centre-of-mass mechanism, not a time-step
+convergence result; the scientific gates still use `dt=0.005` and `0.0025`.
+
+Protocol v5 does not extend the hull or impose a target temperature ratio.
+Either action would manufacture a stationary state. It fixes the temperature
+definition and zero-momentum projection, then fails closed until the unchanged
+microscopic model demonstrates a real long-time HCS attractor.
 
 ## Staged gates
 
@@ -29,7 +53,7 @@ attractor.
    `dt=0.005`/`0.0025` checks at production particle count. A complete,
    passing v3 engineering summary is reusable only when its artifact hash,
    model variant, correction routing, task count, arms, and all controls match
-   exactly; v3 and v4 have the same numerical engineering design. Its
+   exactly; v3 and v5 have the same numerical engineering design. Its
    stationarity diagnostics are reported but are not treated as long-time HCS
    evidence; that authority belongs to the following two stages.
 2. A 40-task long-time sentinel first exercises five physical coordinates,
@@ -48,6 +72,9 @@ attractor.
    test, agreement of the two late-time attractors, the full dissipation
    horizon, a positive calibrated-domain margin, runtime/NTC quality, and
    long-horizon time-step consistency.
+   Each result also records the maximum bulk-to-thermal temperature ratio and
+   final centre-of-mass speed, so a recurrence of the thermostat defect is
+   directly observable.
 6. Sweep and map campaigns require the passing stability summary from the
    exact same artifact bytes. The 1,200-task tail campaign additionally
    requires a complete, passing 370-task sweep, so the largest allocation

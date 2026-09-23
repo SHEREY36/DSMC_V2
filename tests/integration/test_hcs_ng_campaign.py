@@ -54,7 +54,7 @@ def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v4"}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v5"}
     assert {row["model_variant"] for row in rows} == {"baseline"}
     assert {row["invariant_corrections"] for row in rows} == {"false"}
     assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
@@ -108,7 +108,7 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(pilot)]
     pilot.write_text(json.dumps({
-        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v4",
+        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v5",
         "model_variant": "baseline", "invariant_corrections": False,
         "long_time_stability_campaign_pass": True,
         "artifact_sha256": digest,
@@ -274,6 +274,7 @@ def test_temperature_ratio_gate_is_reciprocal_invariant(tmp_path):
     assert "theta_tr_over_rot" not in module.CONTROL_OBSERVABLES
     assert "theta_rot_over_tr" not in module.CONTROL_OBSERVABLES
     assert module.MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR == 1.0e-5
+    assert module.MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO == 1.0e-12
 
 
 def test_stationarity_gate_detects_delayed_departure():
@@ -344,25 +345,25 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
     missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert missing.returncode != 0 and "pilot-summary" in missing.stderr
     for payload, ok in (
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v4",
-              "model_variant": "baseline", "invariant_corrections": False,
-              "long_time_stability_campaign_pass": True,
-              "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v3",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v5",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest}, False),
             ({"mode": "stability", "protocol_version": "hcs-ng-v4",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "long_time_stability_campaign_pass": True,
+              "artifact_sha256": digest}, False),
+            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": False,
               "n_tasks": 148, "n_completed_tasks": 148,
               "failed_tasks": [], "missing_tasks": [],
               "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v4",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v4",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest,
@@ -383,7 +384,7 @@ def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(summary)]
     payload = {
-        "mode": "sweep", "protocol_version": "hcs-ng-v4",
+        "mode": "sweep", "protocol_version": "hcs-ng-v5",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "scientific_outputs_released": True,
         "artifact_sha256": digest,

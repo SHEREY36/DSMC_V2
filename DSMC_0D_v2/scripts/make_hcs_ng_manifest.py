@@ -18,7 +18,7 @@ FIELDS = (
     "sample_start_tau", "sample_end_tau", "sample_delta_tau", "state_update_cpp", "dt",
     "max_ntc_candidates_per_step", "output_prefix",
 )
-PROTOCOL_VERSION = "hcs-ng-v4"
+PROTOCOL_VERSION = "hcs-ng-v5"
 PRODUCTION_DT = 0.005
 CONVERGENCE_DT = 0.0025
 LONG_TIME_DISSIPATION_HORIZON = 600.0

@@ -1,11 +1,14 @@
 # HCS non-Gaussian campaign audit - 2026-09-22
 
 > **Superseded on 2026-09-23.** The completed protocol-v3 sweep exposed a
-> delayed HCS energy-partition instability after its short engineering gate.
-> Its inelastic measurements are diagnostic, not stationary HCS results. Do
-> not use the v3 submission commands below. Protocol v4 and the current
-> Negishi sequence are documented in
-> `reports/HCS_NG_PROTOCOL_V4_2026-09-23.md`.
+> delayed apparent HCS energy-partition instability after its short engineering
+> gate. The cause was later identified as similarity amplification of
+> centre-of-mass roundoff that the old code incorrectly included in `Ttr`, not
+> as a demonstrated instability of the energy kernel. Its inelastic
+> measurements remain diagnostic because the contaminated ratio was fed back
+> into the closure. Do not use the v3 submission commands below. Protocol v4
+> and the current Negishi sequence are documented in
+> `reports/HCS_NG_PROTOCOL_V5_2026-09-23.md`.
 
 ## Decision
 
