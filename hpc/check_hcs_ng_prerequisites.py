@@ -13,7 +13,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 
-PROTOCOL_VERSION = "hcs-ng-v3"
+PROTOCOL_VERSION = "hcs-ng-v4"
 
 
 def digest(path: Path) -> str:
@@ -30,7 +30,8 @@ def main() -> None:
     parser.add_argument("--artifact", required=True)
     parser.add_argument("--hcs-summary")
     parser.add_argument("--pilot-summary",
-                        help="passing engineering-pilot summary; gates the sweep")
+                        help=("passing summary from the immediately preceding "
+                              "engineering/stability stage"))
     parser.add_argument("--allow-engineering", action="store_true")
     args = parser.parse_args()
     rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
@@ -46,10 +47,13 @@ def main() -> None:
     expected_dt = ({"scaled": {0.005}, "unscaled": {0.005},
                     "dt_half": {0.0025}}
                    if mode == "engineering"
+                   else {"scaled": {0.005}, "dt_half": {0.0025}}
+                   if mode == "stability-sentinel"
+                   else {"scaled": {0.005}} if mode == "stability"
                    else {"scaled": {0.005}} if mode == "sweep" else None)
     if expected_dt is not None and arm_dt != expected_dt:
         raise SystemExit(
-            f"{mode} manifest has wrong protocol-v3 step sizes: {arm_dt}")
+            f"{mode} manifest has wrong protocol-v4 step sizes: {arm_dt}")
     protocols = {row.get("protocol_version", "") for row in rows}
     if protocols != {PROTOCOL_VERSION}:
         raise SystemExit(
@@ -88,18 +92,21 @@ def main() -> None:
     if mode == "engineering":
         if not args.allow_engineering:
             raise SystemExit("engineering mode requires --allow-engineering")
-    elif mode == "sweep":
-        # The sweep is an HCS-only campaign on one frozen model variant. It is
-        # gated on the engineering pilot of the same bytes: stationarity,
-        # scaled/unscaled consistency, half-step convergence, bounded Monte
-        # Carlo resolution, and zero runtime repairs.
+    elif mode == "stability-sentinel":
         if not args.pilot_summary:
-            raise SystemExit("sweep requires --pilot-summary from a passing engineering pilot")
+            raise SystemExit(
+                "stability-sentinel mode requires --pilot-summary from a passing "
+                "engineering pilot")
         pilot = json.loads(Path(args.pilot_summary).read_text())
         if pilot.get("mode") != "engineering":
             raise SystemExit("pilot summary is not an engineering-mode summary")
-        if pilot.get("protocol_version") != PROTOCOL_VERSION:
-            raise SystemExit("engineering pilot predates the current HCS-NG protocol")
+        # The v3 and v4 engineering designs are numerically identical: 120
+        # tasks, the same five physical cases, eight seeds, N=10000, and the
+        # same 0.005/0.0025 arms.  v4 changes only the downstream long-time
+        # gates, so an exact-byte, fully passing v3 engineering result is
+        # reusable and avoids recomputing evidence we already possess.
+        if pilot.get("protocol_version") not in ("hcs-ng-v3", PROTOCOL_VERSION):
+            raise SystemExit("engineering pilot is incompatible with HCS-NG v4")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("engineering pilot used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -109,10 +116,10 @@ def main() -> None:
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("engineering pilot did not use these artifact bytes")
         if pilot.get("n_tasks") != 120:
-            raise SystemExit("engineering pilot does not contain the 120-task protocol-v3 design")
+            raise SystemExit("engineering pilot does not contain the 120-task protocol-v4 design")
         if pilot.get("arm_dt") != {
                 "scaled": [0.005], "unscaled": [0.005], "dt_half": [0.0025]}:
-            raise SystemExit("engineering pilot used the wrong protocol-v3 step sizes")
+            raise SystemExit("engineering pilot used the wrong protocol-v4 step sizes")
         if pilot.get("n_completed_tasks") != pilot.get("n_tasks"):
             raise SystemExit("engineering pilot is incomplete")
         controls = pilot.get("scaled_unscaled_equivalence", [])
@@ -126,6 +133,51 @@ def main() -> None:
             if passed != expected_cases:
                 raise SystemExit(
                     f"engineering pilot lacks the five passing {control} controls")
+    elif mode == "stability":
+        if not args.pilot_summary:
+            raise SystemExit(
+                "stability mode requires --pilot-summary from a passing "
+                "long-time sentinel")
+        pilot = json.loads(Path(args.pilot_summary).read_text())
+        if pilot.get("mode") != "stability-sentinel":
+            raise SystemExit("pilot summary is not a stability-sentinel summary")
+        if pilot.get("protocol_version") != PROTOCOL_VERSION:
+            raise SystemExit("stability sentinel predates the current HCS-NG protocol")
+        if pilot.get("model_variant") != model_variant:
+            raise SystemExit("stability sentinel used a different model variant")
+        if bool(pilot.get("invariant_corrections")) != corrections_enabled:
+            raise SystemExit("stability sentinel used different correction routing")
+        if not pilot.get("long_time_stability_campaign_pass", False):
+            raise SystemExit("long-time sentinel gate has not passed")
+        if pilot.get("artifact_sha256") != artifact_hash:
+            raise SystemExit("stability sentinel did not use these artifact bytes")
+        if pilot.get("n_tasks") != 40 or pilot.get("n_completed_tasks") != 40:
+            raise SystemExit("stability sentinel is not the complete 40-task design")
+        if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
+            raise SystemExit("stability sentinel contains failed or missing tasks")
+        if pilot.get("arm_dt") != {"scaled": [0.005], "dt_half": [0.0025]}:
+            raise SystemExit("stability sentinel used the wrong step sizes")
+    elif mode in ("sweep", "map", "tails"):
+        if not args.pilot_summary:
+            raise SystemExit(
+                f"{mode} requires --pilot-summary from a passing long-time stability campaign")
+        pilot = json.loads(Path(args.pilot_summary).read_text())
+        if pilot.get("mode") != "stability":
+            raise SystemExit("pilot summary is not a stability-mode summary")
+        if pilot.get("protocol_version") != PROTOCOL_VERSION:
+            raise SystemExit("stability pilot predates the current HCS-NG protocol")
+        if pilot.get("model_variant") != model_variant:
+            raise SystemExit("stability pilot used a different model variant")
+        if bool(pilot.get("invariant_corrections")) != corrections_enabled:
+            raise SystemExit("stability pilot used different correction routing")
+        if not pilot.get("long_time_stability_campaign_pass", False):
+            raise SystemExit("long-time two-sided HCS stability gate has not passed")
+        if pilot.get("artifact_sha256") != artifact_hash:
+            raise SystemExit("stability pilot did not use these artifact bytes")
+        if pilot.get("n_tasks") != 148 or pilot.get("n_completed_tasks") != 148:
+            raise SystemExit("stability pilot is not the complete 148-task design")
+        if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
+            raise SystemExit("stability pilot contains failed or missing tasks")
     elif mode != "sphere-controls":
         if not args.hcs_summary:
             raise SystemExit("scientific campaign requires --hcs-summary")
@@ -152,9 +204,9 @@ def main() -> None:
         for row in rows:
             if float(row["alpha"]) >= 1.0:
                 continue   # exact elastic block; never queries the artifact
-            # Trajectories start at theta=1 and move toward theta_H; the
-            # runtime still fails closed if one actually leaves the hull.
-            for theta in (1.0,):
+            # Validate the actual declared starts. The runtime additionally
+            # stops inside the hull if an evolving trajectory approaches it.
+            for theta in (float(row.get("initial_theta") or 1.0),):
                 query = [float(row["alpha"]), theta, float(row["aspect_ratio"])]
                 if hull.find_simplex(query) < 0 and not np.any(np.all(
                         np.isclose(points, query, atol=1e-12), axis=1)):

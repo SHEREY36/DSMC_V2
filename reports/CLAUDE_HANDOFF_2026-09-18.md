@@ -1,12 +1,14 @@
 # Closure-v2 / DSMC hand-off — 2026-09-18
 
-> **2026-09-22 HCS-NG addendum:** the submission protocol and model choice in
-> this hand-off have been superseded for the non-Gaussian HCS study by
-> `reports/HCS_NG_CAMPAIGN_AUDIT_2026-09-22.md`.  The new protocol uses the
-> angular-evidence artifact for an explicitly evidence-only HCS campaign,
-> uses `dt=0.005` with a `dt=0.0025` convergence arm, validates rescaling before
-> the sweep, and rejects the old baseline and protocol-v2 engineering summaries
-> as gates.  USF remains non-gating.
+> **2026-09-23 HCS-NG addendum:** the protocol-v3 sweep documented in the
+> 2026-09-22 audit exposed a delayed energy-partition instability and is not a
+> stationary HCS data set. The active replacement is
+> `reports/HCS_NG_PROTOCOL_V4_2026-09-23.md`: it adds a 40-task long-time
+> sentinel followed by a 148-task, two-sided,
+> `chi=(1-alpha^2)tau=600` stability gate before the 370-task sweep.
+> Partial/aborted trajectories are
+> diagnostic only, and scientific figures are released only after the complete
+> stability and production verdicts pass. USF remains non-gating.
 
 This document is the continuation point for a new agent.  It separates what is
 scientifically established from what is only diagnostic, records the local

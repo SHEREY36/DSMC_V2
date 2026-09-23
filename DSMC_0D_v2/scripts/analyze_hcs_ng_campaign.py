@@ -25,9 +25,19 @@ CONTROL_OBSERVABLES = (
     LOG_THETA, "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
 )
 STATIONARITY_OBSERVABLES = (
-    "theta_tr_over_rot", "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
+    LOG_THETA, "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
 )
 MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR = 1.0e-5
+MINIMUM_THETA_HULL_LOG_MARGIN = 0.02
+MINIMUM_STATIONARITY_SAMPLES = 15
+STATIONARITY_ABSOLUTE_TOLERANCE = {
+    LOG_THETA: 0.03,
+    "a20": 0.01,
+    "a02": 0.01,
+    "a11": 0.01,
+    "A_cu": 0.01,
+    "A_cw_quadrupolar": 0.01,
+}
 
 
 def integrated_autocorrelation_time(values: np.ndarray) -> float:
@@ -61,7 +71,9 @@ def bootstrap_ci(values: list[float], seed: int = 260918) -> list[float] | None:
 def load_series(path: Path) -> dict[str, np.ndarray]:
     with path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    result = {}
+    result = {"tau": np.asarray([
+        float(row["tau"]) if row.get("tau") not in ("", None) else np.nan
+        for row in rows], dtype=float)}
     for name in OBSERVABLES:
         values = []
         for row in rows:
@@ -81,17 +93,56 @@ def load_series(path: Path) -> dict[str, np.ndarray]:
     return result
 
 
+def block_stationarity(values: np.ndarray, name: str) -> dict:
+    """Detect late drift/change points on an ensemble-mean sampled curve."""
+    clean = np.asarray(values, dtype=float)
+    clean = clean[np.isfinite(clean)]
+    tolerance = float(STATIONARITY_ABSOLUTE_TOLERANCE[name])
+    base = {"pass": False, "absolute_tolerance": tolerance,
+            "n_samples": int(len(clean))}
+    if len(clean) < MINIMUM_STATIONARITY_SAMPLES:
+        base["reason"] = "too_few_late_samples"
+        return base
+    blocks = [part for part in np.array_split(clean, 5) if len(part)]
+    means = np.asarray([np.mean(part) for part in blocks], dtype=float)
+    x = np.arange(len(clean), dtype=float)
+    slope = float(np.polyfit(x, clean, 1)[0])
+    linear_change = slope * max(len(clean) - 1, 1)
+    first_last = float(means[-1] - means[0])
+    maximum_adjacent = float(np.max(np.abs(np.diff(means))))
+    block_range = float(np.ptp(means))
+    passed = (abs(first_last) <= tolerance
+              and abs(linear_change) <= tolerance
+              and maximum_adjacent <= tolerance
+              and block_range <= 1.5 * tolerance)
+    base.update({
+        "pass": bool(passed),
+        "block_means": means.tolist(),
+        "first_last_change": first_last,
+        "linear_change_over_window": linear_change,
+        "maximum_adjacent_block_change": maximum_adjacent,
+        "block_mean_range": block_range,
+        "reason": None if passed else "late_window_change_detected",
+    })
+    return base
+
+
 def replicate_record(row: dict[str, str]) -> dict:
     prefix = Path(row["output_prefix"])
     result_path = Path(str(prefix) + ".json")
     if not result_path.is_file():
         raise FileNotFoundError(result_path)
     result = json.loads(result_path.read_text())
+    if result.get("run_status", "complete") != "complete":
+        raise RuntimeError(f"task {row['task_id']} result is not complete")
     summary = result.get("non_gaussian") or {}
     series = load_series(Path(str(prefix) + "_ng_moments.csv"))
     record = {
         "task_id": int(row["task_id"]), "result": result,
         "replicate": int(row["replicate"]), "seed": int(row["seed"]),
+        "initial_theta": float(row.get("initial_theta") or 1.0),
+        "required_dissipation_horizon": float(
+            row.get("dissipation_horizon") or 0.0),
         "protocol_version": row.get("protocol_version", "hcs-ng-v1"),
         "model_variant": row.get("model_variant", "baseline"),
         "invariant_corrections": row.get("invariant_corrections", "false") == "true",
@@ -100,9 +151,11 @@ def replicate_record(row: dict[str, str]) -> dict:
         "tail_thresholds": summary.get("tail_thresholds", {}),
         "histograms_file": summary.get("histograms_file"),
         "minimum_tail_count": int(summary.get("minimum_tail_count", 1000)),
-        "observables": {},
+        "observables": {}, "series": series,
     }
     for name, values in series.items():
+        if name == "tau":
+            continue
         clean = values[np.isfinite(values)]
         if not len(clean):
             record["observables"][name] = None; continue
@@ -417,8 +470,96 @@ def _replicate_ratio(items: list[dict], name: str):
     return centers[keep], ratio, lower, upper
 
 
+def _maxwell_density(values: np.ndarray, name: str) -> np.ndarray:
+    """Paper Eqs. (5.3a-c), specialized to dt=3 and dr=2."""
+    from scipy.special import kv
+    values = np.asarray(values, dtype=float)
+    if name == "c":
+        return np.pi**-1.5 * np.exp(-values**2)
+    if name == "w":
+        return np.pi**-1.0 * np.exp(-values**2)
+    omega_3, omega_2 = 4.0 * np.pi, 2.0 * np.pi
+    return (0.5 * omega_3 * omega_2 * np.pi**-2.5
+            * values**0.25 * kv(0.5, 2.0 * np.sqrt(values)))
+
+
+def _representative_inelastic_alphas(by_case: dict) -> tuple[float, ...]:
+    """Choose a broad low/mid/near-elastic comparison, not adjacent nodes."""
+    available = sorted({key[0] for key in by_case if key[0] < 1.0})
+    for preferred in ((0.50, 0.75, 0.95), (0.50, 0.80, 0.95)):
+        if all(any(np.isclose(value, target) for value in available)
+               for target in preferred):
+            return preferred
+    if len(available) <= 3:
+        return tuple(available)
+    indices = np.rint(np.linspace(0, len(available) - 1, 3)).astype(int)
+    return tuple(available[index] for index in indices)
+
+
+def make_marginal_figure(records: list, output: Path) -> None:
+    """Paper-Fig.-6 analogue using the actual vector marginal densities."""
+    import matplotlib.pyplot as plt
+
+    by_case = defaultdict(list)
+    for row, record in records:
+        if row["arm"] == "scaled":
+            by_case[(float(row["alpha"]), float(row["aspect_ratio"]))].append(record)
+    available_ars = sorted({key[1] for key in by_case})
+    ars = ((1.5, 2.0, 3.0) if all(value in available_ars
+                                  for value in (1.5, 2.0, 3.0))
+           else tuple(available_ars[:3]))
+    alphas = _representative_inelastic_alphas(by_case)
+    labels = {"c": (r"$c$", r"$\phi_c(c)$"),
+              "w": (r"$w$", r"$\phi_w(w)$"),
+              "x": (r"$x=c^2w^2$", r"$\phi_{cw}(x)$")}
+    fig, axes = plt.subplots(3, 3, figsize=(12.0, 9.5), squeeze=False)
+    for row_index, name in enumerate(("c", "w", "x")):
+        for column, ar in enumerate(ars):
+            ax = axes[row_index, column]
+            plotted_x = []
+            for (color, marker), alpha in zip(SERIES_STYLE, alphas):
+                pooled = _replicate_ratio(by_case.get((alpha, ar), []), name)
+                if pooled is None:
+                    continue
+                x, ratio, lower, upper = pooled
+                maxwell = _maxwell_density(x, name)
+                density = ratio * maxwell
+                ax.plot(x, density, color=color, lw=1.4, marker=marker,
+                        markevery=max(1, len(x) // 12), ms=3,
+                        label=rf"$\alpha={alpha:g}$")
+                ax.fill_between(x, lower * maxwell, upper * maxwell,
+                                color=color, alpha=0.16, lw=0)
+                plotted_x.append(x)
+            if plotted_x:
+                positive = np.concatenate(plotted_x)
+                positive = positive[positive > 0.0]
+                lo, hi = float(np.min(positive)), float(np.max(positive))
+                grid = (np.linspace(lo, hi, 400) if name == "c"
+                        else np.geomspace(lo, hi, 400))
+                ax.plot(grid, _maxwell_density(grid, name), color="0.15",
+                        ls="--", lw=1.2, label="Maxwellian")
+            ax.set_yscale("log")
+            if name != "c":
+                ax.set_xscale("log")
+            ax.set_xlabel(labels[name][0])
+            if column == 0:
+                ax.set_ylabel(labels[name][1])
+            if row_index == 0:
+                ax.set_title(rf"AR$={ar:g}$", fontsize=10)
+            ax.grid(alpha=0.15, which="both")
+    handles, legend_labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, legend_labels, loc="upper center", ncol=4,
+                   frameon=False)
+    fig.suptitle("Stationary HCS marginal distributions (dt=3, dr=2)")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def make_tail_figure(records: list, output: Path) -> None:
-    """phi/phi_Maxwell on a 3x3 alpha x AR grid (cf. paper Fig. 6).
+    """Thermal-range phi/phi_Maxwell with Sonine predictions.
 
     The deviations here are percent-level, so the ratio to the Maxwellian is
     shown instead of log densities, where every curve would overlap the
@@ -433,7 +574,11 @@ def make_tail_figure(records: list, output: Path) -> None:
     for row, record in records:
         if row["arm"] == "scaled":
             by_case[(float(row["alpha"]), float(row["aspect_ratio"]))].append(record)
-    ars, alphas = (1.5, 2.0, 3.0), (0.5, 0.8, 0.95)
+    available_ars = sorted({key[1] for key in by_case})
+    ars = ((1.5, 2.0, 3.0) if all(value in available_ars
+                                  for value in (1.5, 2.0, 3.0))
+           else tuple(available_ars[:3]))
+    alphas = _representative_inelastic_alphas(by_case)
     labels = {"c": (r"$c$", r"$\phi_c/\phi_{c,M}$"),
               "w": (r"$w$", r"$\phi_w/\phi_{w,M}$"),
               "x": (r"$c^2w^2$", r"$\phi_{cw}/\phi_{cw,M}$")}
@@ -511,21 +656,35 @@ def main() -> None:
                              "the campaign verdict is then always false")
     args = parser.parse_args()
     rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
-    records, missing = [], []
+    records, missing, failed = [], [], []
     for row in rows:
+        prefix = Path(row["output_prefix"])
+        failed_path = Path(str(prefix) + ".failed.json")
+        if failed_path.is_file():
+            payload = json.loads(failed_path.read_text())
+            failed.append({
+                "task_id": int(row["task_id"]),
+                "error_type": payload.get("error_type"),
+                "error": payload.get("error"),
+                "failure_file": str(failed_path),
+            })
+            continue
         try:
             records.append((row, replicate_record(row)))
-        except FileNotFoundError:
+        except (FileNotFoundError, RuntimeError):
             missing.append(int(row["task_id"]))
-    if missing and not args.allow_missing:
-        raise SystemExit(f"missing HCS-NG outputs for tasks {missing[:20]}")
+    if (missing or failed) and not args.allow_missing:
+        raise SystemExit(
+            f"incomplete HCS-NG outputs: missing={missing[:20]}, "
+            f"failed={[item['task_id'] for item in failed[:20]]}")
     if not records:
         raise SystemExit("no completed HCS-NG tasks to summarize")
     grouped = defaultdict(list)
     for row, record in records:
-        grouped[(float(row["alpha"]), float(row["aspect_ratio"]), row["arm"])].append(record)
+        grouped[(float(row["alpha"]), float(row["aspect_ratio"]), row["arm"],
+                 float(row.get("initial_theta") or 1.0))].append(record)
     cases = []
-    for (alpha, ar, arm), items in sorted(grouped.items()):
+    for (alpha, ar, arm, initial_theta), items in sorted(grouped.items()):
         observables = {}
         for name in ANALYSIS_OBSERVABLES:
             values = [item["observables"][name]["mean"] for item in items
@@ -578,19 +737,60 @@ def main() -> None:
         performance_pass = all(
             item["result"].get("closure_overhead_fraction", 0.0) < 0.15
             for item in items)
+        stationarity = {}
+        for name in STATIONARITY_OBSERVABLES:
+            curves = [item["series"][name] for item in items
+                      if name in item["series"]]
+            finite_curves = [curve[np.isfinite(curve)] for curve in curves]
+            if not finite_curves or min(map(len, finite_curves)) == 0:
+                stationarity[name] = {
+                    "pass": False, "reason": "observable_missing",
+                    "absolute_tolerance": STATIONARITY_ABSOLUTE_TOLERANCE[name],
+                    "n_samples": 0,
+                }
+                continue
+            common = min(map(len, finite_curves))
+            ensemble_mean = np.mean(
+                np.stack([curve[-common:] for curve in finite_curves]), axis=0)
+            stationarity[name] = block_stationarity(ensemble_mean, name)
         stationarity_pass = all(
-            observables[name] is None
-            or abs(observables[name]["replicate_mean_drift"])
-            <= observables[name]["drift_tolerance"]
-            for name in STATIONARITY_OBSERVABLES)
+            stationarity[name]["pass"] for name in STATIONARITY_OBSERVABLES)
+        achieved_horizons = [
+            (float(item["result"].get("cpp", 0.0)) if alpha >= 1.0
+             else (1.0 - alpha**2) * float(item["result"].get("cpp", 0.0)))
+            for item in items]
+        required_horizon = max(
+            item["required_dissipation_horizon"] for item in items)
+        horizon_pass = all(value + 1.0e-8 >= required_horizon
+                           for value in achieved_horizons)
+        theta_margin_values = [item["result"].get(
+            "minimum_theta_hull_log_margin") for item in items]
+        finite_theta_margins = [float(value) for value in theta_margin_values
+                                if value is not None and np.isfinite(value)]
+        legacy_engineering_margin = (
+            rows and rows[0]["mode"] == "engineering"
+            and all(item["protocol_version"] == "hcs-ng-v3" for item in items))
+        theta_domain_margin_pass = (
+            alpha >= 1.0 or legacy_engineering_margin
+            or (len(finite_theta_margins) == len(items)
+                and min(finite_theta_margins)
+                >= MINIMUM_THETA_HULL_LOG_MARGIN))
+        runtime_pass = runtime_pass and theta_domain_margin_pass
         tails = {name: sum(int(item["tail_counts"].get(name, 0)) for item in items)
                  for name in ("c", "w", "x")}
         tail_fits = {name: pooled_tail_fit(items, name)
                      for name in ("c", "w", "x")}
         cases.append({
             "alpha": alpha, "aspect_ratio": ar, "arm": arm,
+            "initial_theta": initial_theta,
             "n_replicates": len(items),
             "sampling_complete": all(item["sampling_complete"] for item in items),
+            "required_dissipation_horizon": required_horizon,
+            "minimum_achieved_dissipation_horizon": min(achieved_horizons),
+            "dissipation_horizon_pass": horizon_pass,
+            "minimum_theta_hull_log_margin": (
+                min(finite_theta_margins) if finite_theta_margins else None),
+            "theta_domain_margin_pass": theta_domain_margin_pass,
             "runtime_pass": runtime_pass,
             "closure_runtime_pass": closure_runtime_pass,
             "ntc_quality_pass": ntc_quality_pass,
@@ -618,6 +818,7 @@ def main() -> None:
                 float(item["result"].get("closure_overhead_fraction", 0.0))
                 for item in items),
             "stationarity_pass": stationarity_pass,
+            "stationarity": stationarity,
             "observables": observables, "pooled_tail_counts": tails,
             "tail_fit_ready": {name: fit["fit_ready"]
                                for name, fit in tail_fits.items()},
@@ -626,9 +827,13 @@ def main() -> None:
 
     equivalence = []
     by_physical = defaultdict(dict)
-    for (alpha, ar, arm), items in grouped.items():
-        by_physical[(alpha, ar)][arm] = {
-            (item["replicate"], item["seed"]): item for item in items}
+    campaign_mode = rows[0]["mode"] if rows else None
+    for (alpha, ar, arm, initial_theta), items in grouped.items():
+        physical = ((alpha, ar) if campaign_mode in ("stability-sentinel", "stability")
+                    else (alpha, ar, initial_theta))
+        by_physical[physical].setdefault(arm, {}).update({
+            (initial_theta, item["replicate"], item["seed"]): item
+            for item in items})
     for physical, arms in sorted(by_physical.items()):
         for control in ("unscaled", "dt_half"):
             if "scaled" not in arms or control not in arms:
@@ -682,11 +887,64 @@ def main() -> None:
                                                   and precision_pass)}
                 passed &= consistency_pass and precision_pass
             equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
+                                "initial_theta": (
+                                    None if len(physical) == 2 else physical[2]),
                                 "control_arm": control,
                                 "comparison_kind": (
                                     "paired_consistency_with_precision_gate"),
                                 "paired_realizations": len(paired_keys),
                                 "pass": bool(passed), "observables": comparisons})
+    attraction = []
+    if rows and rows[0]["mode"] in ("stability-sentinel", "stability"):
+        by_attractor = defaultdict(list)
+        for case in cases:
+            if case["arm"] == "scaled":
+                by_attractor[(case["alpha"], case["aspect_ratio"])].append(case)
+        for (alpha, ar), starts in sorted(by_attractor.items()):
+            starts.sort(key=lambda item: item["initial_theta"])
+            entry = {"alpha": alpha, "aspect_ratio": ar,
+                     "initial_thetas": [item["initial_theta"] for item in starts],
+                     "pass": False}
+            if len(starts) != 2 or any(
+                    item["observables"].get(LOG_THETA) is None for item in starts):
+                entry["reason"] = "two_complete_initial_conditions_required"
+            else:
+                low, high = (item["observables"][LOG_THETA] for item in starts)
+                difference = abs(float(high["mean"] - low["mean"]))
+                stderr = float(np.hypot(low["replicate_stderr"],
+                                        high["replicate_stderr"]))
+                resolution = 3.0 * stderr
+                tolerance = max(0.03, resolution)
+                passed = difference <= tolerance and resolution <= 0.05
+                entry.update({
+                    "absolute_log_theta_difference": difference,
+                    "combined_stderr": stderr,
+                    "statistical_resolution_3se": resolution,
+                    "tolerance": tolerance,
+                    "pass": bool(passed),
+                    "reason": None if passed else "late_attractors_do_not_agree",
+                })
+            attraction.append(entry)
+
+    # A fitted asymptotic form is not scientifically discriminating if the
+    # exact elastic Gaussian control passes the same candidate gate.
+    elastic_negative_control_pass = {}
+    for name in ("c", "w", "x"):
+        elastic_fits = [case["tail_fits"][name] for case in cases
+                        if case["alpha"] >= 1.0 and case["arm"] == "scaled"]
+        elastic_negative_control_pass[name] = bool(
+            elastic_fits and all(not fit.get("asymptotic_claim_ready", False)
+                                 for fit in elastic_fits))
+    for case in cases:
+        for name, fit in case["tail_fits"].items():
+            fit["elastic_negative_control_pass"] = elastic_negative_control_pass[name]
+            fit["scientific_claim_ready"] = bool(
+                fit.get("asymptotic_claim_ready", False)
+                and elastic_negative_control_pass[name]
+                and case["stationarity_pass"]
+                and case["runtime_pass"]
+                and case["dissipation_horizon_pass"])
+
     mode = rows[0]["mode"] if rows else None
     arm_dt = {
         arm: sorted({float(row["dt"]) for row in rows if row["arm"] == arm})
@@ -705,11 +963,28 @@ def main() -> None:
                        for item in equivalence
                        if item["control_arm"] == control and item["pass"]}
             control_coverage_pass &= covered == physical_cases
-    physics_verdict = (bool(cases) and not missing
+    elif mode == "stability-sentinel":
+        dt_cases = {(0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
+                    (0.95, 2.0), (1.00, 3.0)}
+        passed_dt = {(item["alpha"], item["aspect_ratio"])
+                     for item in equivalence
+                     if item["control_arm"] == "dt_half" and item["pass"]}
+        control_coverage_pass = passed_dt == dt_cases
+    # Engineering is a short numerical-control pilot. Its stationarity
+    # diagnostics remain visible, but only the long-time sentinel/stability
+    # stages are authorized to certify an HCS attractor.
+    stationarity_required = mode != "engineering"
+    physics_verdict = (bool(cases) and not missing and not failed
                        and all(case["sampling_complete"] and case["runtime_pass"]
-                               and case["stationarity_pass"] for case in cases)
+                               and (case["stationarity_pass"]
+                                    or not stationarity_required)
+                               and case["dissipation_horizon_pass"]
+                               for case in cases)
                        and all(item["pass"] for item in equivalence)
-                       and control_coverage_pass)
+                       and control_coverage_pass
+                       and (mode not in ("stability-sentinel", "stability")
+                            or (attraction and all(item["pass"]
+                                                   for item in attraction))))
     performance_verdict = bool(cases) and all(
         case["performance_pass"] for case in cases)
     study_verdict = physics_verdict and performance_verdict
@@ -727,23 +1002,36 @@ def main() -> None:
                    correction_flags[0] == "true" if len(correction_flags) == 1 else None),
                "n_tasks": len(rows), "n_cases": len(cases),
                "n_completed_tasks": len(records), "missing_tasks": missing,
+               "failed_tasks": failed,
                "artifact_sha256": artifact_hashes[0] if len(artifact_hashes) == 1 else None,
                "physics_campaign_pass": physics_verdict,
+               "stationarity_required_for_verdict": stationarity_required,
+               "long_time_stability_campaign_pass": bool(
+                   mode in ("stability-sentinel", "stability") and study_verdict),
                "engineering_control_coverage_pass": control_coverage_pass,
                "performance_campaign_pass": performance_verdict,
                "study_campaign_pass": study_verdict,
                "artifact_deployment_eligible": deployment_eligible,
                "production_campaign_pass": production_verdict,
-               "campaign_pass": study_verdict, "cases": cases,
+               "campaign_pass": study_verdict,
+               "scientific_outputs_released": bool(
+                   study_verdict and mode in ("sweep", "map", "tails")),
+               "elastic_tail_negative_control_pass": elastic_negative_control_pass,
+               "cases": cases, "two_sided_attraction": attraction,
                "scaled_unscaled_equivalence": equivalence}
     output = Path(args.output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     if args.figure:
         figure = Path(args.figure)
-        if mode == "sweep":
-            scaled = [case for case in cases if case["arm"] == "scaled"]
-            make_sweep_figure(scaled, figure)
-            make_tail_figure(records, figure.with_name(figure.stem + "_tails.png"))
+        if mode in ("sweep", "tails") and study_verdict:
+            if mode == "sweep":
+                scaled = [case for case in cases if case["arm"] == "scaled"]
+                make_sweep_figure(scaled, figure)
+            make_marginal_figure(
+                records, (figure.with_name(figure.stem + "_marginals.png")
+                          if mode == "sweep" else figure))
+            make_tail_figure(
+                records, figure.with_name(figure.stem + "_sonine_ratios.png"))
         else:
             make_figure(cases, figure)
     print(json.dumps(summary, indent=2, sort_keys=True))

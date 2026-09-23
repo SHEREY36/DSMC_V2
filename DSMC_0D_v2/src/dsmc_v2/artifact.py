@@ -438,6 +438,27 @@ class VariationalClosure:
                   weights: np.ndarray) -> np.ndarray:
         return np.tensordot(weights, np.asarray(values)[indices], axes=(0, 0))
 
+    def physical_axis_bounds(self, axis: int) -> tuple[float, float]:
+        """Return the closed calibrated bounds of one physical coordinate."""
+        values = self._coordinate_axes[int(axis)]
+        return float(values[0]), float(values[-1])
+
+    def physical_theta_bounds(self, alpha: float,
+                              aspect_ratio: float) -> tuple[float, float]:
+        """Return theta support at one (possibly interpolated) alpha and AR."""
+        supported = []
+        for theta in self._coordinate_axes[1]:
+            try:
+                self._physical_vertex_weights(np.array(
+                    [float(alpha), float(theta), float(aspect_ratio)]))
+            except ValueError:
+                continue
+            supported.append(float(theta))
+        if not supported:
+            raise ValueError(
+                "physical alpha/aspect-ratio query has no calibrated theta support")
+        return min(supported), max(supported)
+
     STATE_CACHE_LIMIT = 4096
 
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,

@@ -1,4 +1,5 @@
 import csv
+import json
 
 import numpy as np
 
@@ -80,3 +81,26 @@ def test_invalid_similarity_scale_fails():
             pass
         else:
             raise AssertionError("invalid scaling was accepted")
+
+
+def test_aborted_stream_is_flushed_but_never_sampling_eligible(tmp_path):
+    state = isotropic_state(count=100)
+    config = {"diagnostics": {"non_gaussian": {
+        "enabled": True, "sample_start_tau": 1.0,
+        "sample_end_tau": 3.0, "sample_delta_tau": 1.0,
+    }}}
+    output = tmp_path / "aborted.txt"
+    diagnostic = NonGaussianDiagnostics(config, output, state.count, 1.0, 1.0)
+    try:
+        with diagnostic:
+            diagnostic.maybe_sample(1.0, 1.0, state)
+            raise RuntimeError("domain departure")
+    except RuntimeError:
+        pass
+    summary = json.loads(
+        (tmp_path / "aborted_ng_summary.json").read_text())
+    assert summary["run_status"] == "aborted_not_stationary"
+    assert not summary["sampling_eligible"]
+    assert not summary["sampling_complete"]
+    assert summary["n_samples"] == 1
+    assert "domain departure" in summary["abort_reason"]

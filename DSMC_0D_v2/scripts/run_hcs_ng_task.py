@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 import yaml
@@ -39,6 +40,31 @@ def parse_bool(value: str) -> bool:
     return normalized == "true"
 
 
+def campaign_record(row: dict[str, str], invariant_corrections: bool,
+                    dt: float) -> dict:
+    record = {
+        key: (float(row[key]) if key in (
+                  "alpha", "aspect_ratio", "initial_theta",
+                  "dissipation_horizon")
+              else int(row[key]) if key in ("replicate", "seed", "particles")
+              else row[key])
+        for key in ("protocol_version", "mode", "arm", "model_variant",
+                    "alpha", "aspect_ratio", "initial_theta",
+                    "dissipation_horizon", "replicate", "seed", "particles")
+        if row.get(key, "") != ""
+    }
+    record["invariant_corrections"] = invariant_corrections
+    record["dt"] = float(dt)
+    return record
+
+
+def atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
@@ -67,10 +93,19 @@ def main() -> None:
     if model_variant in ("baseline", "sphere_exact") and invariant_corrections:
         raise RuntimeError(f"{model_variant} task unexpectedly enabled corrections")
     config["particle"]["AR"] = ar
-    config["system"].update(alpha=alpha, kTt=1.0, kTr=1.0,
+    initial_theta = float(row.get("initial_theta") or 1.0)
+    # Keep the initial total temperature fixed while changing Ttr/Trot. This
+    # makes the two-sided attraction test differ only in modal partition.
+    initial_trot = 5.0 / (3.0 * initial_theta + 2.0)
+    initial_ttr = initial_theta * initial_trot
+    config["system"].update(alpha=alpha, kTt=initial_ttr, kTr=initial_trot,
                             domain=[64.0, 64.0, 64.0])
     config.setdefault("simulation", {})["sphere_collision"] = sphere
     config["simulation"]["hcs_rescale_temperature"] = row["arm"] in ("scaled", "dt_half")
+    config["simulation"]["exact_initial_temperatures"] = True
+    # Stop inside the physical theta hull. This is an early diagnostic guard,
+    # never an extrapolation or a substitute for the stability gate.
+    config["simulation"]["closure_theta_guard_fraction"] = 0.02
     if sphere:
         config["microscopic_closure"].update(
             routing="legacy_rank0", angular="legacy",
@@ -109,25 +144,39 @@ def main() -> None:
     }
     prefix = Path(row["output_prefix"])
     trajectory = Path(str(prefix) + ".txt")
-    result = run_simulation(config, int(row["seed"]), trajectory)
+    failed_output = Path(str(prefix) + ".failed.json")
+    try:
+        result = run_simulation(config, int(row["seed"]), trajectory)
+    except Exception as error:
+        failure = {
+            "run_status": "aborted_not_stationary",
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "artifact": str(artifact),
+            "artifact_sha256": artifact_hash,
+            "trajectory": str(trajectory),
+            "campaign": campaign_record(
+                row, invariant_corrections, float(config["time"]["dt"])),
+        }
+        moment_path = Path(str(prefix) + "_ng_moments.csv")
+        summary_path = Path(str(prefix) + "_ng_summary.json")
+        if moment_path.is_file():
+            failure["partial_moments_file"] = str(moment_path)
+        if summary_path.is_file():
+            failure["partial_non_gaussian_summary"] = str(summary_path)
+        atomic_json(failed_output, failure)
+        raise
     if not sphere and alpha < 1.0 and result.get("routing") != "variational_v2":
         raise RuntimeError("inelastic HCS-NG task did not run the frozen closure")
     if alpha >= 1.0 and not sphere and result.get("routing") != "elastic_bl":
         raise RuntimeError("elastic HCS-NG task did not run the exact elastic block")
     result["artifact"] = str(artifact)
     result["artifact_sha256"] = artifact_hash
-    result["campaign"] = {
-        key: (float(row[key]) if key in ("alpha", "aspect_ratio")
-              else int(row[key]) if key in ("replicate", "seed", "particles")
-              else row[key])
-        for key in ("protocol_version", "mode", "arm", "model_variant",
-                    "alpha", "aspect_ratio", "replicate", "seed", "particles")
-        if key in row
-    }
-    result["campaign"]["invariant_corrections"] = invariant_corrections
-    result["campaign"]["dt"] = float(config["time"]["dt"])
+    result["run_status"] = "complete"
+    result["campaign"] = campaign_record(
+        row, invariant_corrections, float(config["time"]["dt"]))
     output = Path(str(prefix) + ".json")
-    output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    atomic_json(output, result)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

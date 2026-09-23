@@ -14,13 +14,14 @@ import numpy as np
 FIELDS = (
     "task_id", "protocol_version", "mode", "arm", "model_variant",
     "invariant_corrections", "artifact_sha256", "alpha", "aspect_ratio", "replicate",
-    "seed", "particles", "tau_end", "sample_start_tau", "sample_end_tau",
-    "sample_delta_tau", "state_update_cpp", "dt",
+    "seed", "particles", "initial_theta", "dissipation_horizon", "tau_end",
+    "sample_start_tau", "sample_end_tau", "sample_delta_tau", "state_update_cpp", "dt",
     "max_ntc_candidates_per_step", "output_prefix",
 )
-PROTOCOL_VERSION = "hcs-ng-v3"
+PROTOCOL_VERSION = "hcs-ng-v4"
 PRODUCTION_DT = 0.005
 CONVERGENCE_DT = 0.0025
+LONG_TIME_DISSIPATION_HORIZON = 600.0
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
          260917159, 260917267, 260917373, 260917481, 260917589,
@@ -74,13 +75,32 @@ def design(mode: str, artifact: Path):
                          for ar in (1.10, 1.20, 1.35, 2.5))
         return alpha_sweep + ar_sweep, SEEDS[:10], ("scaled",), 10000, \
             1500.0, 500.0, 5.0
+    if mode in ("stability-sentinel", "stability"):
+        # Every production coordinate must first survive a common amount of
+        # accumulated cooling, chi=(1-alpha**2)*tau, from both sides of its HCS
+        # attractor.  Two seeds resolve gross stochastic failures cheaply at
+        # N=2000.  Run the five engineering sentinels at both dt values before
+        # spending the full-domain allocation.
+        sentinels = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
+                     (0.95, 2.0), (1.00, 3.0))
+        if mode == "stability-sentinel":
+            return sentinels, SEEDS[:2], ("scaled", "dt_half"), 2000, \
+                None, None, None
+        alpha_sweep = tuple((a, ar) for ar in (1.5, 2.0, 3.0)
+                            for a in (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00))
+        ar_sweep = tuple((a, ar) for a in (0.50, 0.80, 0.95, 1.00)
+                         for ar in (1.10, 1.20, 1.35, 2.5))
+        return alpha_sweep + ar_sweep, SEEDS[:2], ("scaled",), 2000, \
+            None, None, None
     if mode == "map":
         _, ars = surface_axes(artifact)
         alphas = tuple(np.round(np.arange(0.50, 1.00, 0.05), 2))
         return tuple((a, ar) for a in alphas for ar in ars), SEEDS, \
             ("scaled",), 10000, 1500.0, 500.0, 5.0
     if mode == "tails":
-        cases = tuple((a, ar) for a in (0.50, 0.75, 0.95)
+        # Include an equal-statistics exact Gaussian negative control at every
+        # shape; otherwise a generic straight-line tail fit can validate itself.
+        cases = tuple((a, ar) for a in (0.50, 0.75, 0.95, 1.00)
                       for ar in (1.10, 2.00, 3.00))
         # One hundred independent realizations are generated deterministically
         # below; the first sixteen are shared with the map campaign.
@@ -95,7 +115,8 @@ def design(mode: str, artifact: Path):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("engineering", "domain-pilot", "sweep",
-                                            "map", "tails", "sphere-controls"),
+                                            "stability-sentinel", "stability", "map",
+                                            "tails", "sphere-controls"),
                         default="engineering")
     parser.add_argument("--artifact", required=True)
     parser.add_argument(
@@ -117,30 +138,56 @@ def main() -> None:
     corrections = model_variant == "angular_evidence"
     rows = []
     for alpha, ar in cases:
-        for arm in arms:
-            for replicate, seed in enumerate(seeds):
-                tag = (f"alpha_{alpha:.2f}_AR_{ar:.2f}_{arm}_"
-                       f"rep_{replicate:03d}")
-                rows.append({
-                    "task_id": len(rows), "protocol_version": PROTOCOL_VERSION,
-                    "mode": args.mode, "arm": arm,
-                    "model_variant": model_variant,
-                    "invariant_corrections": str(corrections).lower(),
-                    "artifact_sha256": artifact_hash,
-                    "alpha": f"{alpha:.2f}", "aspect_ratio": f"{ar:.2f}",
-                    "replicate": replicate, "seed": seed,
-                    "particles": particles, "tau_end": tau_end,
-                    "sample_start_tau": start, "sample_end_tau": tau_end,
-                    "sample_delta_tau": delta,
-                    "state_update_cpp": 0.05,
-                    # Protocol v2 found a statistically resolved a02 shift at
-                    # AR=3 between dt=0.01 and 0.005.  Production therefore
-                    # uses 0.005 uniformly, while the engineering half-step
-                    # arm checks it against 0.0025.
-                    "dt": CONVERGENCE_DT if arm == "dt_half" else PRODUCTION_DT,
-                    "max_ntc_candidates_per_step": max(100_000, 50 * particles),
-                    "output_prefix": str(Path(args.results) / tag),
-                })
+        # The low-theta extension exists through AR=1.35; at larger AR the
+        # calibrated hull begins at theta=0.2. These supported starts bracket
+        # every predicted production root (about 0.038 through one).
+        low_theta = 0.025 if ar <= 1.35 else 0.225
+        stability_mode = args.mode in ("stability-sentinel", "stability")
+        initial_thetas = ((low_theta, 1.5) if stability_mode else (1.0,))
+        case_arms = arms
+        for initial_theta in initial_thetas:
+            for arm in case_arms:
+                for replicate, seed in enumerate(seeds):
+                    if stability_mode:
+                        if alpha < 1.0:
+                            tau_value = LONG_TIME_DISSIPATION_HORIZON / (1.0 - alpha**2)
+                            horizon = LONG_TIME_DISSIPATION_HORIZON
+                        else:
+                            tau_value = 1500.0
+                            horizon = tau_value
+                        start_value = 0.75 * tau_value
+                        # Forty late-window snapshots are enough for a five-block
+                        # change-point gate without creating production histograms.
+                        delta_value = (tau_value - start_value) / 39.0
+                    else:
+                        tau_value, start_value, delta_value = tau_end, start, delta
+                        horizon = (tau_value if alpha >= 1.0
+                                   else (1.0 - alpha**2) * tau_value)
+                    theta_tag = (f"_theta0_{initial_theta:.2f}"
+                                 if stability_mode else "")
+                    tag = (f"alpha_{alpha:.2f}_AR_{ar:.2f}{theta_tag}_{arm}_"
+                           f"rep_{replicate:03d}")
+                    rows.append({
+                        "task_id": len(rows), "protocol_version": PROTOCOL_VERSION,
+                        "mode": args.mode, "arm": arm,
+                        "model_variant": model_variant,
+                        "invariant_corrections": str(corrections).lower(),
+                        "artifact_sha256": artifact_hash,
+                        "alpha": f"{alpha:.2f}", "aspect_ratio": f"{ar:.2f}",
+                        "replicate": replicate, "seed": seed,
+                        "particles": particles, "initial_theta": initial_theta,
+                        "dissipation_horizon": horizon, "tau_end": tau_value,
+                        "sample_start_tau": start_value, "sample_end_tau": tau_value,
+                        "sample_delta_tau": delta_value,
+                        "state_update_cpp": 0.05,
+                        # Protocol v2 found a statistically resolved a02 shift at
+                        # AR=3 between dt=0.01 and 0.005. Production therefore
+                        # uses 0.005, with 0.0025 controls at both the short and
+                        # long validation horizons.
+                        "dt": CONVERGENCE_DT if arm == "dt_half" else PRODUCTION_DT,
+                        "max_ntc_candidates_per_step": max(100_000, 50 * particles),
+                        "output_prefix": str(Path(args.results) / tag),
+                    })
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="") as handle:

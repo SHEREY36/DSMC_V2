@@ -105,6 +105,8 @@ class NonGaussianDiagnostics:
         self.particle_count = int(particle_count)
         self.mass, self.inertia, self.sphere = float(mass), float(inertia), bool(sphere)
         self.sample_count = 0
+        self.last_sample_tau = None
+        self._closed_summary = None
         self.sums = {name: 0.0 for name in MOMENT_FIELDS[2:]}
         self.counts = {name: 0 for name in MOMENT_FIELDS[2:]}
         self.edges = {
@@ -155,14 +157,26 @@ class NonGaussianDiagnostics:
             self.overflow[name] += int(np.sum(samples >= self.edges[name][-1]))
             self.tail_counts[name] += int(np.sum(samples >= self.tail_thresholds[name]))
         self.sample_count += 1
+        self.last_sample_tau = float(tau)
         while self.next_tau <= tau + 1.0e-10:
             self.next_tau += self.delta
         return True
 
-    def close(self) -> dict | None:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, error_type, error, traceback) -> bool:
+        if error is not None:
+            self.close(completed=False, error=f"{error_type.__name__}: {error}")
+        return False
+
+    def close(self, completed: bool = True, error: str | None = None) -> dict | None:
         if not self.enabled:
             return None
+        if self._closed_summary is not None:
+            return self._closed_summary
         if self._handle is not None:
+            self._handle.flush()
             self._handle.close()
             self._handle = None
         with self.histogram_path.open("wb") as handle:
@@ -177,12 +191,17 @@ class NonGaussianDiagnostics:
                         if self.counts[name] else None)
                  for name in self.sums}
         summary = {
-            "sampling_complete": self.sample_count == self.expected_samples,
+            "run_status": "complete" if completed else "aborted_not_stationary",
+            "sampling_eligible": bool(completed),
+            "sampling_complete": bool(
+                completed and self.sample_count == self.expected_samples),
             "sample_start_tau": self.start, "sample_end_tau": self.end,
             "sample_delta_tau": self.delta,
             "expected_samples": self.expected_samples,
             "n_samples": self.sample_count,
             "n_particle_samples": self.sample_count * self.particle_count,
+            "last_sample_tau": self.last_sample_tau,
+            "abort_reason": error,
             "means": means,
             "tail_thresholds": self.tail_thresholds,
             "tail_counts": self.tail_counts,
@@ -197,4 +216,5 @@ class NonGaussianDiagnostics:
         temporary = self.summary_path.with_suffix(self.summary_path.suffix + ".tmp")
         temporary.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
         os.replace(temporary, self.summary_path)
+        self._closed_summary = summary
         return summary

@@ -214,6 +214,14 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         orientation_path.parent.mkdir(parents=True, exist_ok=True)
     non_gaussian = NonGaussianDiagnostics(
         config, output_path, count, params.mass, params.inertia, sphere)
+    theta_minimum, theta_maximum = np.inf, -np.inf
+    minimum_theta_hull_log_margin = np.inf
+    theta_guard_fraction = float(config.get("simulation", {}).get(
+        "closure_theta_guard_fraction", 0.0))
+    if not 0.0 <= theta_guard_fraction < 0.5:
+        raise ValueError("simulation.closure_theta_guard_fraction must lie in [0, 0.5)")
+    theta_hull_bounds = (closure.physical_theta_bounds(alpha, params.aspect_ratio)
+                         if isinstance(closure, VariationalClosure) else None)
     pressure_accumulator = np.zeros((3, 3)) if flow_mode == "usf" else None
     last_pressure_time = 0.0
     audit_enabled = bool(config.get("diagnostics", {}).get("collision_audit", False))
@@ -239,7 +247,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                            if orientation_path else nullcontext(None))
     with (output_path.open("w", buffering=65536) as handle,
           pressure_context as pressure_handle,
-          orientation_context as orientation_handle):
+          orientation_context as orientation_handle,
+          non_gaussian as non_gaussian):
         while time < end_time and (tau_end is None or collisions / count < tau_end
                                    or collisions / count >= output_index * dtau):
             tau = collisions / float(count)
@@ -272,6 +281,27 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 state.velocity[:, 0] -= shear_rate * state.velocity[:, 1] * dt
             ttr, trot, _ = state.temperatures(params.mass)
             theta = ttr / trot if trot > 0.0 else 1.0
+            theta_minimum = min(theta_minimum, theta)
+            theta_maximum = max(theta_maximum, theta)
+            if isinstance(closure, VariationalClosure):
+                theta_lower, theta_upper = theta_hull_bounds
+                log_span = np.log(theta_upper / theta_lower)
+                lower_margin = np.log(theta / theta_lower) / log_span
+                upper_margin = np.log(theta_upper / theta) / log_span
+                theta_margin = min(lower_margin, upper_margin)
+                minimum_theta_hull_log_margin = min(
+                    minimum_theta_hull_log_margin, theta_margin)
+                # A zero guard preserves the artifact's closed hull for all
+                # existing callers. HCS-NG explicitly opts into a positive
+                # interior margin through its campaign fixture.
+                if theta_guard_fraction > 0.0 and theta_margin <= theta_guard_fraction:
+                    raise RuntimeError(
+                        "HCS closure theta safety margin crossed: "
+                        f"theta={theta:.8g}, calibrated=[{theta_lower:.8g},"
+                        f" {theta_upper:.8g}], normalized_log_margin="
+                        f"{theta_margin:.6g}, guard={theta_guard_fraction:.6g}, "
+                        f"tau={collisions / float(count):.3f}. This trajectory "
+                        "is aborted_not_stationary; do not extend the hull.")
             if kernel is not None and routing == "ctc_moment16":
                 features = legacy_cell_features(state.velocity, state.omega, state.axis,
                                                 params.mass, params.inertia, sphere=False)
@@ -491,6 +521,14 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "orientation_output": (None if orientation_path is None
                                else str(orientation_path)),
         "hcs_rescale_temperature": hcs_rescale,
+        "minimum_theta_tr_over_rot": (
+            None if not np.isfinite(theta_minimum) else theta_minimum),
+        "maximum_theta_tr_over_rot": (
+            None if not np.isfinite(theta_maximum) else theta_maximum),
+        "minimum_theta_hull_log_margin": (
+            None if not np.isfinite(minimum_theta_hull_log_margin)
+            else minimum_theta_hull_log_margin),
+        "closure_theta_guard_fraction": theta_guard_fraction,
         "ntc": {
             "initial_vrmax": initial_vrmax, "final_vrmax": vrmax,
             "final_vrmax_over_initial": vrmax / initial_vrmax,

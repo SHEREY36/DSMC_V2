@@ -1,5 +1,12 @@
 #!/bin/bash
 # Submit a staged HCS non-Gaussian campaign with frozen-artifact gating.
+#
+# Usage:
+#   submit_hcs_ng_campaign.sh engineering ARTIFACT TAG
+#   submit_hcs_ng_campaign.sh stability-sentinel ARTIFACT TAG ENGINEERING_SUMMARY
+#   submit_hcs_ng_campaign.sh stability ARTIFACT TAG SENTINEL_SUMMARY
+#   submit_hcs_ng_campaign.sh sweep ARTIFACT TAG STABILITY_SUMMARY
+#   submit_hcs_ng_campaign.sh tails ARTIFACT TAG STABILITY_SUMMARY
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -7,9 +14,10 @@ cd "$ROOT"
 MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
-TAG=${3:-${MODE}_${MODEL_VARIANT}_v3}
-# Fourth argument: the engineering-pilot summary for MODE=sweep, otherwise
-# the full-domain HCS validation summary.
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v4}
+# Fourth argument: engineering summary for MODE=stability-sentinel; sentinel
+# summary for MODE=stability; full stability summary for sweep/map/tails; or
+# full-domain HCS summary for domain-pilot.
 GATE_SUMMARY=${4:-}
 MANIFEST="manifests/hcs_ng_${TAG}.csv"
 RESULTS="results/hcs_ng_${TAG}"
@@ -27,7 +35,13 @@ PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh \
 CHECK=(--manifest "$MANIFEST" --artifact "$ARTIFACT")
 if [[ "$MODE" == "engineering" ]]; then
   CHECK+=(--allow-engineering)
-elif [[ "$MODE" == "sweep" && -n "$GATE_SUMMARY" ]]; then
+elif [[ "$MODE" == "stability-sentinel" || "$MODE" == "stability" \
+     || "$MODE" == "sweep" \
+     || "$MODE" == "map" || "$MODE" == "tails" ]]; then
+  [[ -n "$GATE_SUMMARY" ]] || {
+    echo "$MODE requires a gate summary as argument 4" >&2
+    exit 2
+  }
   CHECK+=(--pilot-summary "$GATE_SUMMARY")
 elif [[ -n "$GATE_SUMMARY" ]]; then
   CHECK+=(--hcs-summary "$GATE_SUMMARY")
@@ -41,6 +55,7 @@ CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TAS
 MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
 case "$MODE" in
   engineering) DEFAULT_WALLTIME=02:00:00 ;;
+  stability-sentinel|stability) DEFAULT_WALLTIME=24:00:00 ;;
   domain-pilot) DEFAULT_WALLTIME=04:00:00 ;;
   sweep|map) DEFAULT_WALLTIME=08:00:00 ;;
   tails|sphere-controls) DEFAULT_WALLTIME=10:00:00 ;;
