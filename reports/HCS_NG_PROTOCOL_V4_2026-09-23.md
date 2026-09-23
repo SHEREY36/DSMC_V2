@@ -48,9 +48,10 @@ attractor.
    test, agreement of the two late-time attractors, the full dissipation
    horizon, a positive calibrated-domain margin, runtime/NTC quality, and
    long-horizon time-step consistency.
-6. Sweep, map, and tail campaigns require the passing stability summary from
-   the exact same artifact bytes. The preflight refuses an engineering-only
-   summary.
+6. Sweep and map campaigns require the passing stability summary from the
+   exact same artifact bytes. The 1,200-task tail campaign additionally
+   requires a complete, passing 370-task sweep, so the largest allocation
+   cannot run after a production-level failure.
 
 An exception now writes `*.failed.json` and flushes the partial moments and
 histograms with status `aborted_not_stationary`. Partial data are retained for
@@ -81,9 +82,9 @@ is not used as a point in an inelastic closure fit.
 
 ## Required submission order
 
-The engineering, stability-sentinel, stability, and production stages must be
-submitted in that order. Inspect each generated `summary.json`; do not bypass
-a failed gate.
+The engineering, stability-sentinel, stability, production-sweep, and tail
+stages must be submitted in that order. Inspect each generated `summary.json`;
+do not bypass a failed gate.
 The precise shell commands are included in the handoff response associated
 with this protocol and in `hpc/submit_hcs_ng_campaign.sh --help`-equivalent
 usage in the script header.

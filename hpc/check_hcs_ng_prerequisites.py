@@ -49,8 +49,8 @@ def main() -> None:
                    if mode == "engineering"
                    else {"scaled": {0.005}, "dt_half": {0.0025}}
                    if mode == "stability-sentinel"
-                   else {"scaled": {0.005}} if mode == "stability"
-                   else {"scaled": {0.005}} if mode == "sweep" else None)
+                   else {"scaled": {0.005}}
+                   if mode in ("stability", "sweep", "map", "tails") else None)
     if expected_dt is not None and arm_dt != expected_dt:
         raise SystemExit(
             f"{mode} manifest has wrong protocol-v4 step sizes: {arm_dt}")
@@ -157,7 +157,7 @@ def main() -> None:
             raise SystemExit("stability sentinel contains failed or missing tasks")
         if pilot.get("arm_dt") != {"scaled": [0.005], "dt_half": [0.0025]}:
             raise SystemExit("stability sentinel used the wrong step sizes")
-    elif mode in ("sweep", "map", "tails"):
+    elif mode in ("sweep", "map"):
         if not args.pilot_summary:
             raise SystemExit(
                 f"{mode} requires --pilot-summary from a passing long-time stability campaign")
@@ -178,6 +178,28 @@ def main() -> None:
             raise SystemExit("stability pilot is not the complete 148-task design")
         if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
             raise SystemExit("stability pilot contains failed or missing tasks")
+    elif mode == "tails":
+        if not args.pilot_summary:
+            raise SystemExit(
+                "tails requires --pilot-summary from the passing production sweep")
+        pilot = json.loads(Path(args.pilot_summary).read_text())
+        if pilot.get("mode") != "sweep":
+            raise SystemExit("tail gate summary is not a sweep-mode summary")
+        if pilot.get("protocol_version") != PROTOCOL_VERSION:
+            raise SystemExit("production sweep predates the current HCS-NG protocol")
+        if pilot.get("model_variant") != model_variant:
+            raise SystemExit("production sweep used a different model variant")
+        if bool(pilot.get("invariant_corrections")) != corrections_enabled:
+            raise SystemExit("production sweep used different correction routing")
+        if not pilot.get("study_campaign_pass", False) \
+                or not pilot.get("scientific_outputs_released", False):
+            raise SystemExit("production sweep scientific verdict has not passed")
+        if pilot.get("artifact_sha256") != artifact_hash:
+            raise SystemExit("production sweep did not use these artifact bytes")
+        if pilot.get("n_tasks") != 370 or pilot.get("n_completed_tasks") != 370:
+            raise SystemExit("production sweep is not the complete 370-task design")
+        if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
+            raise SystemExit("production sweep contains failed or missing tasks")
     elif mode != "sphere-controls":
         if not args.hcs_summary:
             raise SystemExit("scientific campaign requires --hcs-summary")

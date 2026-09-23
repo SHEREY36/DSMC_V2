@@ -6,7 +6,7 @@
 #   submit_hcs_ng_campaign.sh stability-sentinel ARTIFACT TAG ENGINEERING_SUMMARY
 #   submit_hcs_ng_campaign.sh stability ARTIFACT TAG SENTINEL_SUMMARY
 #   submit_hcs_ng_campaign.sh sweep ARTIFACT TAG STABILITY_SUMMARY
-#   submit_hcs_ng_campaign.sh tails ARTIFACT TAG STABILITY_SUMMARY
+#   submit_hcs_ng_campaign.sh tails ARTIFACT TAG SWEEP_SUMMARY
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -16,8 +16,8 @@ MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
 TAG=${3:-${MODE}_${MODEL_VARIANT}_v4}
 # Fourth argument: engineering summary for MODE=stability-sentinel; sentinel
-# summary for MODE=stability; full stability summary for sweep/map/tails; or
-# full-domain HCS summary for domain-pilot.
+# summary for MODE=stability; full stability summary for sweep/map; passing
+# sweep summary for tails; or full-domain HCS summary for domain-pilot.
 GATE_SUMMARY=${4:-}
 MANIFEST="manifests/hcs_ng_${TAG}.csv"
 RESULTS="results/hcs_ng_${TAG}"

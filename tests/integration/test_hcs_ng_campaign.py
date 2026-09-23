@@ -374,6 +374,31 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
         assert (result.returncode == 0) == ok, result.stderr
 
 
+def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    manifest, _ = make_manifest(tmp_path, "tails", artifact)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    summary = tmp_path / "sweep.json"
+    command = [sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+               "--manifest", str(manifest), "--artifact", str(artifact),
+               "--pilot-summary", str(summary)]
+    payload = {
+        "mode": "sweep", "protocol_version": "hcs-ng-v4",
+        "model_variant": "baseline", "invariant_corrections": False,
+        "study_campaign_pass": True, "scientific_outputs_released": True,
+        "artifact_sha256": digest,
+        "n_tasks": 370, "n_completed_tasks": 370,
+        "failed_tasks": [], "missing_tasks": [],
+    }
+    summary.write_text(json.dumps(payload))
+    accepted = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert accepted.returncode == 0, accepted.stderr
+    payload["mode"] = "stability"
+    summary.write_text(json.dumps(payload))
+    blocked = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert blocked.returncode != 0
+
+
 def test_ng_runner_uses_manifest_correction_variant():
     text = (ROOT / "DSMC_0D_v2/scripts/run_hcs_ng_task.py").read_text()
     assert 'row.get("invariant_corrections"' in text
