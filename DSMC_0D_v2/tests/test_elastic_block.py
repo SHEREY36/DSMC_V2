@@ -29,6 +29,9 @@ def test_elastic_block_relaxes_to_equipartition_and_conserves_energy(tmp_path):
         rows = np.loadtxt(path)
         assert result["routing"] == "elastic_bl"
         assert result["runtime_gate"]["pass"]
+        assert np.isclose(
+            result["ntc"]["initial_vrmax_temperature_bound"],
+            1.0 + (2.0 / 3.0) * ktr)
         np.testing.assert_allclose(rows[:, 4], rows[0, 4], rtol=1.0e-9)
         late = rows[rows[:, 1] >= 10.0]
         theta = np.mean(late[:, 2] / late[:, 3])

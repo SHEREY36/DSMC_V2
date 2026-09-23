@@ -32,7 +32,14 @@ def runtime_gate_status(diagnostics: dict) -> dict:
     reasons = []
     if int(diagnostics["negative_energy_repairs"]) != 0:
         reasons.append("negative_energy_repairs_not_zero")
-    if float(diagnostics["out_of_domain_fraction"]) >= 1.0e-3:
+    if "correction_fallback_fraction_in_evaluation_window" in diagnostics:
+        fallback_fraction = float(
+            diagnostics["correction_fallback_fraction_in_evaluation_window"])
+        if fallback_fraction >= 1.0e-2:
+            reasons.append(
+                "correction_fallback_fraction_in_evaluation_window_not_below_0.01")
+    elif float(diagnostics.get("out_of_domain_fraction", 0.0)) >= 1.0e-3:
+        # Compatibility for older diagnostics that predate safe fallback.
         reasons.append("out_of_domain_fraction_not_below_0.001")
     if float(diagnostics["closure_overhead_fraction"]) >= 0.15:
         reasons.append("closure_overhead_fraction_not_below_0.15")
@@ -48,7 +55,8 @@ def runtime_gate_status(diagnostics: dict) -> dict:
         "reasons": reasons,
         "limits": {
             "negative_energy_repairs": 0,
-            "out_of_domain_fraction_exclusive_maximum": 1.0e-3,
+            "correction_fallback_fraction_in_evaluation_window_exclusive_maximum":
+                1.0e-2,
             "closure_overhead_fraction_exclusive_maximum": 0.15,
             "energy_axis_clamps": 0,
             "energy_monotonic_repairs": 0,
@@ -170,7 +178,21 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         raise ValueError("HCS temperature rescaling is only valid for flow.mode=hcs")
     initial_ttr, _, initial_total = state.temperatures(params.mass)
     rescale_reference = initial_ttr if sphere else initial_total
-    vrmax = 5.0 * np.sqrt(2.0) * np.sqrt(ktt / params.mass)
+    # A two-temperature spherocylinder can transfer rotational energy into
+    # translation even while its total HCS energy cools.  The old majorant was
+    # initialized from kTt alone and was therefore knowingly too small for a
+    # low-theta stability start.  Bound the largest translational temperature
+    # available from the fixed total modal energy, 3*Ttr + 2*Trot.
+    # Preserve the seeded v1 collision sequence for the explicitly requested
+    # legacy kernel.  Production angular-evidence (and other nonlegacy)
+    # kernels use the conservative two-temperature bound needed by low-theta
+    # starts; changing the legacy majorant would consume a different number of
+    # candidates and break its reproducibility contract.
+    vrmax_temperature_bound = (
+        ktt if sphere or routing == "legacy_rank0"
+        else ktt + (2.0 / 3.0) * ktr
+    )
+    vrmax = 5.0 * np.sqrt(2.0) * np.sqrt(vrmax_temperature_bound / params.mass)
     initial_vrmax = vrmax
     # A rescaled HCS is stationary, so the majorant in thermal units must stay
     # O(5-10).  Anything this far out is a runaway, not a velocity tail: fail
@@ -203,6 +225,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     closure_state_next_collision = 0
     closure_state_updates = 0
     closure_state_seconds = 0.0
+    correction_fallback_queries = 0
+    evaluation_closure_queries = 0
+    evaluation_correction_fallback_queries = 0
+    non_gaussian_config = config.get("diagnostics", {}).get("non_gaussian", {})
+    evaluation_start_tau = float(non_gaussian_config.get(
+        "sample_start_tau", 0.0))
     march_started = wallclock.perf_counter()
     pressure_path = Path(pressure_path) if pressure_path is not None else None
     if flow_mode == "usf" and pressure_path is None:
@@ -332,9 +360,17 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     domain_feature_max = np.maximum(
                         domain_feature_max, domain_features)
                 closure_alpha = 1.0 if time < kernel.equilibration_time else alpha
-                kernel.set_cell_variational(
-                    closure.kernel_state(closure_alpha, theta, params.aspect_ratio,
-                                         features, domain_features))
+                closure_state = closure.kernel_state(
+                    closure_alpha, theta, params.aspect_ratio,
+                    features, domain_features)
+                correction_fallback = bool(
+                    closure_state.get("correction_fallback", False))
+                correction_fallback_queries += int(correction_fallback)
+                if collisions / float(count) >= evaluation_start_tau:
+                    evaluation_closure_queries += 1
+                    evaluation_correction_fallback_queries += int(
+                        correction_fallback)
+                kernel.set_cell_variational(closure_state)
                 closure_state_seconds += wallclock.perf_counter() - closure_started
                 closure_state_updates += 1
                 closure_state_next_collision = collisions + closure_state_interval
@@ -504,6 +540,17 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "closure_total_fraction": closure_seconds / max(total_seconds, 1.0e-30),
         "out_of_domain_fraction": (0.0 if not isinstance(closure, VariationalClosure)
                                     else closure.out_of_domain_fraction),
+        "correction_fallback_policy": "base_law",
+        "correction_fallback_queries": correction_fallback_queries,
+        "correction_fallback_fraction": (
+            correction_fallback_queries / max(closure_state_updates, 1)),
+        "evaluation_start_tau": evaluation_start_tau,
+        "evaluation_closure_queries": evaluation_closure_queries,
+        "evaluation_correction_fallback_queries": (
+            evaluation_correction_fallback_queries),
+        "correction_fallback_fraction_in_evaluation_window": (
+            evaluation_correction_fallback_queries
+            / max(evaluation_closure_queries, 1)),
         "out_of_domain_fraction_by_feature": (
             {} if not isinstance(closure, VariationalClosure) else dict(zip(
                 FEATURE_NAMES,
@@ -546,6 +593,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             np.mean(state.velocity, axis=0))),
         "ntc": {
             "initial_vrmax": initial_vrmax, "final_vrmax": vrmax,
+            "initial_vrmax_temperature_bound": vrmax_temperature_bound,
             "final_vrmax_over_initial": vrmax / initial_vrmax,
             "mean_candidates_per_step": ntc_candidates / max(ntc_steps, 1),
             "peak_candidates_per_step": peak_ntc_candidates,

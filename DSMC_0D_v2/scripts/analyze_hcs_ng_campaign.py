@@ -29,6 +29,7 @@ STATIONARITY_OBSERVABLES = (
 )
 MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR = 1.0e-5
 MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO = 1.0e-12
+MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION = 1.0e-2
 MINIMUM_THETA_HULL_LOG_MARGIN = 0.02
 MINIMUM_STATIONARITY_SAMPLES = 15
 STATIONARITY_ABSOLUTE_TOLERANCE = {
@@ -38,6 +39,14 @@ STATIONARITY_ABSOLUTE_TOLERANCE = {
     "a11": 0.01,
     "A_cu": 0.01,
     "A_cw_quadrupolar": 0.01,
+}
+STATIONARITY_PRECISION_LIMIT = {
+    LOG_THETA: 0.06,
+    "a20": 0.04,
+    "a02": 0.04,
+    "a11": 0.04,
+    "A_cu": 0.04,
+    "A_cw_quadrupolar": 0.04,
 }
 
 
@@ -124,6 +133,60 @@ def block_stationarity(values: np.ndarray, name: str) -> dict:
         "maximum_adjacent_block_change": maximum_adjacent,
         "block_mean_range": block_range,
         "reason": None if passed else "late_window_change_detected",
+    })
+    return base
+
+
+def replicate_stationarity(curves: list[np.ndarray], name: str) -> dict:
+    """Test a late-window drift against independent-realization noise.
+
+    A hard change-point tolerance on one N=2000 ensemble curve rejected the
+    exact elastic equilibrium control in protocol v5.  The physical question
+    is instead whether the early-to-late change is resolved across independent
+    realizations.  A large uncertainty cannot manufacture a pass: the three-SE
+    resolution must also remain below a declared ceiling.
+    """
+    finite = [np.asarray(curve, dtype=float)[np.isfinite(curve)] for curve in curves]
+    tolerance = float(STATIONARITY_ABSOLUTE_TOLERANCE[name])
+    precision_limit = float(STATIONARITY_PRECISION_LIMIT[name])
+    base = {"pass": False, "absolute_tolerance": tolerance,
+            "precision_limit": precision_limit,
+            "n_replicates": len(finite),
+            "n_samples": min(map(len, finite), default=0)}
+    if len(finite) < 2:
+        base["reason"] = "two_independent_replicates_required"
+        return base
+    common = min(map(len, finite))
+    if common < MINIMUM_STATIONARITY_SAMPLES:
+        base["reason"] = "too_few_late_samples"
+        return base
+    aligned = [curve[-common:] for curve in finite]
+    third = max(1, common // 3)
+    drifts = np.asarray([
+        float(np.mean(curve[-third:]) - np.mean(curve[:third]))
+        for curve in aligned], dtype=float)
+    mean_drift = float(np.mean(drifts))
+    stderr = float(np.std(drifts, ddof=1) / np.sqrt(len(drifts)))
+    resolution = 3.0 * stderr
+    statistical_tolerance = max(tolerance, resolution)
+    consistency_pass = abs(mean_drift) <= statistical_tolerance
+    precision_pass = resolution <= precision_limit
+    ensemble = np.mean(np.stack(aligned), axis=0)
+    blocks = [part for part in np.array_split(ensemble, 5) if len(part)]
+    block_means = np.asarray([np.mean(part) for part in blocks], dtype=float)
+    base.update({
+        "pass": bool(consistency_pass and precision_pass),
+        "replicate_drifts": drifts.tolist(),
+        "replicate_mean_drift": mean_drift,
+        "replicate_drift_stderr": stderr,
+        "statistical_resolution_3se": resolution,
+        "statistical_tolerance": statistical_tolerance,
+        "statistical_consistency_pass": bool(consistency_pass),
+        "precision_pass": bool(precision_pass),
+        "block_means_diagnostic_only": block_means.tolist(),
+        "reason": (None if consistency_pass and precision_pass else
+                   "late_window_drift_resolved" if not consistency_pass else
+                   "late_window_drift_under_resolved"),
     })
     return base
 
@@ -716,12 +779,24 @@ def main() -> None:
                     3.0 * (float(np.std(signed, ddof=1) / np.sqrt(len(signed)))
                            if len(signed) > 1 else 0.0))),
             }
+        protocol_v6 = all(
+            item["protocol_version"] == "hcs-ng-v6" for item in items)
+        correction_fallback_pass = all(
+            (((item["result"].get("routing") != "variational_v2")
+              or (item["result"].get("correction_fallback_policy") == "base_law"
+                  and int(item["result"].get(
+                      "evaluation_closure_queries", 0)) > 0
+                  and float(item["result"].get(
+                      "correction_fallback_fraction_in_evaluation_window", np.inf))
+                  < MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION))
+             if protocol_v6 else
+             float(item["result"].get("out_of_domain_fraction", 0.0)) < 1.0e-3)
+            for item in items)
         closure_runtime_pass = all(
             item["result"].get("negative_energy_repairs", 0) == 0
             and item["result"].get("energy_axis_clamps", 0) == 0
             and item["result"].get("energy_monotonic_repairs", 0) == 0
-            and item["result"].get("out_of_domain_fraction", 0.0) < 1.0e-3
-            for item in items)
+            for item in items) and correction_fallback_pass
         legacy_engineering_bulk = (
             rows and rows[0]["mode"] == "engineering"
             and all(item["protocol_version"] == "hcs-ng-v3" for item in items))
@@ -757,10 +832,7 @@ def main() -> None:
                     "n_samples": 0,
                 }
                 continue
-            common = min(map(len, finite_curves))
-            ensemble_mean = np.mean(
-                np.stack([curve[-common:] for curve in finite_curves]), axis=0)
-            stationarity[name] = block_stationarity(ensemble_mean, name)
+            stationarity[name] = replicate_stationarity(finite_curves, name)
         stationarity_pass = all(
             stationarity[name]["pass"] for name in STATIONARITY_OBSERVABLES)
         achieved_horizons = [
@@ -801,6 +873,17 @@ def main() -> None:
             "theta_domain_margin_pass": theta_domain_margin_pass,
             "runtime_pass": runtime_pass,
             "closure_runtime_pass": closure_runtime_pass,
+            "correction_fallback_pass": correction_fallback_pass,
+            "maximum_correction_fallback_fraction": max(
+                float(item["result"].get(
+                    "correction_fallback_fraction",
+                    item["result"].get("out_of_domain_fraction", 0.0)))
+                for item in items),
+            "maximum_correction_fallback_fraction_in_evaluation_window": max(
+                float(item["result"].get(
+                    "correction_fallback_fraction_in_evaluation_window",
+                    item["result"].get("out_of_domain_fraction", 0.0)))
+                for item in items),
             "bulk_frame_pass": bulk_frame_pass,
             "maximum_bulk_to_thermal_temperature_ratio": max(
                 float(item["result"].get(

@@ -262,7 +262,7 @@ class VariationalArtifactTests(unittest.TestCase):
                 VariationalClosure(path, corrections_enabled=True)
             VariationalClosure(path, corrections_enabled=False)
 
-    def test_feature_domain_is_counted_not_clipped(self):
+    def test_feature_domain_falls_back_to_uncorrected_base_law(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
             self._write(path)
@@ -270,6 +270,9 @@ class VariationalArtifactTests(unittest.TestCase):
             features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
             state = closure.kernel_state(0.8, 0.5, 1.5, features)
             self.assertTrue(state["out_of_domain"])
+            self.assertTrue(state["correction_fallback"])
+            self.assertEqual(state["energy_correction"], 0.0)
+            self.assertFalse(np.any(state["beta"]))
             self.assertEqual(closure.out_of_domain_fraction, 1.0)
 
     def test_one_sided_sampling_excursion_is_not_physical_extrapolation(self):
@@ -287,6 +290,7 @@ class VariationalArtifactTests(unittest.TestCase):
             domain = raw.copy(); domain[index] = 0.001
             state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
             self.assertFalse(state["out_of_domain"])
+            self.assertFalse(state["correction_fallback"])
             self.assertEqual(closure.out_of_domain_fraction, 0.0)
             self.assertEqual(closure.sampling_excursion_by_feature[index], 1)
             # Support classification must not alter the learned correction.
@@ -301,6 +305,8 @@ class VariationalArtifactTests(unittest.TestCase):
             domain = raw.copy(); domain[FEATURE_NAMES.index("PiPi")] = 0.7
             state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
             self.assertTrue(state["out_of_domain"])
+            self.assertTrue(state["correction_fallback"])
+            self.assertEqual(state["energy_correction"], 0.0)
             self.assertEqual(closure.out_of_domain_fraction, 1.0)
 
     def test_feature_domain_is_inactive_when_corrections_are_disabled(self):
@@ -311,6 +317,7 @@ class VariationalArtifactTests(unittest.TestCase):
             features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
             state = closure.kernel_state(0.8, 0.5, 1.5, features)
             self.assertFalse(state["out_of_domain"])
+            self.assertFalse(state["correction_fallback"])
             self.assertEqual(closure.out_of_domain_fraction, 0.0)
 
     def test_joint_angular_parameters_interpolate_inside_deployed_mask(self):
@@ -326,13 +333,13 @@ class VariationalArtifactTests(unittest.TestCase):
     def test_runtime_gate_reports_each_release_failure(self):
         accepted = runtime_gate_status({
             "negative_energy_repairs": 0,
-            "out_of_domain_fraction": 0.0009,
+            "correction_fallback_fraction_in_evaluation_window": 0.009,
             "closure_overhead_fraction": 0.149,
         })
         self.assertTrue(accepted["pass"])
         rejected = runtime_gate_status({
             "negative_energy_repairs": 1,
-            "out_of_domain_fraction": 0.001,
+            "correction_fallback_fraction_in_evaluation_window": 0.01,
             "closure_overhead_fraction": 0.15,
             "energy_axis_clamps": 1,
             "energy_monotonic_repairs": 1,
@@ -384,6 +391,9 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertEqual(diagnostics["energy_interpolation"],
                              "node_first_quantile_interpolation_v1")
             self.assertEqual(diagnostics["negative_energy_repairs"], 0)
+            self.assertAlmostEqual(
+                diagnostics["ntc"]["initial_vrmax_temperature_bound"],
+                1.0 + 2.0 / 3.0)
             self.assertIsNotNone(diagnostics["runtime_gate"])
 
 

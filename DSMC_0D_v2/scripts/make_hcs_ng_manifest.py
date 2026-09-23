@@ -18,9 +18,12 @@ FIELDS = (
     "sample_start_tau", "sample_end_tau", "sample_delta_tau", "state_update_cpp", "dt",
     "max_ntc_candidates_per_step", "output_prefix",
 )
-PROTOCOL_VERSION = "hcs-ng-v5"
-PRODUCTION_DT = 0.005
-CONVERGENCE_DT = 0.0025
+PROTOCOL_VERSION = "hcs-ng-v6"
+# The v5 long-time sentinel resolved an A_cw discrepancy at alpha=0.5,
+# AR=1.35 between 0.005 and 0.0025. Promote the converged arm and test it
+# against another factor-of-two refinement before any full-domain allocation.
+PRODUCTION_DT = 0.0025
+CONVERGENCE_DT = 0.00125
 LONG_TIME_DISSIPATION_HORIZON = 600.0
 SEEDS = (260916101, 260916211, 260916307, 260916419, 260916523,
          260916631, 260916733, 260916839, 260916947, 260917051,
@@ -78,13 +81,14 @@ def design(mode: str, artifact: Path):
     if mode in ("stability-sentinel", "stability"):
         # Every production coordinate must first survive a common amount of
         # accumulated cooling, chi=(1-alpha**2)*tau, from both sides of its HCS
-        # attractor.  Two seeds resolve gross stochastic failures cheaply at
-        # N=2000.  Run the five engineering sentinels at both dt values before
-        # spending the full-domain allocation.
+        # attractor. The sentinel uses four seeds: v5 demonstrated that two
+        # seeds could not resolve the a02 time-step control at the declared
+        # 0.01 precision. The full-domain stability stage remains a gross
+        # two-seed screen after the better-resolved sentinel has passed.
         sentinels = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
                      (0.95, 2.0), (1.00, 3.0))
         if mode == "stability-sentinel":
-            return sentinels, SEEDS[:2], ("scaled", "dt_half"), 2000, \
+            return sentinels, SEEDS[:4], ("scaled", "dt_half"), 2000, \
                 None, None, None
         alpha_sweep = tuple((a, ar) for ar in (1.5, 2.0, 3.0)
                             for a in (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 1.00))
@@ -180,10 +184,10 @@ def main() -> None:
                         "sample_start_tau": start_value, "sample_end_tau": tau_value,
                         "sample_delta_tau": delta_value,
                         "state_update_cpp": 0.05,
-                        # Protocol v2 found a statistically resolved a02 shift at
-                        # AR=3 between dt=0.01 and 0.005. Production therefore
-                        # uses 0.005, with 0.0025 controls at both the short and
-                        # long validation horizons.
+                        # Protocol v2 rejected 0.01 and protocol v5 rejected
+                        # 0.005 at the strongest-dissipation near-sphere
+                        # sentinel. Production is now 0.0025, checked against
+                        # 0.00125 at both short and long validation horizons.
                         "dt": CONVERGENCE_DT if arm == "dt_half" else PRODUCTION_DT,
                         "max_ntc_candidates_per_step": max(100_000, 50 * particles),
                         "output_prefix": str(Path(args.results) / tag),

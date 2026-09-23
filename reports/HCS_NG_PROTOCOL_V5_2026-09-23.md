@@ -1,5 +1,11 @@
 # HCS non-Gaussian protocol v5 - 2026-09-23
 
+> Superseded by protocol v6 after the completed 40-task sentinel confirmed the
+> centre-of-mass repair but rejected `dt=0.005`, exposed unsupported correction
+> extrapolation during transients, and showed that the two-seed block
+> stationarity test was under-resolved. See
+> `reports/HCS_NG_PROTOCOL_V6_2026-09-23.md`.
+
 ## Decision
 
 Protocol v3 is invalid for scientific interpretation. All 200 runs with

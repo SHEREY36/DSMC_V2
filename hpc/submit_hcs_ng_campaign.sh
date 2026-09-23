@@ -14,7 +14,7 @@ cd "$ROOT"
 MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
-TAG=${3:-${MODE}_${MODEL_VARIANT}_v5}
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v6}
 # Fourth argument: engineering summary for MODE=stability-sentinel; sentinel
 # summary for MODE=stability; full stability summary for sweep/map; passing
 # sweep summary for tails; or full-domain HCS summary for domain-pilot.
@@ -54,11 +54,11 @@ TASKS=$ROWS; (( TASKS > MAX_ARRAY )) && TASKS=$MAX_ARRAY
 CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TASKS
 MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
 case "$MODE" in
-  engineering) DEFAULT_WALLTIME=02:00:00 ;;
+  engineering) DEFAULT_WALLTIME=04:00:00 ;;
   stability-sentinel|stability) DEFAULT_WALLTIME=24:00:00 ;;
   domain-pilot) DEFAULT_WALLTIME=04:00:00 ;;
-  sweep|map) DEFAULT_WALLTIME=08:00:00 ;;
-  tails|sphere-controls) DEFAULT_WALLTIME=10:00:00 ;;
+  sweep|map) DEFAULT_WALLTIME=16:00:00 ;;
+  tails|sphere-controls) DEFAULT_WALLTIME=20:00:00 ;;
 esac
 WALLTIME=${HCS_NG_WALLTIME:-$DEFAULT_WALLTIME}
 QOS=${HCS_NG_QOS:-normal}

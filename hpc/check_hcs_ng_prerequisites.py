@@ -13,7 +13,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 
-PROTOCOL_VERSION = "hcs-ng-v5"
+PROTOCOL_VERSION = "hcs-ng-v6"
 
 
 def digest(path: Path) -> str:
@@ -44,16 +44,16 @@ def main() -> None:
     arm_dt = {}
     for row in rows:
         arm_dt.setdefault(row["arm"], set()).add(float(row["dt"]))
-    expected_dt = ({"scaled": {0.005}, "unscaled": {0.005},
-                    "dt_half": {0.0025}}
+    expected_dt = ({"scaled": {0.0025}, "unscaled": {0.0025},
+                    "dt_half": {0.00125}}
                    if mode == "engineering"
-                   else {"scaled": {0.005}, "dt_half": {0.0025}}
+                   else {"scaled": {0.0025}, "dt_half": {0.00125}}
                    if mode == "stability-sentinel"
-                   else {"scaled": {0.005}}
+                   else {"scaled": {0.0025}}
                    if mode in ("stability", "sweep", "map", "tails") else None)
     if expected_dt is not None and arm_dt != expected_dt:
         raise SystemExit(
-            f"{mode} manifest has wrong protocol-v5 step sizes: {arm_dt}")
+            f"{mode} manifest has wrong protocol-v6 step sizes: {arm_dt}")
     protocols = {row.get("protocol_version", "") for row in rows}
     if protocols != {PROTOCOL_VERSION}:
         raise SystemExit(
@@ -100,13 +100,11 @@ def main() -> None:
         pilot = json.loads(Path(args.pilot_summary).read_text())
         if pilot.get("mode") != "engineering":
             raise SystemExit("pilot summary is not an engineering-mode summary")
-        # The v3 and v5 engineering designs are numerically identical: 120
-        # tasks, the same five physical cases, eight seeds, N=10000, and the
-        # same 0.005/0.0025 arms.  v5 changes only the downstream long-time
-        # gates, so an exact-byte, fully passing v3 engineering result is
-        # reusable and avoids recomputing evidence we already possess.
-        if pilot.get("protocol_version") not in ("hcs-ng-v3", PROTOCOL_VERSION):
-            raise SystemExit("engineering pilot is incompatible with HCS-NG v5")
+        # Protocol v6 promotes 0.0025 to production and introduces a 0.00125
+        # convergence arm. Earlier engineering summaries therefore cannot
+        # establish the numerical control required by this campaign.
+        if pilot.get("protocol_version") != PROTOCOL_VERSION:
+            raise SystemExit("engineering pilot is incompatible with HCS-NG v6")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("engineering pilot used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -116,10 +114,11 @@ def main() -> None:
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("engineering pilot did not use these artifact bytes")
         if pilot.get("n_tasks") != 120:
-            raise SystemExit("engineering pilot does not contain the 120-task protocol-v5 design")
+            raise SystemExit("engineering pilot does not contain the 120-task protocol-v6 design")
         if pilot.get("arm_dt") != {
-                "scaled": [0.005], "unscaled": [0.005], "dt_half": [0.0025]}:
-            raise SystemExit("engineering pilot used the wrong protocol-v5 step sizes")
+                "scaled": [0.0025], "unscaled": [0.0025],
+                "dt_half": [0.00125]}:
+            raise SystemExit("engineering pilot used the wrong protocol-v6 step sizes")
         if pilot.get("n_completed_tasks") != pilot.get("n_tasks"):
             raise SystemExit("engineering pilot is incomplete")
         controls = pilot.get("scaled_unscaled_equivalence", [])
@@ -151,11 +150,11 @@ def main() -> None:
             raise SystemExit("long-time sentinel gate has not passed")
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("stability sentinel did not use these artifact bytes")
-        if pilot.get("n_tasks") != 40 or pilot.get("n_completed_tasks") != 40:
-            raise SystemExit("stability sentinel is not the complete 40-task design")
+        if pilot.get("n_tasks") != 80 or pilot.get("n_completed_tasks") != 80:
+            raise SystemExit("stability sentinel is not the complete 80-task design")
         if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
             raise SystemExit("stability sentinel contains failed or missing tasks")
-        if pilot.get("arm_dt") != {"scaled": [0.005], "dt_half": [0.0025]}:
+        if pilot.get("arm_dt") != {"scaled": [0.0025], "dt_half": [0.00125]}:
             raise SystemExit("stability sentinel used the wrong step sizes")
     elif mode in ("sweep", "map"):
         if not args.pilot_summary:

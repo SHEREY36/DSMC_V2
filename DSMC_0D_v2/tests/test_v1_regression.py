@@ -30,6 +30,8 @@ class V1RegressionTests(unittest.TestCase):
             self.assertEqual(output.read_text(), expected)
             self.assertEqual(diagnostics["collisions"], 12)
             self.assertAlmostEqual(diagnostics["cpp"], 12.0 / 62.0)
+            self.assertEqual(
+                diagnostics["ntc"]["initial_vrmax_temperature_bound"], 1.0)
 
 
 if __name__ == "__main__":

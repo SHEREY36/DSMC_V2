@@ -530,8 +530,17 @@ class VariationalClosure:
             else:
                 deployed = np.asarray(
                     self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
-            beta *= deployed
-            parameter_correction = beta @ (features - feature_center)
+            # The response surface is evidence for a local correction, not a
+            # license to extrapolate it.  Outside its measured feature box,
+            # retain the calibrated base collision law and suppress every
+            # response increment for this state update.  The simulation
+            # records these fallbacks separately before and during its
+            # retained statistical window.
+            if ood:
+                beta.fill(0.0)
+            else:
+                beta *= deployed
+                parameter_correction = beta @ (features - feature_center)
             correction = dict(zip(self.correction_parameter_names,
                                   parameter_correction.tolist()))
             for index, name in enumerate(("lambda1", "lambda2", "lambda3", "lambda4")):
@@ -575,6 +584,7 @@ class VariationalClosure:
                 "energy_anchor": anchor, "xi_enhancement": curve,
                 "angular_parameters": aparams,
                 "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
+                "correction_fallback": bool(self.corrections_enabled and ood),
                 "beta_feature_center": feature_center,
                 "beta_feature_lower": feature_lower,
                 "beta_feature_upper": feature_upper,

@@ -54,12 +54,12 @@ def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v5"}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v6"}
     assert {row["model_variant"] for row in rows} == {"baseline"}
     assert {row["invariant_corrections"] for row in rows} == {"false"}
-    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
-    assert {float(row["dt"]) for row in rows if row["arm"] == "unscaled"} == {0.005}
-    assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.0025}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "unscaled"} == {0.0025}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.00125}
 
 
 def test_domain_pilot_uses_every_artifact_alpha_ar_pair(tmp_path):
@@ -84,19 +84,20 @@ def test_stability_design_brackets_roots_and_uses_common_dissipation_horizon(tmp
         if alpha < 1.0:
             assert np.isclose((1.0 - alpha**2) * float(row["tau_end"]), 600.0)
     assert {row["arm"] for row in rows} == {"scaled"}
-    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
 
 
 def test_stability_sentinel_repeats_long_horizon_at_half_dt(tmp_path):
     _, rows = make_manifest(
         tmp_path, "stability-sentinel", _test_artifact(tmp_path))
-    assert len(rows) == 40
+    assert len(rows) == 80
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
+    assert len({int(row["seed"]) for row in rows}) == 4
     assert {row["arm"] for row in rows} == {"scaled", "dt_half"}
     assert {float(row["initial_theta"]) for row in rows} == {0.025, 0.225, 1.5}
     assert {float(row["dissipation_horizon"]) for row in rows
             if float(row["alpha"]) < 1.0} == {600.0}
-    assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.0025}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.00125}
 
 
 def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
@@ -108,13 +109,13 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(pilot)]
     pilot.write_text(json.dumps({
-        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v5",
+        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v6",
         "model_variant": "baseline", "invariant_corrections": False,
         "long_time_stability_campaign_pass": True,
         "artifact_sha256": digest,
-        "n_tasks": 40, "n_completed_tasks": 40,
+        "n_tasks": 80, "n_completed_tasks": 80,
         "failed_tasks": [], "missing_tasks": [],
-        "arm_dt": {"scaled": [0.005], "dt_half": [0.0025]},
+        "arm_dt": {"scaled": [0.0025], "dt_half": [0.00125]},
     }))
     accepted = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert accepted.returncode == 0, accepted.stderr
@@ -125,7 +126,7 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
     assert blocked.returncode != 0
 
 
-def test_sentinel_accepts_identical_passing_v3_engineering_gate(tmp_path):
+def test_sentinel_requires_passing_v6_engineering_gate(tmp_path):
     artifact = _test_artifact(tmp_path)
     manifest, _ = make_manifest(tmp_path, "stability-sentinel", artifact)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -133,12 +134,12 @@ def test_sentinel_accepts_identical_passing_v3_engineering_gate(tmp_path):
     cases = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
              (0.95, 2.0), (1.00, 3.0))
     summary.write_text(json.dumps({
-        "mode": "engineering", "protocol_version": "hcs-ng-v3",
+        "mode": "engineering", "protocol_version": "hcs-ng-v6",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "artifact_sha256": digest,
         "n_tasks": 120, "n_completed_tasks": 120,
-        "arm_dt": {"scaled": [0.005], "unscaled": [0.005],
-                   "dt_half": [0.0025]},
+        "arm_dt": {"scaled": [0.0025], "unscaled": [0.0025],
+                   "dt_half": [0.00125]},
         "scaled_unscaled_equivalence": [
             {"control_arm": arm, "alpha": alpha, "aspect_ratio": ar,
              "pass": True}
@@ -151,6 +152,15 @@ def test_sentinel_accepts_identical_passing_v3_engineering_gate(tmp_path):
         "--pilot-summary", str(summary),
     ], cwd=ROOT, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
+    payload = json.loads(summary.read_text())
+    payload["protocol_version"] = "hcs-ng-v5"
+    summary.write_text(json.dumps(payload))
+    stale = subprocess.run([
+        sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+        "--manifest", str(manifest), "--artifact", str(artifact),
+        "--pilot-summary", str(summary),
+    ], cwd=ROOT, text=True, capture_output=True)
+    assert stale.returncode != 0
 
 
 def test_current_artifact_allows_engineering_but_blocks_domain_pilot(tmp_path):
@@ -275,21 +285,30 @@ def test_temperature_ratio_gate_is_reciprocal_invariant(tmp_path):
     assert "theta_rot_over_tr" not in module.CONTROL_OBSERVABLES
     assert module.MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR == 1.0e-5
     assert module.MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO == 1.0e-12
+    assert module.MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION == 1.0e-2
 
 
 def test_stationarity_gate_detects_delayed_departure():
     module = _analysis_module()
-    too_short = module.block_stationarity(
-        np.zeros(module.MINIMUM_STATIONARITY_SAMPLES - 1), module.LOG_THETA)
+    too_short = module.replicate_stationarity(
+        [np.zeros(module.MINIMUM_STATIONARITY_SAMPLES - 1)] * 2,
+        module.LOG_THETA)
     assert not too_short["pass"]
     assert too_short["reason"] == "too_few_late_samples"
     flat = np.zeros(40)
     delayed = flat.copy()
     delayed[30:] = np.linspace(0.0, 0.12, 10)
-    assert module.block_stationarity(flat, module.LOG_THETA)["pass"]
-    verdict = module.block_stationarity(delayed, module.LOG_THETA)
+    assert module.replicate_stationarity([flat, flat], module.LOG_THETA)["pass"]
+    verdict = module.replicate_stationarity(
+        [delayed, delayed], module.LOG_THETA)
     assert not verdict["pass"]
-    assert verdict["reason"] == "late_window_change_detected"
+    assert verdict["reason"] == "late_window_drift_resolved"
+    unresolved_up = flat.copy(); unresolved_up[27:] = 0.08
+    unresolved_down = flat.copy(); unresolved_down[27:] = -0.08
+    unresolved = module.replicate_stationarity(
+        [unresolved_up, unresolved_down], module.LOG_THETA)
+    assert not unresolved["pass"]
+    assert unresolved["reason"] == "late_window_drift_under_resolved"
 
 
 def test_full_domain_correction_preflight_fails_closed(tmp_path):
@@ -314,7 +333,7 @@ def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
     assert len(cases) == 37 and len(rows) == 37 * 10
     assert min(ar for _, ar in cases) == 1.1
-    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.005}
+    assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
     assert {alpha for alpha, ar in cases if ar == 2.0} == {
         0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0}
     assert {ar for alpha, ar in cases if alpha == 0.8} == {
@@ -345,25 +364,25 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
     missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert missing.returncode != 0 and "pilot-summary" in missing.stderr
     for payload, ok in (
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v5",
-              "model_variant": "baseline", "invariant_corrections": False,
-              "long_time_stability_campaign_pass": True,
-              "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v4",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v6",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest}, False),
             ({"mode": "stability", "protocol_version": "hcs-ng-v5",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "long_time_stability_campaign_pass": True,
+              "artifact_sha256": digest}, False),
+            ({"mode": "stability", "protocol_version": "hcs-ng-v6",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": False,
               "n_tasks": 148, "n_completed_tasks": 148,
               "failed_tasks": [], "missing_tasks": [],
               "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v6",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v6",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest,
@@ -384,7 +403,7 @@ def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(summary)]
     payload = {
-        "mode": "sweep", "protocol_version": "hcs-ng-v5",
+        "mode": "sweep", "protocol_version": "hcs-ng-v6",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "scientific_outputs_released": True,
         "artifact_sha256": digest,

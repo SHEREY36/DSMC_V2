@@ -6,9 +6,11 @@
 > as similarity reheating of roundoff in the conserved centre-of-mass velocity:
 > the old code counted that bulk mode as translational temperature. The active
 > replacement computes peculiar temperature and projects to zero momentum
-> before every HCS rescale. It is documented in
-> `reports/HCS_NG_PROTOCOL_V5_2026-09-23.md`: it adds a 40-task long-time
-> sentinel followed by a 148-task, two-sided,
+> before every HCS rescale. The subsequent v5 sentinel confirmed that repair
+> but exposed NTC initialization, correction-support, statistical-stationarity,
+> and `dt=0.005` convergence failures. The active replacement is documented in
+> `reports/HCS_NG_PROTOCOL_V6_2026-09-23.md`: it adds a new 120-task engineering
+> gate and an 80-task long-time sentinel followed by a 148-task, two-sided,
 > `chi=(1-alpha^2)tau=600` stability gate before the 370-task sweep.
 > Partial/aborted trajectories are
 > diagnostic only, and scientific figures are released only after the complete
