@@ -199,6 +199,10 @@ def replicate_record(row: dict[str, str]) -> dict:
     result = json.loads(result_path.read_text())
     if result.get("run_status", "complete") != "complete":
         raise RuntimeError(f"task {row['task_id']} result is not complete")
+    expected_integrator = row.get("orientation_integrator", "end_step_v1")
+    if result.get("orientation_integrator", "end_step_v1") != expected_integrator:
+        raise RuntimeError(
+            f"task {row['task_id']} used a different orientation integrator")
     summary = result.get("non_gaussian") or {}
     series = load_series(Path(str(prefix) + "_ng_moments.csv"))
     record = {
@@ -209,6 +213,7 @@ def replicate_record(row: dict[str, str]) -> dict:
             row.get("dissipation_horizon") or 0.0),
         "protocol_version": row.get("protocol_version", "hcs-ng-v1"),
         "model_variant": row.get("model_variant", "baseline"),
+        "orientation_integrator": expected_integrator,
         "invariant_corrections": row.get("invariant_corrections", "false") == "true",
         "sampling_complete": bool(summary.get("sampling_complete", False)),
         "tail_counts": summary.get("tail_counts", {}),
@@ -779,8 +784,9 @@ def main() -> None:
                     3.0 * (float(np.std(signed, ddof=1) / np.sqrt(len(signed)))
                            if len(signed) > 1 else 0.0))),
             }
-        protocol_v6 = all(
-            item["protocol_version"] == "hcs-ng-v6" for item in items)
+        safe_fallback_protocol = all(
+            item["protocol_version"] in ("hcs-ng-v6", "hcs-ng-v7")
+            for item in items)
         correction_fallback_pass = all(
             (((item["result"].get("routing") != "variational_v2")
               or (item["result"].get("correction_fallback_policy") == "base_law"
@@ -789,7 +795,7 @@ def main() -> None:
                   and float(item["result"].get(
                       "correction_fallback_fraction_in_evaluation_window", np.inf))
                   < MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION))
-             if protocol_v6 else
+             if safe_fallback_protocol else
              float(item["result"].get("out_of_domain_fraction", 0.0)) < 1.0e-3)
             for item in items)
         closure_runtime_pass = all(
@@ -1048,10 +1054,12 @@ def main() -> None:
     }
     protocols = sorted({row.get("protocol_version", "hcs-ng-v1") for row in rows})
     variants = sorted({row.get("model_variant", "baseline") for row in rows})
+    orientation_integrators = sorted({
+        row.get("orientation_integrator", "end_step_v1") for row in rows})
     correction_flags = sorted({row.get("invariant_corrections", "false")
                                for row in rows})
     control_coverage_pass = True
-    if mode == "engineering":
+    if mode in ("numerics-pilot", "engineering"):
         physical_cases = {(float(row["alpha"]), float(row["aspect_ratio"]))
                           for row in rows}
         for control in ("unscaled", "dt_half"):
@@ -1069,7 +1077,7 @@ def main() -> None:
     # Engineering is a short numerical-control pilot. Its stationarity
     # diagnostics remain visible, but only the long-time sentinel/stability
     # stages are authorized to certify an HCS attractor.
-    stationarity_required = mode != "engineering"
+    stationarity_required = mode not in ("numerics-pilot", "engineering")
     physics_verdict = (bool(cases) and not missing and not failed
                        and all(case["sampling_complete"] and case["runtime_pass"]
                                and (case["stationarity_pass"]
@@ -1094,6 +1102,9 @@ def main() -> None:
                "mode": mode,
                "arm_dt": arm_dt,
                "model_variant": variants[0] if len(variants) == 1 else None,
+               "orientation_integrator": (
+                   orientation_integrators[0]
+                   if len(orientation_integrators) == 1 else None),
                "invariant_corrections": (
                    correction_flags[0] == "true" if len(correction_flags) == 1 else None),
                "n_tasks": len(rows), "n_cases": len(cases),

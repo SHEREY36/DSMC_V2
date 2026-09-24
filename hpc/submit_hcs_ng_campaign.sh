@@ -2,7 +2,8 @@
 # Submit a staged HCS non-Gaussian campaign with frozen-artifact gating.
 #
 # Usage:
-#   submit_hcs_ng_campaign.sh engineering ARTIFACT TAG
+#   submit_hcs_ng_campaign.sh numerics-pilot ARTIFACT TAG
+#   submit_hcs_ng_campaign.sh engineering ARTIFACT TAG NUMERICS_SUMMARY
 #   submit_hcs_ng_campaign.sh stability-sentinel ARTIFACT TAG ENGINEERING_SUMMARY
 #   submit_hcs_ng_campaign.sh stability ARTIFACT TAG SENTINEL_SUMMARY
 #   submit_hcs_ng_campaign.sh sweep ARTIFACT TAG STABILITY_SUMMARY
@@ -14,10 +15,11 @@ cd "$ROOT"
 MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
 ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
-TAG=${3:-${MODE}_${MODEL_VARIANT}_v6}
-# Fourth argument: engineering summary for MODE=stability-sentinel; sentinel
-# summary for MODE=stability; full stability summary for sweep/map; passing
-# sweep summary for tails; or full-domain HCS summary for domain-pilot.
+TAG=${3:-${MODE}_${MODEL_VARIANT}_v7}
+# Fourth argument: numerics summary for MODE=engineering; engineering summary
+# for MODE=stability-sentinel; sentinel summary for MODE=stability; full
+# stability summary for sweep/map; passing sweep summary for tails; or
+# full-domain HCS summary for domain-pilot.
 GATE_SUMMARY=${4:-}
 MANIFEST="manifests/hcs_ng_${TAG}.csv"
 RESULTS="results/hcs_ng_${TAG}"
@@ -33,9 +35,10 @@ PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh \
   --mode "$MODE" --model-variant "$MODEL_VARIANT" --artifact "$ARTIFACT" \
   --output "$MANIFEST" --results "$RESULTS"
 CHECK=(--manifest "$MANIFEST" --artifact "$ARTIFACT")
-if [[ "$MODE" == "engineering" ]]; then
+if [[ "$MODE" == "numerics-pilot" ]]; then
   CHECK+=(--allow-engineering)
-elif [[ "$MODE" == "stability-sentinel" || "$MODE" == "stability" \
+elif [[ "$MODE" == "engineering" || "$MODE" == "stability-sentinel" \
+     || "$MODE" == "stability" \
      || "$MODE" == "sweep" \
      || "$MODE" == "map" || "$MODE" == "tails" ]]; then
   [[ -n "$GATE_SUMMARY" ]] || {
@@ -54,7 +57,7 @@ TASKS=$ROWS; (( TASKS > MAX_ARRAY )) && TASKS=$MAX_ARRAY
 CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TASKS
 MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
 case "$MODE" in
-  engineering) DEFAULT_WALLTIME=04:00:00 ;;
+  numerics-pilot|engineering) DEFAULT_WALLTIME=04:00:00 ;;
   stability-sentinel|stability) DEFAULT_WALLTIME=24:00:00 ;;
   domain-pilot) DEFAULT_WALLTIME=04:00:00 ;;
   sweep|map) DEFAULT_WALLTIME=16:00:00 ;;

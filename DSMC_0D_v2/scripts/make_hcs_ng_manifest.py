@@ -16,9 +16,10 @@ FIELDS = (
     "invariant_corrections", "artifact_sha256", "alpha", "aspect_ratio", "replicate",
     "seed", "particles", "initial_theta", "dissipation_horizon", "tau_end",
     "sample_start_tau", "sample_end_tau", "sample_delta_tau", "state_update_cpp", "dt",
-    "max_ntc_candidates_per_step", "output_prefix",
+    "orientation_integrator", "max_ntc_candidates_per_step", "output_prefix",
 )
-PROTOCOL_VERSION = "hcs-ng-v6"
+PROTOCOL_VERSION = "hcs-ng-v7"
+ORIENTATION_INTEGRATOR = "symmetric_midpoint_v1"
 # The v5 long-time sentinel resolved an A_cw discrepancy at alpha=0.5,
 # AR=1.35 between 0.005 and 0.0025. Promote the converged arm and test it
 # against another factor-of-two refinement before any full-domain allocation.
@@ -47,6 +48,12 @@ def sha256(path: Path) -> str:
 
 
 def design(mode: str, artifact: Path):
+    if mode == "numerics-pilot":
+        # Protocol v6 isolated its only numerical-control failure here.  Test
+        # the repaired midpoint integrator at the exact production N/window
+        # before spending another five-case engineering allocation.
+        return ((0.50, 1.35),), SEEDS[:8], \
+            ("scaled", "unscaled", "dt_half"), 10000, 60.0, 30.0, 2.0
     if mode == "engineering":
         # Validate the similarity thermostat and dt before paying for the
         # sweep.  The two alpha=0.5 cases bracket shape at maximum cooling;
@@ -118,7 +125,8 @@ def design(mode: str, artifact: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("engineering", "domain-pilot", "sweep",
+    parser.add_argument("--mode", choices=("numerics-pilot", "engineering",
+                                            "domain-pilot", "sweep",
                                             "stability-sentinel", "stability", "map",
                                             "tails", "sphere-controls"),
                         default="engineering")
@@ -184,6 +192,7 @@ def main() -> None:
                         "sample_start_tau": start_value, "sample_end_tau": tau_value,
                         "sample_delta_tau": delta_value,
                         "state_update_cpp": 0.05,
+                        "orientation_integrator": ORIENTATION_INTEGRATOR,
                         # Protocol v2 rejected 0.01 and protocol v5 rejected
                         # 0.005 at the strongest-dissipation near-sphere
                         # sentinel. Production is now 0.0025, checked against

@@ -168,6 +168,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             bool(config.get("simulation", {}).get("use_isotropic_eps", True)))
 
     dt = float(config["time"]["dt"])
+    orientation_integrator = str(config.get("simulation", {}).get(
+        "orientation_integrator", "end_step_v1"))
+    if orientation_integrator not in ("end_step_v1", "symmetric_midpoint_v1"):
+        raise ValueError(
+            "simulation.orientation_integrator must be end_step_v1 or "
+            "symmetric_midpoint_v1")
     dtau = float(config["time"]["dtau"])
     end_time = float(config["time"]["t_end"])
     tau_end = config["time"].get("tau_end")
@@ -310,6 +316,15 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         + " ".join(f"{value:13.6f}" for value in values)
                         + "\n")
                 output_index += 1
+            # The orientation-dependent collision measure must see axes at
+            # the midpoint of the free-rotation interval.  Advancing all axes
+            # only after the collision batch is a first-order Lie split; in a
+            # rescaled HCS its error never shrinks with cooling.  The two half
+            # rotations below form a symmetric (Strang) split around the
+            # collision-plus-thermostat map.  The historical end-step scheme
+            # remains available explicitly for frozen legacy regressions.
+            if orientation_integrator == "symmetric_midpoint_v1":
+                state.advance_axes(0.5 * dt)
             if flow_mode == "usf":
                 state.velocity[:, 0] -= shear_rate * state.velocity[:, 1] * dt
             ttr, trot, _ = state.temperatures(params.mass)
@@ -512,7 +527,9 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         f"{vrmax / thermal:.1f} thermal speeds at tau={tau:.1f}")
             elif vrmax < vrmax_temp:
                 vrmax = vrmax_temp
-            state.advance_axes(dt)
+            state.advance_axes(
+                0.5 * dt if orientation_integrator == "symmetric_midpoint_v1"
+                else dt)
             time += dt
     non_gaussian_summary = non_gaussian.close()
     total_seconds = wallclock.perf_counter() - march_started
@@ -523,6 +540,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
         "volume": volume, "number_density": count / volume,
         "routing": routing, "angular": angular, "flow": flow_mode,
+        "orientation_integrator": orientation_integrator,
         "minimum_Ftr": None if not np.isfinite(minimum_ftr) else minimum_ftr,
         "maximum_Ftr": None if not np.isfinite(maximum_ftr) else maximum_ftr,
         "negative_energy_repairs": 0 if kernel is None else kernel.negative_energy_repairs,

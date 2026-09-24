@@ -8,9 +8,13 @@
 > replacement computes peculiar temperature and projects to zero momentum
 > before every HCS rescale. The subsequent v5 sentinel confirmed that repair
 > but exposed NTC initialization, correction-support, statistical-stationarity,
-> and `dt=0.005` convergence failures. The active replacement is documented in
-> `reports/HCS_NG_PROTOCOL_V6_2026-09-23.md`: it adds a new 120-task engineering
-> gate and an 80-task long-time sentinel followed by a 148-task, two-sided,
+> and `dt=0.005` convergence failures. Protocol v6 repaired those issues, but
+> its complete engineering gate resolved an `a20` splitting error at
+> `alpha=0.5, AR=1.35`. The active replacement is documented in
+> `reports/HCS_NG_PROTOCOL_V7_2026-09-23.md`: it uses a symmetric midpoint
+> orientation integrator and adds a 24-task worst-case numerical gate before
+> the 120-task engineering gate, then an 80-task long-time sentinel followed by
+> a 148-task, two-sided,
 > `chi=(1-alpha^2)tau=600` stability gate before the 370-task sweep.
 > Partial/aborted trajectories are
 > diagnostic only, and scientific figures are released only after the complete

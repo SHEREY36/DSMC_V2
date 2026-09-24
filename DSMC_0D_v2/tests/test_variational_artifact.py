@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -9,6 +10,7 @@ from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2.legacy_models import FrozenLossModel
 from dsmc_v2.simulation import run_simulation, runtime_gate_status
+from dsmc_v2.state import ParticleState
 from dsmc_v2_contracts import FEATURE_NAMES, ONE_SIDED_FEATURE_NAMES
 
 
@@ -378,7 +380,10 @@ class VariationalArtifactTests(unittest.TestCase):
                 "time": {"dt": 0.01, "dtau": 0.1, "t_end": 0.02,
                          "tau_end": None, "equilibration_time": 0.0},
                 "flow": {"mode": "hcs", "shear_rate": 0.0},
-                "simulation": {"sphere_collision": False, "use_isotropic_eps": True},
+                "simulation": {
+                    "sphere_collision": False, "use_isotropic_eps": True,
+                    "orientation_integrator": "symmetric_midpoint_v1",
+                },
                 "preprocessing": {"model_root": str(root),
                                   "dissipation": {"beta_a": 1.21, "beta_b": 3.67}},
                 "microscopic_closure": {
@@ -386,8 +391,22 @@ class VariationalArtifactTests(unittest.TestCase):
                     "artifact": str(artifact), "invariant_corrections": False,
                 },
             }
-            diagnostics = run_simulation(config, 42, root / "hcs.txt")
+            axis_steps = []
+            advance_axes = ParticleState.advance_axes
+
+            def tracked_advance_axes(state, step):
+                axis_steps.append(float(step))
+                return advance_axes(state, step)
+
+            with patch.object(
+                    ParticleState, "advance_axes", new=tracked_advance_axes):
+                diagnostics = run_simulation(config, 42, root / "hcs.txt")
             self.assertEqual(diagnostics["routing"], "variational_v2")
+            self.assertEqual(diagnostics["orientation_integrator"],
+                             "symmetric_midpoint_v1")
+            self.assertGreaterEqual(len(axis_steps), 2)
+            self.assertEqual(len(axis_steps) % 2, 0)
+            self.assertTrue(all(np.isclose(step, 0.005) for step in axis_steps))
             self.assertEqual(diagnostics["energy_interpolation"],
                              "node_first_quantile_interpolation_v1")
             self.assertEqual(diagnostics["negative_energy_repairs"], 0)

@@ -237,31 +237,42 @@ The required digest is
 The submission preflight recomputes this digest and checks the adjacent
 manifest before any Slurm job is created.
 
-Protocol v6 changes the time-step arms, so no earlier engineering result is
-reusable. Run the new engineering gate first:
+Protocol v7 changes the orientation integrator, so no earlier engineering
+result is reusable. Run the 24-task worst-case numerical gate first:
+
+```bash
+HCS_NG_MAX_CORES=24 \
+bash hpc/submit_hcs_ng_campaign.sh \
+  numerics-pilot \
+  models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
+  numerics_pilot_angular_v7
+```
+
+Only after that summary passes, run the new engineering gate:
 
 ```bash
 HCS_NG_MAX_CORES=120 \
 bash hpc/submit_hcs_ng_campaign.sh \
   engineering \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  engineering_angular_v6
+  engineering_angular_v7 \
+  results/hcs_ng_numerics_pilot_angular_v7/summary.json
 ```
 
 After its QA job reports `study_campaign_pass: true`, run the 80-task
 long-time sentinel; do not submit a larger stage until its summary passes:
 
 ```bash
-ENGINEERING_SUMMARY=results/hcs_ng_engineering_angular_v6/summary.json
+ENGINEERING_SUMMARY=results/hcs_ng_engineering_angular_v7/summary.json
 HCS_NG_MAX_CORES=80 \
 bash hpc/submit_hcs_ng_campaign.sh \
   stability-sentinel \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  stability_sentinel_angular_v6 \
+  stability_sentinel_angular_v7 \
   "$ENGINEERING_SUMMARY"
 ```
 
-After `results/hcs_ng_stability_sentinel_angular_v6/summary.json` reports
+After `results/hcs_ng_stability_sentinel_angular_v7/summary.json` reports
 `long_time_stability_campaign_pass: true`, run the 148-task two-sided
 stability gate:
 
@@ -270,11 +281,11 @@ HCS_NG_MAX_CORES=148 \
 bash hpc/submit_hcs_ng_campaign.sh \
   stability \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  stability_angular_v6 \
-  results/hcs_ng_stability_sentinel_angular_v6/summary.json
+  stability_angular_v7 \
+  results/hcs_ng_stability_sentinel_angular_v7/summary.json
 ```
 
-Only after `results/hcs_ng_stability_angular_v6/summary.json` reports
+Only after `results/hcs_ng_stability_angular_v7/summary.json` reports
 `long_time_stability_campaign_pass: true`, submit the 370-task production
 sweep:
 
@@ -283,12 +294,12 @@ HCS_NG_MAX_CORES=256 \
 bash hpc/submit_hcs_ng_campaign.sh \
   sweep \
   models/microscopic_closure_v2_angular_evidence/closure_v2.npz \
-  sweep_angular_v6 \
-  results/hcs_ng_stability_angular_v6/summary.json
+  sweep_angular_v7 \
+  results/hcs_ng_stability_angular_v7/summary.json
 ```
 
 Do not use the old `hcs_ng_engineering_baseline_v1`, failed
-`hcs_ng_engineering_angular_v2`, or any pre-v6 summary. The
+`hcs_ng_engineering_angular_v2`, or any pre-v7 summary. The
 preflight requires complete passing results from the immediately preceding
 stage using the same artifact bytes.
 
@@ -298,7 +309,7 @@ stage using the same artifact bytes.
   pre-allocation NTC ceiling;
 - `DSMC_0D_v2/src/dsmc_v2/non_gaussian.py`: explicit temperature-ratio
   conventions and streaming reduced observables;
-- `DSMC_0D_v2/scripts/make_hcs_ng_manifest.py`: staged protocol-v6 designs;
+- `DSMC_0D_v2/scripts/make_hcs_ng_manifest.py`: staged protocol-v7 designs;
 - `DSMC_0D_v2/scripts/run_hcs_ng_task.py`: artifact/correction routing and
   provenance;
 - `DSMC_0D_v2/scripts/analyze_hcs_ng_campaign.py`: replicate-level statistics,

@@ -13,7 +13,8 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 
-PROTOCOL_VERSION = "hcs-ng-v6"
+PROTOCOL_VERSION = "hcs-ng-v7"
+ORIENTATION_INTEGRATOR = "symmetric_midpoint_v1"
 
 
 def digest(path: Path) -> str:
@@ -46,14 +47,14 @@ def main() -> None:
         arm_dt.setdefault(row["arm"], set()).add(float(row["dt"]))
     expected_dt = ({"scaled": {0.0025}, "unscaled": {0.0025},
                     "dt_half": {0.00125}}
-                   if mode == "engineering"
+                   if mode in ("numerics-pilot", "engineering")
                    else {"scaled": {0.0025}, "dt_half": {0.00125}}
                    if mode == "stability-sentinel"
                    else {"scaled": {0.0025}}
                    if mode in ("stability", "sweep", "map", "tails") else None)
     if expected_dt is not None and arm_dt != expected_dt:
         raise SystemExit(
-            f"{mode} manifest has wrong protocol-v6 step sizes: {arm_dt}")
+            f"{mode} manifest has wrong protocol-v7 step sizes: {arm_dt}")
     protocols = {row.get("protocol_version", "") for row in rows}
     if protocols != {PROTOCOL_VERSION}:
         raise SystemExit(
@@ -61,8 +62,14 @@ def main() -> None:
     variants = {row.get("model_variant", "") for row in rows}
     correction_flags = {row.get("invariant_corrections", "") for row in rows}
     manifest_hashes = {row.get("artifact_sha256", "") for row in rows}
-    if len(variants) != 1 or len(correction_flags) != 1 or len(manifest_hashes) != 1:
+    orientation_integrators = {
+        row.get("orientation_integrator", "") for row in rows}
+    if (len(variants) != 1 or len(correction_flags) != 1
+            or len(manifest_hashes) != 1 or len(orientation_integrators) != 1):
         raise SystemExit("manifest mixes model provenance")
+    if orientation_integrators != {ORIENTATION_INTEGRATOR}:
+        raise SystemExit(
+            "manifest must use the symmetric midpoint orientation integrator")
     model_variant = variants.pop()
     corrections_enabled = correction_flags.pop() == "true"
     artifact = Path(args.artifact)
@@ -89,9 +96,45 @@ def main() -> None:
             raise SystemExit("baseline campaign must disable invariant corrections")
     elif model_variant != "sphere_exact":
         raise SystemExit(f"unknown model variant {model_variant!r}")
-    if mode == "engineering":
+    if mode == "numerics-pilot":
         if not args.allow_engineering:
-            raise SystemExit("engineering mode requires --allow-engineering")
+            raise SystemExit("numerics-pilot mode requires --allow-engineering")
+    elif mode == "engineering":
+        if not args.pilot_summary:
+            raise SystemExit(
+                "engineering mode requires --pilot-summary from a passing "
+                "numerics pilot")
+        pilot = json.loads(Path(args.pilot_summary).read_text())
+        if pilot.get("mode") != "numerics-pilot":
+            raise SystemExit("pilot summary is not a numerics-pilot summary")
+        if pilot.get("protocol_version") != PROTOCOL_VERSION:
+            raise SystemExit("numerics pilot predates the current HCS-NG protocol")
+        if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
+            raise SystemExit("numerics pilot used a different orientation integrator")
+        if pilot.get("model_variant") != model_variant:
+            raise SystemExit("numerics pilot used a different model variant")
+        if bool(pilot.get("invariant_corrections")) != corrections_enabled:
+            raise SystemExit("numerics pilot used different correction routing")
+        if pilot.get("artifact_sha256") != artifact_hash:
+            raise SystemExit("numerics pilot did not use these artifact bytes")
+        if not pilot.get("study_campaign_pass", False):
+            raise SystemExit("numerics pilot study verdict has not passed")
+        if pilot.get("n_tasks") != 24 or pilot.get("n_completed_tasks") != 24:
+            raise SystemExit("numerics pilot is not the complete 24-task design")
+        if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
+            raise SystemExit("numerics pilot contains failed or missing tasks")
+        if pilot.get("arm_dt") != {
+                "scaled": [0.0025], "unscaled": [0.0025],
+                "dt_half": [0.00125]}:
+            raise SystemExit("numerics pilot used the wrong protocol-v7 step sizes")
+        controls = pilot.get("scaled_unscaled_equivalence", [])
+        for control in ("unscaled", "dt_half"):
+            passed = {(float(item["alpha"]), float(item["aspect_ratio"]))
+                      for item in controls
+                      if item.get("control_arm") == control and item.get("pass")}
+            if passed != {(0.50, 1.35)}:
+                raise SystemExit(
+                    f"numerics pilot lacks the passing {control} control")
     elif mode == "stability-sentinel":
         if not args.pilot_summary:
             raise SystemExit(
@@ -100,11 +143,10 @@ def main() -> None:
         pilot = json.loads(Path(args.pilot_summary).read_text())
         if pilot.get("mode") != "engineering":
             raise SystemExit("pilot summary is not an engineering-mode summary")
-        # Protocol v6 promotes 0.0025 to production and introduces a 0.00125
-        # convergence arm. Earlier engineering summaries therefore cannot
-        # establish the numerical control required by this campaign.
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
-            raise SystemExit("engineering pilot is incompatible with HCS-NG v6")
+            raise SystemExit("engineering pilot is incompatible with HCS-NG v7")
+        if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
+            raise SystemExit("engineering pilot used a different orientation integrator")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("engineering pilot used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -114,11 +156,11 @@ def main() -> None:
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("engineering pilot did not use these artifact bytes")
         if pilot.get("n_tasks") != 120:
-            raise SystemExit("engineering pilot does not contain the 120-task protocol-v6 design")
+            raise SystemExit("engineering pilot does not contain the 120-task protocol-v7 design")
         if pilot.get("arm_dt") != {
                 "scaled": [0.0025], "unscaled": [0.0025],
                 "dt_half": [0.00125]}:
-            raise SystemExit("engineering pilot used the wrong protocol-v6 step sizes")
+            raise SystemExit("engineering pilot used the wrong protocol-v7 step sizes")
         if pilot.get("n_completed_tasks") != pilot.get("n_tasks"):
             raise SystemExit("engineering pilot is incomplete")
         controls = pilot.get("scaled_unscaled_equivalence", [])
@@ -142,6 +184,8 @@ def main() -> None:
             raise SystemExit("pilot summary is not a stability-sentinel summary")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("stability sentinel predates the current HCS-NG protocol")
+        if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
+            raise SystemExit("stability sentinel used a different orientation integrator")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("stability sentinel used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -165,6 +209,8 @@ def main() -> None:
             raise SystemExit("pilot summary is not a stability-mode summary")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("stability pilot predates the current HCS-NG protocol")
+        if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
+            raise SystemExit("stability pilot used a different orientation integrator")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("stability pilot used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -186,6 +232,8 @@ def main() -> None:
             raise SystemExit("tail gate summary is not a sweep-mode summary")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("production sweep predates the current HCS-NG protocol")
+        if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
+            raise SystemExit("production sweep used a different orientation integrator")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("production sweep used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:

@@ -50,7 +50,8 @@ def campaign_record(row: dict[str, str], invariant_corrections: bool,
               else row[key])
         for key in ("protocol_version", "mode", "arm", "model_variant",
                     "alpha", "aspect_ratio", "initial_theta",
-                    "dissipation_horizon", "replicate", "seed", "particles")
+                    "dissipation_horizon", "replicate", "seed", "particles",
+                    "orientation_integrator")
         if row.get(key, "") != ""
     }
     record["invariant_corrections"] = invariant_corrections
@@ -103,6 +104,12 @@ def main() -> None:
     config.setdefault("simulation", {})["sphere_collision"] = sphere
     config["simulation"]["hcs_rescale_temperature"] = row["arm"] in ("scaled", "dt_half")
     config["simulation"]["exact_initial_temperatures"] = True
+    orientation_integrator = row.get("orientation_integrator", "")
+    if orientation_integrator != "symmetric_midpoint_v1":
+        raise RuntimeError(
+            "HCS-NG campaign requires the symmetric_midpoint_v1 orientation "
+            f"integrator, got {orientation_integrator!r}")
+    config["simulation"]["orientation_integrator"] = orientation_integrator
     # Stop inside the physical theta hull. This is an early diagnostic guard,
     # never an extrapolation or a substitute for the stability gate.
     config["simulation"]["closure_theta_guard_fraction"] = 0.02

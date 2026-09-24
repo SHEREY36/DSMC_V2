@@ -27,6 +27,7 @@ class V1RegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "hcs.txt"
             diagnostics = run_simulation(config, 42, output)
+            self.assertEqual(diagnostics["orientation_integrator"], "end_step_v1")
             self.assertEqual(output.read_text(), expected)
             self.assertEqual(diagnostics["collisions"], 12)
             self.assertAlmostEqual(diagnostics["cpp"], 12.0 / 62.0)

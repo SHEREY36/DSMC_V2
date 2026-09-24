@@ -1,5 +1,10 @@
 # HCS non-Gaussian protocol v6 - 2026-09-23
 
+> Superseded by protocol v7 after the complete 120-task engineering run. All
+> tasks and runtime gates passed, but the `alpha=0.5, AR=1.35` scaled arm
+> resolved an `a20` difference against both the unscaled and half-step arms.
+> See `reports/HCS_NG_PROTOCOL_V7_2026-09-23.md`.
+
 ## Decision
 
 Protocol v5 permanently removed the false late-time temperature-ratio runaway:

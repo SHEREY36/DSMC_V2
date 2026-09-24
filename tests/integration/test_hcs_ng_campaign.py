@@ -54,12 +54,60 @@ def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v6"}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v7"}
+    assert {row["orientation_integrator"] for row in rows} == {
+        "symmetric_midpoint_v1"}
     assert {row["model_variant"] for row in rows} == {"baseline"}
     assert {row["invariant_corrections"] for row in rows} == {"false"}
     assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
     assert {float(row["dt"]) for row in rows if row["arm"] == "unscaled"} == {0.0025}
     assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.00125}
+
+
+def test_numerics_pilot_is_the_failed_v6_coordinate_only(tmp_path):
+    _, rows = make_manifest(
+        tmp_path, "numerics-pilot", _test_artifact(tmp_path))
+    assert len(rows) == 24
+    assert {(float(row["alpha"]), float(row["aspect_ratio"]))
+            for row in rows} == {(0.5, 1.35)}
+    assert len({int(row["seed"]) for row in rows}) == 8
+    assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
+    assert {row["orientation_integrator"] for row in rows} == {
+        "symmetric_midpoint_v1"}
+
+
+def test_engineering_requires_complete_passing_numerics_pilot(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    manifest, _ = make_manifest(tmp_path, "engineering", artifact)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    pilot = tmp_path / "numerics.json"
+    command = [
+        sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+        "--manifest", str(manifest), "--artifact", str(artifact),
+        "--pilot-summary", str(pilot),
+    ]
+    pilot.write_text(json.dumps({
+        "mode": "numerics-pilot", "protocol_version": "hcs-ng-v7",
+        "orientation_integrator": "symmetric_midpoint_v1",
+        "model_variant": "baseline", "invariant_corrections": False,
+        "study_campaign_pass": True, "artifact_sha256": digest,
+        "n_tasks": 24, "n_completed_tasks": 24,
+        "failed_tasks": [], "missing_tasks": [],
+        "arm_dt": {"scaled": [0.0025], "unscaled": [0.0025],
+                   "dt_half": [0.00125]},
+        "scaled_unscaled_equivalence": [
+            {"control_arm": arm, "alpha": 0.5, "aspect_ratio": 1.35,
+             "pass": True}
+            for arm in ("unscaled", "dt_half")
+        ],
+    }))
+    accepted = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert accepted.returncode == 0, accepted.stderr
+    payload = json.loads(pilot.read_text())
+    payload["study_campaign_pass"] = False
+    pilot.write_text(json.dumps(payload))
+    blocked = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert blocked.returncode != 0
 
 
 def test_domain_pilot_uses_every_artifact_alpha_ar_pair(tmp_path):
@@ -109,7 +157,8 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(pilot)]
     pilot.write_text(json.dumps({
-        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v6",
+        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v7",
+        "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "long_time_stability_campaign_pass": True,
         "artifact_sha256": digest,
@@ -126,7 +175,7 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
     assert blocked.returncode != 0
 
 
-def test_sentinel_requires_passing_v6_engineering_gate(tmp_path):
+def test_sentinel_requires_passing_v7_engineering_gate(tmp_path):
     artifact = _test_artifact(tmp_path)
     manifest, _ = make_manifest(tmp_path, "stability-sentinel", artifact)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -134,7 +183,8 @@ def test_sentinel_requires_passing_v6_engineering_gate(tmp_path):
     cases = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
              (0.95, 2.0), (1.00, 3.0))
     summary.write_text(json.dumps({
-        "mode": "engineering", "protocol_version": "hcs-ng-v6",
+        "mode": "engineering", "protocol_version": "hcs-ng-v7",
+        "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "artifact_sha256": digest,
         "n_tasks": 120, "n_completed_tasks": 120,
@@ -153,7 +203,7 @@ def test_sentinel_requires_passing_v6_engineering_gate(tmp_path):
     ], cwd=ROOT, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     payload = json.loads(summary.read_text())
-    payload["protocol_version"] = "hcs-ng-v5"
+    payload["protocol_version"] = "hcs-ng-v6"
     summary.write_text(json.dumps(payload))
     stale = subprocess.run([
         sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
@@ -163,14 +213,21 @@ def test_sentinel_requires_passing_v6_engineering_gate(tmp_path):
     assert stale.returncode != 0
 
 
-def test_current_artifact_allows_engineering_but_blocks_domain_pilot(tmp_path):
+def test_current_artifact_allows_numerics_but_gates_engineering(tmp_path):
     artifact = _test_artifact(tmp_path)
-    engineering, _ = make_manifest(tmp_path, "engineering", artifact)
+    numerics, _ = make_manifest(tmp_path, "numerics-pilot", artifact)
     allowed = subprocess.run([
         sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
-        "--manifest", str(engineering), "--artifact", str(artifact),
+        "--manifest", str(numerics), "--artifact", str(artifact),
         "--allow-engineering"], cwd=ROOT, text=True, capture_output=True)
     assert allowed.returncode == 0, allowed.stderr
+
+    engineering, _ = make_manifest(tmp_path, "engineering", artifact)
+    gated = subprocess.run([
+        sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+        "--manifest", str(engineering), "--artifact", str(artifact)],
+        cwd=ROOT, text=True, capture_output=True)
+    assert gated.returncode != 0 and "pilot-summary" in gated.stderr
 
     domain, _ = make_manifest(tmp_path, "domain-pilot", artifact)
     blocked = subprocess.run([
@@ -189,7 +246,7 @@ def test_angular_evidence_preflight_requires_matching_evidence_manifest(tmp_path
                         beta_coordinates=surface)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     manifest, _ = make_manifest(
-        tmp_path, "engineering", artifact, model_variant="angular_evidence")
+        tmp_path, "numerics-pilot", artifact, model_variant="angular_evidence")
     command = [
         sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
         "--manifest", str(manifest), "--artifact", str(artifact),
@@ -364,25 +421,30 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
     missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert missing.returncode != 0 and "pilot-summary" in missing.stderr
     for payload, ok in (
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v6",
-              "model_variant": "baseline", "invariant_corrections": False,
-              "long_time_stability_campaign_pass": True,
-              "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v5",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v7",
+              "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest}, False),
             ({"mode": "stability", "protocol_version": "hcs-ng-v6",
+              "orientation_integrator": "symmetric_midpoint_v1",
+              "model_variant": "baseline", "invariant_corrections": False,
+              "long_time_stability_campaign_pass": True,
+              "artifact_sha256": digest}, False),
+            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+              "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": False,
               "n_tasks": 148, "n_completed_tasks": 148,
               "failed_tasks": [], "missing_tasks": [],
               "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v6",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+              "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v6",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+              "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest,
@@ -403,7 +465,8 @@ def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(summary)]
     payload = {
-        "mode": "sweep", "protocol_version": "hcs-ng-v6",
+        "mode": "sweep", "protocol_version": "hcs-ng-v7",
+        "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "scientific_outputs_released": True,
         "artifact_sha256": digest,
