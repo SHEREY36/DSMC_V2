@@ -531,6 +531,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 0.5 * dt if orientation_integrator == "symmetric_midpoint_v1"
                 else dt)
             time += dt
+    # A collision batch can jump from below ``tau_end`` to just above it. The
+    # loop condition then terminates before the normal output branch observes
+    # the last scheduled non-Gaussian endpoint. Sample the terminal state once
+    # more; ``maybe_sample`` is idempotent when the schedule is already full.
+    non_gaussian.maybe_sample(time, collisions / float(count), state)
     non_gaussian_summary = non_gaussian.close()
     total_seconds = wallclock.perf_counter() - march_started
     closure_collision_seconds = 0.0 if kernel is None else kernel.closure_seconds

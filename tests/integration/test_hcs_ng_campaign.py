@@ -158,9 +158,11 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
                "--pilot-summary", str(pilot)]
     pilot.write_text(json.dumps({
         "mode": "stability-sentinel", "protocol_version": "hcs-ng-v7",
+        "analysis_revision": "hcs-ng-analysis-v2",
         "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "long_time_stability_campaign_pass": True,
+        "engineering_control_coverage_pass": True,
         "artifact_sha256": digest,
         "n_tasks": 80, "n_completed_tasks": 80,
         "failed_tasks": [], "missing_tasks": [],
@@ -173,6 +175,12 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
     pilot.write_text(json.dumps(payload))
     blocked = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert blocked.returncode != 0
+    payload["long_time_stability_campaign_pass"] = True
+    payload.pop("analysis_revision")
+    pilot.write_text(json.dumps(payload))
+    stale_analysis = subprocess.run(
+        command, cwd=ROOT, text=True, capture_output=True)
+    assert stale_analysis.returncode != 0
 
 
 def test_sentinel_requires_passing_v7_engineering_gate(tmp_path):
@@ -343,6 +351,49 @@ def test_temperature_ratio_gate_is_reciprocal_invariant(tmp_path):
     assert module.MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR == 1.0e-5
     assert module.MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO == 1.0e-12
     assert module.MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION == 1.0e-2
+
+
+def test_terminal_sampling_recovery_is_narrow_and_auditable():
+    module = _analysis_module()
+    series = {"tau": np.linspace(100.0, 190.0, 10)}
+    summary = {
+        "run_status": "complete", "sampling_eligible": True,
+        "sampling_complete": False, "expected_samples": 11,
+        "n_samples": 10, "sample_start_tau": 100.0,
+        "sample_end_tau": 200.0, "sample_delta_tau": 10.0,
+    }
+    recovered = module.sampling_completion(summary, series)
+    assert recovered["complete"]
+    assert recovered["terminal_coverage_recovered"]
+    two_missing = dict(summary, expected_samples=12)
+    assert not module.sampling_completion(two_missing, series)["complete"]
+    gapped = {"tau": np.array([100.0, 110.0, 120.0, 150.0, 160.0,
+                                170.0, 180.0, 185.0, 188.0, 190.0])}
+    assert not module.sampling_completion(summary, gapped)["complete"]
+
+
+def test_sentinel_inherits_precision_but_keeps_hard_effect_cap():
+    module = _analysis_module()
+    noisy_consistent = np.array([-0.010, 0.000, 0.010, 0.018])
+    engineering = module.paired_control_result(
+        noisy_consistent, "a02", "engineering")
+    sentinel = module.paired_control_result(
+        noisy_consistent, "a02", "stability-sentinel")
+    assert engineering["statistical_consistency_pass"]
+    assert not engineering["precision_pass"]
+    assert not engineering["pass"]
+    assert sentinel["hard_effect_cap_pass"]
+    assert not sentinel["precision_required_for_pass"]
+    assert sentinel["pass"]
+    too_few = module.paired_control_result(
+        np.array([0.001]), "a02", "stability-sentinel")
+    assert not too_few["replicate_count_pass"]
+    assert not too_few["pass"]
+    too_large = module.paired_control_result(
+        np.array([-0.020, 0.010, 0.030, 0.040]),
+        "a02", "stability-sentinel")
+    assert not too_large["hard_effect_cap_pass"]
+    assert not too_large["pass"]
 
 
 def test_stationarity_gate_detects_delayed_departure():

@@ -9,6 +9,7 @@ import numpy as np
 from coll_models_v2.projections import angular_quantiles, energy_quantile_table
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2.legacy_models import FrozenLossModel
+from dsmc_v2.non_gaussian import NonGaussianDiagnostics
 from dsmc_v2.simulation import run_simulation, runtime_gate_status
 from dsmc_v2.state import ParticleState
 from dsmc_v2_contracts import FEATURE_NAMES, ONE_SIDED_FEATURE_NAMES
@@ -392,14 +393,22 @@ class VariationalArtifactTests(unittest.TestCase):
                 },
             }
             axis_steps = []
+            sample_taus = []
             advance_axes = ParticleState.advance_axes
+            maybe_sample = NonGaussianDiagnostics.maybe_sample
 
             def tracked_advance_axes(state, step):
                 axis_steps.append(float(step))
                 return advance_axes(state, step)
 
-            with patch.object(
-                    ParticleState, "advance_axes", new=tracked_advance_axes):
+            def tracked_maybe_sample(diagnostic, time, tau, state):
+                sample_taus.append(float(tau))
+                return maybe_sample(diagnostic, time, tau, state)
+
+            with (patch.object(
+                    ParticleState, "advance_axes", new=tracked_advance_axes),
+                  patch.object(NonGaussianDiagnostics, "maybe_sample",
+                               new=tracked_maybe_sample)):
                 diagnostics = run_simulation(config, 42, root / "hcs.txt")
             self.assertEqual(diagnostics["routing"], "variational_v2")
             self.assertEqual(diagnostics["orientation_integrator"],
@@ -407,6 +416,8 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertGreaterEqual(len(axis_steps), 2)
             self.assertEqual(len(axis_steps) % 2, 0)
             self.assertTrue(all(np.isclose(step, 0.005) for step in axis_steps))
+            self.assertGreaterEqual(len(sample_taus), 2)
+            self.assertAlmostEqual(sample_taus[-1], diagnostics["cpp"])
             self.assertEqual(diagnostics["energy_interpolation"],
                              "node_first_quantile_interpolation_v1")
             self.assertEqual(diagnostics["negative_energy_repairs"], 0)

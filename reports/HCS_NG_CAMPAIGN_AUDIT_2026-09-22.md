@@ -272,7 +272,22 @@ bash hpc/submit_hcs_ng_campaign.sh \
   "$ENGINEERING_SUMMARY"
 ```
 
+The completed v7 sentinel must be analyzed with revision
+`hcs-ng-analysis-v2`. For the already completed 80-task dataset, rerun only
+the inexpensive QA analysis after pulling the repair; do not rerun the array:
+
+```bash
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="${TMPDIR:-/tmp}/dsmc-v2-hcs-ng-reanalysis-$$"
+mkdir -p "$MPLCONFIGDIR"
+hpc/python.sh DSMC_0D_v2/scripts/analyze_hcs_ng_campaign.py \
+  --manifest manifests/hcs_ng_stability_sentinel_angular_v7.csv \
+  --output results/hcs_ng_stability_sentinel_angular_v7/summary.json \
+  --figure results/hcs_ng_stability_sentinel_angular_v7/non_gaussian_observables.png
+```
+
 After `results/hcs_ng_stability_sentinel_angular_v7/summary.json` reports
+`analysis_revision: hcs-ng-analysis-v2` and
 `long_time_stability_campaign_pass: true`, run the 148-task two-sided
 stability gate:
 

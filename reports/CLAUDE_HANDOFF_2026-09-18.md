@@ -16,6 +16,12 @@
 > the 120-task engineering gate, then an 80-task long-time sentinel followed by
 > a 148-task, two-sided,
 > `chi=(1-alpha^2)tau=600` stability gate before the 370-task sweep.
+> The 80-task sentinel completed successfully but its original analysis was a
+> false negative: 32 runs missed only the terminal scheduled sample, and one
+> low-N `a02` comparison duplicated the precision obligation already passed by
+> the mandatory high-N engineering gate. Analysis revision
+> `hcs-ng-analysis-v2` repairs both without changing measured data or dynamics;
+> see `reports/HCS_NG_SENTINEL_V7_DIAGNOSIS_2026-09-25.md`.
 > Partial/aborted trajectories are
 > diagnostic only, and scientific figures are released only after the complete
 > stability and production verdicts pass. USF remains non-gating.

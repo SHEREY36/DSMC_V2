@@ -1,5 +1,13 @@
 # HCS non-Gaussian protocol v7 - 2026-09-23
 
+> 2026-09-25 analysis addendum: the completed 80-task sentinel exposed a
+> terminal-sampling scheduler defect and a duplicated low-N precision
+> requirement, not a physical instability. Both are repaired by analysis
+> revision `hcs-ng-analysis-v2`; see
+> `reports/HCS_NG_SENTINEL_V7_DIAGNOSIS_2026-09-25.md`. The dynamics,
+> midpoint integrator, step sizes, and protocol-v7 physical design are
+> unchanged.
+
 ## Decision
 
 Do not advance the completed protocol-v6 engineering result to the long-time

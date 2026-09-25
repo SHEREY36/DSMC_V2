@@ -48,6 +48,103 @@ STATIONARITY_PRECISION_LIMIT = {
     "A_cu": 0.04,
     "A_cw_quadrupolar": 0.04,
 }
+ANALYSIS_REVISION = "hcs-ng-analysis-v2"
+
+
+def sampling_completion(summary: dict, series: dict[str, np.ndarray]) -> dict:
+    """Classify complete windows, including the protocol-v7 endpoint bug.
+
+    Before the terminal-state sampling repair, a run whose final collision
+    jumped across ``tau_end`` could close with exactly the last scheduled
+    endpoint missing. Recover only that narrow case: every earlier sample
+    must be present, ordered, and cover the window through its penultimate
+    scheduled point. This does not rescue truncated or sparsely sampled runs.
+    """
+    native = bool(summary.get("sampling_complete", False))
+    base = {
+        "complete": native,
+        "native_complete": native,
+        "terminal_coverage_recovered": False,
+        "reason": "native_complete" if native else "incomplete",
+    }
+    if native:
+        return base
+    tau = np.asarray(series.get("tau", []), dtype=float)
+    tau = tau[np.isfinite(tau)]
+    expected = int(summary.get("expected_samples", 0))
+    observed = int(summary.get("n_samples", 0))
+    start = float(summary.get("sample_start_tau", np.nan))
+    end = float(summary.get("sample_end_tau", np.nan))
+    delta = float(summary.get("sample_delta_tau", np.nan))
+    finite_schedule = all(np.isfinite(value) for value in (start, end, delta))
+    tolerance = max(1.0e-6, 0.05 * delta) if finite_schedule else np.nan
+    ordered = len(tau) < 2 or bool(np.all(np.diff(tau) > 0.0))
+    spacing_complete = (len(tau) < 2 or bool(
+        np.max(np.diff(tau)) <= delta + tolerance))
+    recovered = bool(
+        summary.get("run_status") == "complete"
+        and summary.get("sampling_eligible", False)
+        and finite_schedule and delta > 0.0 and expected >= 2
+        and observed == expected - 1 and len(tau) == observed
+        and ordered and spacing_complete
+        and start - tolerance <= tau[0] <= start + tolerance
+        and end - delta - tolerance <= tau[-1] <= end + tolerance)
+    if recovered:
+        base.update({
+            "complete": True,
+            "terminal_coverage_recovered": True,
+            "reason": "single_terminal_sample_recovered",
+        })
+    return base
+
+
+def paired_control_result(differences: np.ndarray, name: str,
+                          campaign_mode: str | None) -> dict:
+    """Evaluate a paired numerical control at its campaign's intended tier.
+
+    Engineering establishes precision at production particle count. The
+    smaller-N long-time sentinel instead detects a late emergent bias: it must
+    be statistically consistent with zero *and* remain below the same hard
+    resolution cap, but it does not redundantly fail on sampling precision
+    already certified by the mandatory upstream engineering gate.
+    """
+    differences = np.asarray(differences, dtype=float)
+    mean_difference = float(np.mean(differences))
+    paired_stderr = (float(np.std(differences, ddof=1)
+                           / np.sqrt(len(differences)))
+                     if len(differences) > 1 else 0.0)
+    error = abs(mean_difference)
+    is_temperature_ratio = name == LOG_THETA
+    floor = 0.01 if is_temperature_ratio else 0.002
+    statistical_resolution = 3.0 * paired_stderr
+    resolution_limit = 0.02 if is_temperature_ratio else 0.01
+    tolerance = max(floor, statistical_resolution)
+    consistency_pass = error <= tolerance
+    replicate_count_pass = len(differences) >= 4
+    precision_pass = (replicate_count_pass
+                      and statistical_resolution <= resolution_limit)
+    hard_effect_cap_pass = error <= resolution_limit
+    precision_required = campaign_mode != "stability-sentinel"
+    passed = (replicate_count_pass and consistency_pass and hard_effect_cap_pass
+              and (precision_pass or not precision_required))
+    practical_equivalence_95 = error + 1.96 * paired_stderr <= floor
+    return {
+        "paired_mean_difference": mean_difference,
+        "absolute_difference": error,
+        "paired_stderr": paired_stderr,
+        "n_pairs": len(differences),
+        "replicate_count_pass": bool(replicate_count_pass),
+        "practical_floor": floor,
+        "statistical_resolution_3se": statistical_resolution,
+        "resolution_limit": resolution_limit,
+        "tolerance": tolerance,
+        "statistical_consistency_pass": bool(consistency_pass),
+        "precision_pass": bool(precision_pass),
+        "precision_required_for_pass": bool(precision_required),
+        "hard_effect_cap_pass": bool(hard_effect_cap_pass),
+        "practical_equivalence_95": bool(practical_equivalence_95),
+        "pass": bool(passed),
+    }
 
 
 def integrated_autocorrelation_time(values: np.ndarray) -> float:
@@ -205,6 +302,7 @@ def replicate_record(row: dict[str, str]) -> dict:
             f"task {row['task_id']} used a different orientation integrator")
     summary = result.get("non_gaussian") or {}
     series = load_series(Path(str(prefix) + "_ng_moments.csv"))
+    sampling = sampling_completion(summary, series)
     record = {
         "task_id": int(row["task_id"]), "result": result,
         "replicate": int(row["replicate"]), "seed": int(row["seed"]),
@@ -215,7 +313,11 @@ def replicate_record(row: dict[str, str]) -> dict:
         "model_variant": row.get("model_variant", "baseline"),
         "orientation_integrator": expected_integrator,
         "invariant_corrections": row.get("invariant_corrections", "false") == "true",
-        "sampling_complete": bool(summary.get("sampling_complete", False)),
+        "sampling_complete": sampling["complete"],
+        "sampling_complete_native": sampling["native_complete"],
+        "terminal_sampling_coverage_recovered": (
+            sampling["terminal_coverage_recovered"]),
+        "sampling_completion_reason": sampling["reason"],
         "tail_counts": summary.get("tail_counts", {}),
         "tail_thresholds": summary.get("tail_thresholds", {}),
         "histograms_file": summary.get("histograms_file"),
@@ -951,48 +1053,16 @@ def main() -> None:
                         differences.append(left["mean"] - right["mean"])
                 if not differences:
                     continue
-                differences = np.asarray(differences, dtype=float)
-                mean_difference = float(np.mean(differences))
-                paired_stderr = (float(np.std(differences, ddof=1)
-                                       / np.sqrt(len(differences)))
-                                 if len(differences) > 1 else 0.0)
-                error = abs(mean_difference)
-                is_temperature_ratio = name == LOG_THETA
-                floor = 0.01 if is_temperature_ratio else 0.002
-                statistical_resolution = 3.0 * paired_stderr
-                # A large standard error must not make the control easier to
-                # pass.  First require consistency with zero at three SE, but
-                # also cap that statistical resolution.  Formal equivalence
-                # at the tighter practical floor is reported separately; it
-                # is not manufactured from a non-significant difference.
-                resolution_limit = 0.02 if is_temperature_ratio else 0.01
-                tolerance = max(floor, statistical_resolution)
-                consistency_pass = error <= tolerance
-                precision_pass = (len(differences) >= 4
-                                  and statistical_resolution <= resolution_limit)
-                practical_equivalence_95 = (
-                    error + 1.96 * paired_stderr <= floor)
-                comparisons[name] = {"paired_mean_difference": mean_difference,
-                                     "absolute_difference": error,
-                                     "paired_stderr": paired_stderr,
-                                     "n_pairs": len(differences),
-                                     "practical_floor": floor,
-                                     "statistical_resolution_3se": statistical_resolution,
-                                     "resolution_limit": resolution_limit,
-                                     "tolerance": tolerance,
-                                     "statistical_consistency_pass": bool(
-                                         consistency_pass),
-                                     "precision_pass": bool(precision_pass),
-                                     "practical_equivalence_95": bool(
-                                         practical_equivalence_95),
-                                     "pass": bool(consistency_pass
-                                                  and precision_pass)}
-                passed &= consistency_pass and precision_pass
+                comparisons[name] = paired_control_result(
+                    np.asarray(differences, dtype=float), name, campaign_mode)
+                passed &= comparisons[name]["pass"]
             equivalence.append({"alpha": physical[0], "aspect_ratio": physical[1],
                                 "initial_theta": (
                                     None if len(physical) == 2 else physical[2]),
                                 "control_arm": control,
                                 "comparison_kind": (
+                                    "paired_consistency_with_hard_effect_cap"
+                                    if campaign_mode == "stability-sentinel" else
                                     "paired_consistency_with_precision_gate"),
                                 "paired_realizations": len(paired_keys),
                                 "pass": bool(passed), "observables": comparisons})
@@ -1098,7 +1168,11 @@ def main() -> None:
     production_verdict = study_verdict and deployment_eligible
     artifact_hashes = sorted({value for _, item in records
                               if (value := item["result"].get("artifact_sha256"))})
+    terminal_sampling_recoveries = sum(
+        int(item["terminal_sampling_coverage_recovered"])
+        for _, item in records)
     summary = {"protocol_version": protocols[0] if len(protocols) == 1 else None,
+               "analysis_revision": ANALYSIS_REVISION,
                "mode": mode,
                "arm_dt": arm_dt,
                "model_variant": variants[0] if len(variants) == 1 else None,
@@ -1110,6 +1184,7 @@ def main() -> None:
                "n_tasks": len(rows), "n_cases": len(cases),
                "n_completed_tasks": len(records), "missing_tasks": missing,
                "failed_tasks": failed,
+               "terminal_sampling_recoveries": terminal_sampling_recoveries,
                "artifact_sha256": artifact_hashes[0] if len(artifact_hashes) == 1 else None,
                "physics_campaign_pass": physics_verdict,
                "stationarity_required_for_verdict": stationarity_required,

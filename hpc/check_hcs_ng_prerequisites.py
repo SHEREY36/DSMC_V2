@@ -15,6 +15,7 @@ from scipy.spatial import Delaunay
 
 PROTOCOL_VERSION = "hcs-ng-v7"
 ORIENTATION_INTEGRATOR = "symmetric_midpoint_v1"
+ANALYSIS_REVISION = "hcs-ng-analysis-v2"
 
 
 def digest(path: Path) -> str:
@@ -186,6 +187,10 @@ def main() -> None:
             raise SystemExit("stability sentinel predates the current HCS-NG protocol")
         if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
             raise SystemExit("stability sentinel used a different orientation integrator")
+        if pilot.get("analysis_revision") != ANALYSIS_REVISION:
+            raise SystemExit(
+                "stability sentinel must be reanalyzed with the current "
+                "terminal-coverage and hierarchical-control rules")
         if pilot.get("model_variant") != model_variant:
             raise SystemExit("stability sentinel used a different model variant")
         if bool(pilot.get("invariant_corrections")) != corrections_enabled:
@@ -198,6 +203,8 @@ def main() -> None:
             raise SystemExit("stability sentinel is not the complete 80-task design")
         if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
             raise SystemExit("stability sentinel contains failed or missing tasks")
+        if not pilot.get("engineering_control_coverage_pass", False):
+            raise SystemExit("stability sentinel lacks complete numerical controls")
         if pilot.get("arm_dt") != {"scaled": [0.0025], "dt_half": [0.00125]}:
             raise SystemExit("stability sentinel used the wrong step sizes")
     elif mode in ("sweep", "map"):
