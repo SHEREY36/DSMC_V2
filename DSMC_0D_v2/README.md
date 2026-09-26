@@ -12,12 +12,11 @@ microscopic_closure:
   invariant_corrections: true
 ```
 
-The exchange gate stores and uses `p_exch` directly. A closed gate preserves
-the incoming translational and individual rotational partitions; an open gate
-draws the exact tilted reset law and uniform rotational sub-split. The angular
-draw matches two Legendre moments and uses uniform azimuth. All new modal
-energies are positive by construction, and no repair clipping exists in this
-branch.
+The continuous conditional energy kernel carries incoming-partition memory in
+its fitted natural parameters. `p_exch` is retained as an affine diagnostic;
+it is not a Bernoulli gate. The angular draw matches two Legendre moments and
+uses uniform azimuth. All new modal energies are positive by construction, and
+no repair clipping exists in this branch.
 
 The frozen complete legacy mode remains:
 

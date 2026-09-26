@@ -1,0 +1,123 @@
+# HCS non-Gaussian protocol v5 - 2026-09-23
+
+> Superseded by protocol v6 after the completed 40-task sentinel confirmed the
+> centre-of-mass repair but rejected `dt=0.005`, exposed unsupported correction
+> extrapolation during transients, and showed that the two-seed block
+> stationarity test was under-resolved. See
+> `reports/HCS_NG_PROTOCOL_V6_2026-09-23.md`.
+
+## Decision
+
+Protocol v3 is invalid for scientific interpretation. All 200 runs with
+`alpha <= 0.8` left the calibrated temperature-ratio domain after a delayed
+metastable plateau. The exit time approximately collapsed when expressed as
+
+\[
+\chi=(1-\alpha^2)\tau,
+\]
+
+with failure near `chi=400..500`. A local `alpha=0.5, AR=2` A/B test failed at
+approximately the same time with the angular response both enabled and
+disabled and at `N=800` as in the `N=10000` production trajectories.
+
+The permanent cause is now identified. The similarity thermostat computed
+`Ttr` from raw velocity rather than peculiar velocity. Pair collisions
+conserve the centre-of-mass velocity, so roundoff in that neutral mode was not
+collisionally cooled but was multiplied by every reheating step. At the old
+exit, 47--90 percent of the reported translational temperature was bulk
+centre-of-mass kinetic energy across the failed cases. For example, at
+`alpha=0.5, AR=2, tau=585`, the raw calculation gave `Ttr=1.141` while the
+peculiar calculation gave `Ttr=0.484`, with the same `Trot=0.776`. Thus the
+closure received a false ratio of 1.47 while the physical ratio was 0.624.
+The collapse with `(1-alpha^2)tau` is the signature of cumulative similarity
+reheating of this conserved numerical mode, not evidence of a delayed
+energy-kernel instability.
+
+The state now defines granular temperature from peculiar velocity and
+projects the HCS state back to its exactly zero-momentum frame before each
+similarity rescale. This operation is Galilean invariant and does not alter
+relative velocities, modal collision energies, or non-Gaussian moments. The
+completed `alpha=0.9` and `0.95` trends were sampled before substantial bulk
+contamination, but they remain provisional until the corrected campaign
+passes the long-time gates.
+
+An accelerated mechanism control (`alpha=0.5`, `AR=2`, `N=400`, `dt=0.05`)
+reached `tau=700`, beyond the old `tau~588` exit. It retained a positive
+normalized hull margin of `0.231`, a maximum bulk/thermal temperature ratio of
+`2.0e-32`, `vrmax/vrmax_initial=1.0`, and zero majorant violations. This is a
+diagnostic confirmation of the centre-of-mass mechanism, not a time-step
+convergence result; the scientific gates still use `dt=0.005` and `0.0025`.
+
+Protocol v5 does not extend the hull or impose a target temperature ratio.
+Either action would manufacture a stationary state. It fixes the temperature
+definition and zero-momentum projection, then fails closed until the unchanged
+microscopic model demonstrates a real long-time HCS attractor.
+
+## Staged gates
+
+1. The 120-task engineering campaign retains the paired scaled/unscaled and
+   `dt=0.005`/`0.0025` checks at production particle count. A complete,
+   passing v3 engineering summary is reusable only when its artifact hash,
+   model variant, correction routing, task count, arms, and all controls match
+   exactly; v3 and v5 have the same numerical engineering design. Its
+   stationarity diagnostics are reported but are not treated as long-time HCS
+   evidence; that authority belongs to the following two stages.
+2. A 40-task long-time sentinel first exercises five physical coordinates,
+   two initial temperature ratios, two seeds, and both `dt=0.005` and
+   `0.0025`. This rejects a defective model before paying for a full-domain
+   allocation.
+3. Only after the sentinel passes, a 148-task stability campaign covers all
+   37 production coordinates. Each coordinate starts below and above its
+   predicted root, with two independent seeds and `N=2000`: the low start is
+   `Ttr/Trot=0.025` through `AR=1.35` and `0.225` at larger aspect ratios,
+   just inside the calibrated lower boundary of `0.2`; the high start is
+   `1.5` throughout.
+4. Every inelastic stability task runs to `chi=600`. Elastic tasks run to
+   `tau=1500`.
+5. The gate requires complete output, a five-block/change-point stationarity
+   test, agreement of the two late-time attractors, the full dissipation
+   horizon, a positive calibrated-domain margin, runtime/NTC quality, and
+   long-horizon time-step consistency.
+   Each result also records the maximum bulk-to-thermal temperature ratio and
+   final centre-of-mass speed, so a recurrence of the thermostat defect is
+   directly observable.
+6. Sweep and map campaigns require the passing stability summary from the
+   exact same artifact bytes. The 1,200-task tail campaign additionally
+   requires a complete, passing 370-task sweep, so the largest allocation
+   cannot run after a production-level failure.
+
+An exception now writes `*.failed.json` and flushes the partial moments and
+histograms with status `aborted_not_stationary`. Partial data are retained for
+diagnosis but are never admitted into an HCS estimate.
+
+## Non-Gaussian analysis
+
+The scientific analyzer now:
+
+- writes both temperature-ratio conventions and gates `log(Ttr/Trot)`;
+- performs stationarity checks on ensemble-mean late-time curves rather than
+  accepting a fixed `tau=500` burn-in;
+- releases figures only after the whole scientific campaign passes;
+- compares observables both along `alpha` at fixed aspect ratio and along
+  aspect ratio at fixed `alpha`;
+- plots the actual vector marginals `phi_c(c)`, `phi_w(w)`, and
+  `phi_cw(c^2 w^2)` with the Maxwellian references for `dt=3, dr=2`;
+- separately plots the full fourth-order Sonine ratios specialized to
+  `dt=3, dr=2`;
+- uses exponential fits for the translational tail and algebraic fits for the
+  rotational and product tails, as in Megias and Santos (2023);
+- requires tail-count, occupied-bin, threshold-stability, jackknife,
+  fit-quality, and exact-elastic negative-control gates before marking an
+  asymptotic claim ready.
+
+The exact `alpha=1` Hong-Morris block remains a separate singular control and
+is not used as a point in an inelastic closure fit.
+
+## Required submission order
+
+The engineering, stability-sentinel, stability, production-sweep, and tail
+stages must be submitted in that order. Inspect each generated `summary.json`;
+do not bypass a failed gate.
+The precise shell commands are included in the handoff response associated
+with this protocol and in `hpc/submit_hcs_ng_campaign.sh --help`-equivalent
+usage in the script header.

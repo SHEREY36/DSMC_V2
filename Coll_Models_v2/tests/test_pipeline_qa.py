@@ -33,6 +33,25 @@ class PipelineQATests(unittest.TestCase):
         self.assertTrue(passed)
         self.assertEqual(reasons, [])
 
+    def test_affine_memory_diagnostic_does_not_veto_continuous_kernel(self):
+        qa = {name: True for name in (
+            "propensity_pass", "proposal_balance_pass", "ess_pass",
+            "energy_projection_pass", "angular_projection_pass",
+            "model_form_pass", "incoming_partition_pass", "elastic_pass")}
+        qa["memory_diagnostic_pass"] = False
+        uncertainty = {name: _quantity(0.0) for name in
+                       ("lambda1", "lambda2", "lambda3", "lambda5", "lambda6",
+                        "eta1", "eta2")}
+        result = {
+            "ensemble_id": 0,
+            "energy": {"kernel_form": "conditional_logit_cubic_v3"},
+            "qa": qa,
+            "uncertainty": uncertainty,
+        }
+        passed, reasons = precision_status(result)
+        self.assertTrue(passed)
+        self.assertEqual(reasons, [])
+
 
 if __name__ == "__main__":
     unittest.main()

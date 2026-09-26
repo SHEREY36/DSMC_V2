@@ -50,45 +50,120 @@ class ParticleState:
 
     def advance_axes(self, dt: float) -> None:
         """Rodrigues update for du/dt=omega cross u; no scalar state changes."""
-        for i in range(self.count):
-            speed = np.linalg.norm(self.omega[i])
-            angle = speed * float(dt)
-            if angle <= 1.0e-14:
-                continue
-            direction = self.omega[i] / speed
-            axis = self.axis[i]
-            self.axis[i] = (axis * np.cos(angle)
-                            + np.cross(direction, axis) * np.sin(angle)
-                            + direction * np.dot(direction, axis) * (1.0 - np.cos(angle)))
+        speed = np.linalg.norm(self.omega, axis=1)
+        active = speed * float(dt) > 1.0e-14
+        if np.any(active):
+            direction = self.omega[active] / speed[active, None]
+            axis = self.axis[active]
+            angle = speed[active] * float(dt)
+            cosine = np.cos(angle)[:, None]
+            sine = np.sin(angle)[:, None]
+            projection = np.einsum("ni,ni->n", direction, axis)[:, None]
+            self.axis[active] = (
+                axis * cosine
+                + np.cross(direction, axis) * sine
+                + direction * projection * (1.0 - cosine)
+            )
         self.axis /= np.linalg.norm(self.axis, axis=1)[:, None]
+
+    def rescale_thermal_state(self, scale: float) -> None:
+        """Apply one uniform HCS similarity scaling without changing shape.
+
+        Velocities and angular velocities have the same inverse-time scaling.
+        The separately stored rotational energy must therefore receive the
+        square of that factor.  Keeping all three arrays synchronized is
+        essential once particle axes are advanced with ``omega``.  Work in
+        the zero-momentum frame before reheating: otherwise roundoff in the
+        conserved centre-of-mass velocity is amplified by every rescale and
+        eventually masquerades as translational temperature.
+        """
+        scale = float(scale)
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError("thermal-state scale must be finite and positive")
+        self.velocity -= np.mean(self.velocity, axis=0)
+        self.velocity *= scale
+        self.omega *= scale
+        self.rotational_energy *= scale * scale
+
+    def set_modal_temperatures(self, ttr: float, trot: float, mass: float) -> None:
+        """Normalize a finite ensemble to declared translational/rotational T.
+
+        Maxwellian draws have O(N**-1/2) fluctuations in their realized modal
+        temperatures.  Usually those fluctuations are useful independent
+        initial conditions.  A validation initialized on an exact boundary of
+        a calibrated closure hull instead needs the requested macroscopic
+        state exactly; otherwise a valid random draw can start just outside
+        the model for a purely finite-sample reason.
+        """
+        target_ttr, target_trot = float(ttr), float(trot)
+        if not np.isfinite(target_ttr) or target_ttr <= 0.0:
+            raise ValueError("target translational temperature must be positive")
+        if not np.isfinite(target_trot) or target_trot <= 0.0:
+            raise ValueError("target rotational temperature must be positive")
+        current_ttr, current_trot, _ = self.temperatures(float(mass))
+        if current_ttr <= 0.0 or current_trot <= 0.0:
+            raise ValueError("cannot normalize a state with non-positive temperature")
+        velocity_scale = np.sqrt(target_ttr / current_ttr)
+        rotation_scale = np.sqrt(target_trot / current_trot)
+        mean_velocity = np.mean(self.velocity, axis=0)
+        self.velocity = mean_velocity + velocity_scale * (
+            self.velocity - mean_velocity)
+        self.omega *= rotation_scale
+        self.rotational_energy *= rotation_scale * rotation_scale
+        self.normalize_constraints()
+
+    def orientation_tensor(self) -> np.ndarray:
+        """Return the traceless nematic tensor Q=<uu>-I/3."""
+        second_moment = self.axis.T @ self.axis / float(self.count)
+        return second_moment - np.eye(3) / 3.0
 
     def temperatures(self, mass: float) -> tuple[float, float, float]:
         n = self.count
-        ttr = mass * np.sum(self.velocity**2) / (3.0 * n)
+        # Granular temperature is the kinetic energy of peculiar velocity.
+        # The uniform centre-of-mass mode is conserved momentum, not heat.
+        # np.var performs the centered reduction without retaining another
+        # N-by-3 peculiar-velocity array on every DSMC time step.
+        ttr = mass * np.sum(np.var(self.velocity, axis=0)) / 3.0
         trot = np.sum(self.rotational_energy) / n
         return float(ttr), float(trot), float((3.0 * ttr + 2.0 * trot) / 5.0)
 
 
 def initialize_particles(count: int, ttr: float, trot: float, mass: float,
                          inertia: float, closure_rng: np.random.Generator,
-                         sphere: bool = False) -> ParticleState:
-    """Use the exact v1 global RNG draws, then add axes on an isolated stream."""
+                         sphere: bool = False,
+                         isotropic_rotation: bool = False) -> ParticleState:
+    """Initialise the scalar-v1 or the isotropic vector rotational state.
+
+    V1 stored only two scalar rotational degrees of freedom and represented
+    them as global y/z components.  That is harmless to its scalar kernel but
+    is not an isotropic vector ensemble: once axes and tensor invariants are
+    active it gives ``<u_x^2>=1/2`` and an O(0.1) spurious rotational stress.
+    The variational path instead draws an isotropic axis and projects a 3-D
+    Gaussian onto its tangent plane, which is exactly a two-degree-of-freedom
+    Maxwellian conditional on the axis.
+    """
     velocity = np.random.randn(count, 3) * np.sqrt(ttr / mass)
-    omega = np.random.randn(count, 3) * np.sqrt(trot / inertia)
-    omega[:, 0] = 0.0
-    rotational_energy = 0.5 * inertia * (omega[:, 1]**2 + omega[:, 2]**2)
     velocity -= np.sum(velocity, axis=0) / count
     axis = closure_rng.normal(size=(count, 3))
-    for i in range(count):
-        norm_w = np.linalg.norm(omega[i])
-        if norm_w > 1.0e-14:
-            what = omega[i] / norm_w
-            axis[i] -= np.dot(axis[i], what) * what
-        if np.linalg.norm(axis[i]) <= 1.0e-12:
-            axis[i] = np.cross(omega[i], np.array([1.0, 0.0, 0.0]))
-        axis[i] /= np.linalg.norm(axis[i])
+    if isotropic_rotation:
+        axis /= np.linalg.norm(axis, axis=1)[:, None]
+        omega = np.random.randn(count, 3) * np.sqrt(trot / inertia)
+        omega -= np.einsum("ni,ni->n", omega, axis)[:, None] * axis
+        rotational_energy = 0.5 * inertia * np.einsum("ni,ni->n", omega, omega)
+    else:
+        # Exact v1 draw order and representation for regression mode.
+        omega = np.random.randn(count, 3) * np.sqrt(trot / inertia)
+        omega[:, 0] = 0.0
+        rotational_energy = 0.5 * inertia * (omega[:, 1]**2 + omega[:, 2]**2)
+        for i in range(count):
+            norm_w = np.linalg.norm(omega[i])
+            if norm_w > 1.0e-14:
+                what = omega[i] / norm_w
+                axis[i] -= np.dot(axis[i], what) * what
+            if np.linalg.norm(axis[i]) <= 1.0e-12:
+                axis[i] = np.cross(omega[i], np.array([1.0, 0.0, 0.0]))
+            axis[i] /= np.linalg.norm(axis[i])
     if sphere:
         omega[:] = 0.0
         rotational_energy[:] = 0.0
     return ParticleState(velocity, rotational_energy, omega, axis, inertia)
-
