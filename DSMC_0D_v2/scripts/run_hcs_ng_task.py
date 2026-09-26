@@ -129,7 +129,16 @@ def main() -> None:
     if math.ceil(config["system"]["phi"] * volume / params.volume) != particles:
         raise RuntimeError("failed to derive requested particle count")
     delta = float(row["sample_delta_tau"])
-    config["time"].update(dt=float(row.get("dt") or 0.01), dtau=min(1.0, delta), t_end=100000.0,
+    # The collision clock is the only stopping rule for an HCS-NG task.  A
+    # fixed physical-time ceiling is not campaign-neutral: at fixed box volume
+    # a near-sphere rod collides several times less often per unit time than a
+    # long one, so the same ``tau_end`` costs it several times more physical
+    # time.  Protocol v7 pinned t_end=1e5 and silently truncated the
+    # alpha=0.95, AR<=1.2 tasks at cpp=4872 of a requested 6154 after a full
+    # 16-hour allocation.  A stalled march is now bounded by the scheduler and
+    # surfaces as a missing task, which the campaign summary fails closed on.
+    config["time"].update(dt=float(row.get("dt") or 0.01), dtau=min(1.0, delta),
+                          t_end=math.inf,
                           tau_end=float(row["tau_end"]), equilibration_time=0.0)
     config["simulation"]["max_ntc_candidates_per_step"] = int(
         row.get("max_ntc_candidates_per_step") or max(100_000, 50 * particles))
@@ -173,6 +182,11 @@ def main() -> None:
             failure["partial_non_gaussian_summary"] = str(summary_path)
         atomic_json(failed_output, failure)
         raise
+    if result.get("termination_reason") != "collision_target":
+        raise RuntimeError(
+            "HCS-NG task stopped before its declared collision target: "
+            f"reached cpp={result.get('cpp')} of tau_end={row['tau_end']} "
+            f"({result.get('termination_reason')})")
     if not sphere and alpha < 1.0 and result.get("routing") != "variational_v2":
         raise RuntimeError("inelastic HCS-NG task did not run the frozen closure")
     if alpha >= 1.0 and not sphere and result.get("routing") != "elastic_bl":

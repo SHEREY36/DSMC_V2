@@ -27,6 +27,11 @@ CONTROL_OBSERVABLES = (
 STATIONARITY_OBSERVABLES = (
     LOG_THETA, "a20", "a02", "a11", "A_cu", "A_cw_quadrupolar",
 )
+# Modes that start every coordinate from both sides of its predicted HCS
+# root.  Protocol v8 adds the production sweep: splitting its ten realizations
+# across the two brackets puts the attraction test on production statistics,
+# and the branches pool for the science once they are shown to agree.
+TWO_SIDED_MODES = ("stability-sentinel", "stability", "sweep")
 MAX_MAJORANT_VIOLATIONS_PER_ACCEPTED_PAIR = 1.0e-5
 MAXIMUM_BULK_TO_THERMAL_TEMPERATURE_RATIO = 1.0e-12
 MAXIMUM_EVALUATION_CORRECTION_FALLBACK_FRACTION = 1.0e-2
@@ -48,7 +53,7 @@ STATIONARITY_PRECISION_LIMIT = {
     "A_cu": 0.04,
     "A_cw_quadrupolar": 0.04,
 }
-ANALYSIS_REVISION = "hcs-ng-analysis-v2"
+ANALYSIS_REVISION = "hcs-ng-analysis-v3"
 
 
 def sampling_completion(summary: dict, series: dict[str, np.ndarray]) -> dict:
@@ -234,14 +239,51 @@ def block_stationarity(values: np.ndarray, name: str) -> dict:
     return base
 
 
+def window_drift(curve: np.ndarray) -> tuple[float, float]:
+    """Late-window drift of one realization, with its own variance.
+
+    The drift is the ordinary-least-squares trend across the retained window,
+    expressed as the change from its first to its last sample.  Its variance
+    is autocorrelation-consistent and is taken from the *detrended* residual:
+    using the raw series would let a genuine drift inflate its own error bar
+    and pass itself.  Returns ``(drift, variance_of_drift)``.
+    """
+    values = np.asarray(curve, dtype=float)
+    span = len(values) - 1.0
+    index = np.arange(len(values), dtype=float)
+    centered = index - index.mean()
+    denominator = float(centered @ centered)
+    if span <= 0.0 or denominator <= 0.0:
+        return 0.0, 0.0
+    slope = float(centered @ (values - values.mean()) / denominator)
+    residual = values - (values.mean() + slope * centered)
+    variance = float(residual @ residual) / max(len(values) - 2, 1)
+    slope_variance = (variance * integrated_autocorrelation_time(residual)
+                      / denominator)
+    return slope * span, slope_variance * span * span
+
+
 def replicate_stationarity(curves: list[np.ndarray], name: str) -> dict:
-    """Test a late-window drift against independent-realization noise.
+    """Test a late-window drift against the precision the data actually have.
 
     A hard change-point tolerance on one N=2000 ensemble curve rejected the
-    exact elastic equilibrium control in protocol v5.  The physical question
-    is instead whether the early-to-late change is resolved across independent
-    realizations.  A large uncertainty cannot manufacture a pass: the three-SE
-    resolution must also remain below a declared ceiling.
+    exact elastic equilibrium control in protocol v5.  Analysis v2 replaced it
+    with a between-replicate standard error, but the long-time stages run two
+    replicates, so that estimate carried one degree of freedom and was then
+    multiplied by 3.0 as though it were a normal quantile.  Across
+    statistically identical v7 coordinates it ranged over two orders of
+    magnitude, failing good runs either as spurious drift (a tight pair
+    collapses the tolerance) or as under-resolved (a loose pair inflates it):
+    a measured 14.7 per cent false-rejection rate per observable.
+
+    Analysis v3 estimates the drift uncertainty inside each realization, from
+    the detrended residual with an autocorrelation correction, and pools it
+    across replicates.  That carries of order ``n_samples / tau_int`` degrees
+    of freedom per replicate instead of one, so the 3.0 multiplier is
+    legitimate.  The between-replicate spread is kept as a reported
+    cross-check.  A large uncertainty still cannot manufacture a pass: the
+    three-SE resolution must remain below a declared ceiling, which is how an
+    under-powered design is reported as under-powered rather than as physics.
     """
     finite = [np.asarray(curve, dtype=float)[np.isfinite(curve)] for curve in curves]
     tolerance = float(STATIONARITY_ABSOLUTE_TOLERANCE[name])
@@ -258,12 +300,11 @@ def replicate_stationarity(curves: list[np.ndarray], name: str) -> dict:
         base["reason"] = "too_few_late_samples"
         return base
     aligned = [curve[-common:] for curve in finite]
-    third = max(1, common // 3)
-    drifts = np.asarray([
-        float(np.mean(curve[-third:]) - np.mean(curve[:third]))
-        for curve in aligned], dtype=float)
+    estimates = [window_drift(curve) for curve in aligned]
+    drifts = np.asarray([item[0] for item in estimates], dtype=float)
     mean_drift = float(np.mean(drifts))
-    stderr = float(np.std(drifts, ddof=1) / np.sqrt(len(drifts)))
+    stderr = float(np.sqrt(sum(item[1] for item in estimates)) / len(estimates))
+    between_stderr = float(np.std(drifts, ddof=1) / np.sqrt(len(drifts)))
     resolution = 3.0 * stderr
     statistical_tolerance = max(tolerance, resolution)
     consistency_pass = abs(mean_drift) <= statistical_tolerance
@@ -274,10 +315,12 @@ def replicate_stationarity(curves: list[np.ndarray], name: str) -> dict:
     base.update({
         "pass": bool(consistency_pass and precision_pass),
         "replicate_drifts": drifts.tolist(),
-        "replicate_mean_drift": mean_drift,
         "replicate_drift_stderr": stderr,
+        "between_replicate_drift_stderr_diagnostic_only": between_stderr,
+        "replicate_mean_drift": mean_drift,
         "statistical_resolution_3se": resolution,
         "statistical_tolerance": statistical_tolerance,
+        "resolution_source": "detrended_autocorrelation_consistent",
         "statistical_consistency_pass": bool(consistency_pass),
         "precision_pass": bool(precision_pass),
         "block_means_diagnostic_only": block_means.tolist(),
@@ -296,6 +339,16 @@ def replicate_record(row: dict[str, str]) -> dict:
     result = json.loads(result_path.read_text())
     if result.get("run_status", "complete") != "complete":
         raise RuntimeError(f"task {row['task_id']} result is not complete")
+    # Protocol v7 pinned a physical-time ceiling that silently truncated
+    # near-sphere near-elastic tasks at two thirds of their declared collision
+    # target while still reporting ``run_status: complete``.  Any v8 run
+    # reports which clock stopped it, and anything but the collision target is
+    # a truncated trajectory.
+    termination = result.get("termination_reason")
+    if termination is not None and termination != "collision_target":
+        raise RuntimeError(
+            f"task {row['task_id']} stopped on {termination} at "
+            f"cpp={result.get('cpp')} of tau_end={row.get('tau_end')}")
     expected_integrator = row.get("orientation_integrator", "end_step_v1")
     if result.get("orientation_integrator", "end_step_v1") != expected_integrator:
         raise RuntimeError(
@@ -309,6 +362,11 @@ def replicate_record(row: dict[str, str]) -> dict:
         "initial_theta": float(row.get("initial_theta") or 1.0),
         "required_dissipation_horizon": float(
             row.get("dissipation_horizon") or 0.0),
+        # Protocol v8 states the long-time requirement on the collision clock,
+        # which is what the measured attractor relaxation follows.
+        "required_relaxation_horizon": float(
+            row.get("relaxation_horizon") or 0.0),
+        "required_tau_end": float(row.get("tau_end") or 0.0),
         "protocol_version": row.get("protocol_version", "hcs-ng-v1"),
         "model_variant": row.get("model_variant", "baseline"),
         "orientation_integrator": expected_integrator,
@@ -817,43 +875,14 @@ def make_tail_figure(records: list, output: Path) -> None:
     plt.close(fig)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--figure")
-    parser.add_argument("--allow-missing", action="store_true",
-                        help="summarize the completed tasks and report the rest; "
-                             "the campaign verdict is then always false")
-    args = parser.parse_args()
-    rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
-    records, missing, failed = [], [], []
-    for row in rows:
-        prefix = Path(row["output_prefix"])
-        failed_path = Path(str(prefix) + ".failed.json")
-        if failed_path.is_file():
-            payload = json.loads(failed_path.read_text())
-            failed.append({
-                "task_id": int(row["task_id"]),
-                "error_type": payload.get("error_type"),
-                "error": payload.get("error"),
-                "failure_file": str(failed_path),
-            })
-            continue
-        try:
-            records.append((row, replicate_record(row)))
-        except (FileNotFoundError, RuntimeError):
-            missing.append(int(row["task_id"]))
-    if (missing or failed) and not args.allow_missing:
-        raise SystemExit(
-            f"incomplete HCS-NG outputs: missing={missing[:20]}, "
-            f"failed={[item['task_id'] for item in failed[:20]]}")
-    if not records:
-        raise SystemExit("no completed HCS-NG tasks to summarize")
-    grouped = defaultdict(list)
-    for row, record in records:
-        grouped[(float(row["alpha"]), float(row["aspect_ratio"]), row["arm"],
-                 float(row.get("initial_theta") or 1.0))].append(record)
+def build_cases(grouped: dict, rows: list) -> list:
+    """Aggregate one campaign grouping into gated cases.
+
+    Called twice for two-sided modes: once per initial-condition branch,
+    which is the unit every gate is applied to, and once pooled over the
+    branches, which is the unit the science and the tail fits use once the
+    two-sided attraction test has shown the branches share an attractor.
+    """
     cases = []
     for (alpha, ar, arm, initial_theta), items in sorted(grouped.items()):
         observables = {}
@@ -887,7 +916,7 @@ def main() -> None:
                            if len(signed) > 1 else 0.0))),
             }
         safe_fallback_protocol = all(
-            item["protocol_version"] in ("hcs-ng-v6", "hcs-ng-v7")
+            item["protocol_version"] in ("hcs-ng-v6", "hcs-ng-v7", "hcs-ng-v8")
             for item in items)
         correction_fallback_pass = all(
             (((item["result"].get("routing") != "variational_v2")
@@ -943,14 +972,25 @@ def main() -> None:
             stationarity[name] = replicate_stationarity(finite_curves, name)
         stationarity_pass = all(
             stationarity[name]["pass"] for name in STATIONARITY_OBSERVABLES)
+        achieved_cpp = [float(item["result"].get("cpp", 0.0)) for item in items]
         achieved_horizons = [
-            (float(item["result"].get("cpp", 0.0)) if alpha >= 1.0
-             else (1.0 - alpha**2) * float(item["result"].get("cpp", 0.0)))
-            for item in items]
+            (value if alpha >= 1.0 else (1.0 - alpha**2) * value)
+            for value in achieved_cpp]
         required_horizon = max(
             item["required_dissipation_horizon"] for item in items)
-        horizon_pass = all(value + 1.0e-8 >= required_horizon
-                           for value in achieved_horizons)
+        # The long-time requirement is on the collision clock: the measured
+        # attractor relaxation is 20-130 cpp and is flat in alpha, so it does
+        # not follow accumulated cooling.  Runs must also reach the declared
+        # tau_end, which is what makes a truncated trajectory visible here.
+        required_relaxation = max(
+            item["required_relaxation_horizon"] for item in items)
+        required_tau = max(item["required_tau_end"] for item in items)
+        relaxation_horizon_pass = all(
+            value + 1.0e-8 >= max(required_relaxation, required_tau)
+            for value in achieved_cpp) if required_relaxation > 0.0 else True
+        horizon_pass = (relaxation_horizon_pass if required_relaxation > 0.0
+                        else all(value + 1.0e-8 >= required_horizon
+                                 for value in achieved_horizons))
         theta_margin_values = [item["result"].get(
             "minimum_theta_hull_log_margin") for item in items]
         finite_theta_margins = [float(value) for value in theta_margin_values
@@ -975,6 +1015,13 @@ def main() -> None:
             "sampling_complete": all(item["sampling_complete"] for item in items),
             "required_dissipation_horizon": required_horizon,
             "minimum_achieved_dissipation_horizon": min(achieved_horizons),
+            "required_relaxation_horizon": required_relaxation,
+            "required_tau_end": required_tau,
+            "minimum_achieved_cpp": min(achieved_cpp),
+            "relaxation_horizon_pass": relaxation_horizon_pass,
+            "attractor_relaxation_margin": (
+                min(achieved_cpp) / required_relaxation
+                if required_relaxation > 0.0 else None),
             "dissipation_horizon_pass": horizon_pass,
             "minimum_theta_hull_log_margin": (
                 min(finite_theta_margins) if finite_theta_margins else None),
@@ -1028,12 +1075,55 @@ def main() -> None:
                                for name, fit in tail_fits.items()},
             "tail_fits": tail_fits,
         })
+    return cases
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--figure")
+    parser.add_argument("--allow-missing", action="store_true",
+                        help="summarize the completed tasks and report the rest; "
+                             "the campaign verdict is then always false")
+    args = parser.parse_args()
+    rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
+    records, missing, failed = [], [], []
+    for row in rows:
+        prefix = Path(row["output_prefix"])
+        failed_path = Path(str(prefix) + ".failed.json")
+        if failed_path.is_file():
+            payload = json.loads(failed_path.read_text())
+            failed.append({
+                "task_id": int(row["task_id"]),
+                "error_type": payload.get("error_type"),
+                "error": payload.get("error"),
+                "failure_file": str(failed_path),
+            })
+            continue
+        try:
+            records.append((row, replicate_record(row)))
+        except (FileNotFoundError, RuntimeError):
+            missing.append(int(row["task_id"]))
+    if (missing or failed) and not args.allow_missing:
+        raise SystemExit(
+            f"incomplete HCS-NG outputs: missing={missing[:20]}, "
+            f"failed={[item['task_id'] for item in failed[:20]]}")
+    if not records:
+        raise SystemExit("no completed HCS-NG tasks to summarize")
+    grouped = defaultdict(list)
+    for row, record in records:
+        grouped[(float(row["alpha"]), float(row["aspect_ratio"]), row["arm"],
+                 float(row.get("initial_theta") or 1.0))].append(record)
+    # Gate unit: one initial-condition branch.  Two-sided modes then pool
+    # the branches for the science, but only after the attraction test.
+    cases = build_cases(grouped, rows)
 
     equivalence = []
     by_physical = defaultdict(dict)
     campaign_mode = rows[0]["mode"] if rows else None
     for (alpha, ar, arm, initial_theta), items in grouped.items():
-        physical = ((alpha, ar) if campaign_mode in ("stability-sentinel", "stability")
+        physical = ((alpha, ar) if campaign_mode in TWO_SIDED_MODES
                     else (alpha, ar, initial_theta))
         by_physical[physical].setdefault(arm, {}).update({
             (initial_theta, item["replicate"], item["seed"]): item
@@ -1067,7 +1157,7 @@ def main() -> None:
                                 "paired_realizations": len(paired_keys),
                                 "pass": bool(passed), "observables": comparisons})
     attraction = []
-    if rows and rows[0]["mode"] in ("stability-sentinel", "stability"):
+    if rows and rows[0]["mode"] in TWO_SIDED_MODES:
         by_attractor = defaultdict(list)
         for case in cases:
             if case["arm"] == "scaled":
@@ -1098,16 +1188,38 @@ def main() -> None:
                 })
             attraction.append(entry)
 
+    # Science unit.  For a two-sided mode the two initial-condition branches
+    # of one coordinate are the same physical state, so once ``attraction``
+    # shows they share an attractor their realizations pool: the sweep then
+    # reports each coordinate from all ten realizations rather than two
+    # five-realization halves, and the tail fits see ten independent
+    # histograms instead of five.  Every gate stays on the branch cases.
+    if campaign_mode in TWO_SIDED_MODES:
+        pooled_group = defaultdict(list)
+        for row, record in records:
+            pooled_group[(float(row["alpha"]), float(row["aspect_ratio"]),
+                          row["arm"], None)].append(record)
+        science_cases = build_cases(pooled_group, rows)
+        attraction_pass = bool(attraction
+                               and all(item["pass"] for item in attraction))
+        for case in science_cases:
+            case["pooled_initial_conditions"] = True
+            case["two_sided_attraction_pass"] = attraction_pass
+    else:
+        science_cases = cases
+
     # A fitted asymptotic form is not scientifically discriminating if the
     # exact elastic Gaussian control passes the same candidate gate.
     elastic_negative_control_pass = {}
     for name in ("c", "w", "x"):
-        elastic_fits = [case["tail_fits"][name] for case in cases
+        elastic_fits = [case["tail_fits"][name] for case in science_cases
                         if case["alpha"] >= 1.0 and case["arm"] == "scaled"]
         elastic_negative_control_pass[name] = bool(
             elastic_fits and all(not fit.get("asymptotic_claim_ready", False)
                                  for fit in elastic_fits))
-    for case in cases:
+    gated_and_science = (cases if science_cases is cases
+                         else cases + science_cases)
+    for case in gated_and_science:
         for name, fit in case["tail_fits"].items():
             fit["elastic_negative_control_pass"] = elastic_negative_control_pass[name]
             fit["scientific_claim_ready"] = bool(
@@ -1156,7 +1268,7 @@ def main() -> None:
                                for case in cases)
                        and all(item["pass"] for item in equivalence)
                        and control_coverage_pass
-                       and (mode not in ("stability-sentinel", "stability")
+                       and (mode not in TWO_SIDED_MODES
                             or (attraction and all(item["pass"]
                                                    for item in attraction))))
     performance_verdict = bool(cases) and all(
@@ -1190,6 +1302,15 @@ def main() -> None:
                "stationarity_required_for_verdict": stationarity_required,
                "long_time_stability_campaign_pass": bool(
                    mode in ("stability-sentinel", "stability") and study_verdict),
+               "two_sided_attraction_pass": bool(
+                   mode not in TWO_SIDED_MODES
+                   or (attraction and all(item["pass"] for item in attraction))),
+               # Coordinates whose evaluation-window closure queries fell back
+               # to the base law more often than the gate allows: there the
+               # campaign measured the fallback, not the learned closure.
+               "closure_domain_exclusions": sorted(
+                   {(case["alpha"], case["aspect_ratio"])
+                    for case in cases if not case["correction_fallback_pass"]}),
                "engineering_control_coverage_pass": control_coverage_pass,
                "performance_campaign_pass": performance_verdict,
                "study_campaign_pass": study_verdict,
@@ -1199,7 +1320,10 @@ def main() -> None:
                "scientific_outputs_released": bool(
                    study_verdict and mode in ("sweep", "map", "tails")),
                "elastic_tail_negative_control_pass": elastic_negative_control_pass,
-               "cases": cases, "two_sided_attraction": attraction,
+               "cases": cases,
+               "science_cases": (None if science_cases is cases
+                                 else science_cases),
+               "two_sided_attraction": attraction,
                "scaled_unscaled_equivalence": equivalence}
     output = Path(args.output); output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
@@ -1207,7 +1331,8 @@ def main() -> None:
         figure = Path(args.figure)
         if mode in ("sweep", "tails") and study_verdict:
             if mode == "sweep":
-                scaled = [case for case in cases if case["arm"] == "scaled"]
+                scaled = [case for case in science_cases
+                          if case["arm"] == "scaled"]
                 make_sweep_figure(scaled, figure)
             make_marginal_figure(
                 records, (figure.with_name(figure.stem + "_marginals.png")

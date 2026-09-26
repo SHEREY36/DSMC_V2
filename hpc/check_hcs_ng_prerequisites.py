@@ -13,9 +13,9 @@ import numpy as np
 from scipy.spatial import Delaunay
 
 
-PROTOCOL_VERSION = "hcs-ng-v7"
+PROTOCOL_VERSION = "hcs-ng-v8"
 ORIENTATION_INTEGRATOR = "symmetric_midpoint_v1"
-ANALYSIS_REVISION = "hcs-ng-analysis-v2"
+ANALYSIS_REVISION = "hcs-ng-analysis-v3"
 
 
 def digest(path: Path) -> str:
@@ -183,6 +183,10 @@ def main() -> None:
         pilot = json.loads(Path(args.pilot_summary).read_text())
         if pilot.get("mode") != "stability-sentinel":
             raise SystemExit("pilot summary is not a stability-sentinel summary")
+        if pilot.get("analysis_revision") != ANALYSIS_REVISION:
+            raise SystemExit(
+                "stability sentinel must be analysed with the repaired "
+                "stationarity gate")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("stability sentinel predates the current HCS-NG protocol")
         if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
@@ -214,6 +218,10 @@ def main() -> None:
         pilot = json.loads(Path(args.pilot_summary).read_text())
         if pilot.get("mode") != "stability":
             raise SystemExit("pilot summary is not a stability-mode summary")
+        if pilot.get("analysis_revision") != ANALYSIS_REVISION:
+            raise SystemExit(
+                "stability pilot must be analysed with the repaired "
+                "stationarity gate")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
             raise SystemExit("stability pilot predates the current HCS-NG protocol")
         if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
@@ -226,8 +234,10 @@ def main() -> None:
             raise SystemExit("long-time two-sided HCS stability gate has not passed")
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("stability pilot did not use these artifact bytes")
-        if pilot.get("n_tasks") != 148 or pilot.get("n_completed_tasks") != 148:
-            raise SystemExit("stability pilot is not the complete 148-task design")
+        if pilot.get("n_tasks") != 144 or pilot.get("n_completed_tasks") != 144:
+            raise SystemExit("stability pilot is not the complete 144-task design")
+        if not pilot.get("two_sided_attraction_pass", False):
+            raise SystemExit("stability pilot two-sided attraction has not passed")
         if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
             raise SystemExit("stability pilot contains failed or missing tasks")
     elif mode == "tails":
@@ -250,8 +260,8 @@ def main() -> None:
             raise SystemExit("production sweep scientific verdict has not passed")
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("production sweep did not use these artifact bytes")
-        if pilot.get("n_tasks") != 370 or pilot.get("n_completed_tasks") != 370:
-            raise SystemExit("production sweep is not the complete 370-task design")
+        if pilot.get("n_tasks") != 360 or pilot.get("n_completed_tasks") != 360:
+            raise SystemExit("production sweep is not the complete 360-task design")
         if pilot.get("failed_tasks") or pilot.get("missing_tasks"):
             raise SystemExit("production sweep contains failed or missing tasks")
     elif mode != "sphere-controls":

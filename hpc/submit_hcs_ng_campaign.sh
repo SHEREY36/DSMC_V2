@@ -54,11 +54,27 @@ ROWS=$(( $(wc -l < "$MANIFEST") - 1 ))
 MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}
 TASKS=$ROWS; (( TASKS > MAX_ARRAY )) && TASKS=$MAX_ARRAY
+# Below the site array limit every array index runs exactly one realization.
+# Above it each index strides through several in series, so the per-task
+# walltime must cover their sum; say so rather than letting the last stride
+# be cut off mid-trajectory.
+if (( ROWS > MAX_ARRAY )); then
+  echo "note: $ROWS rows exceed MaxArraySize=$MAX_ARRAY; each array task runs" \
+       "up to $(( (ROWS + MAX_ARRAY - 1) / MAX_ARRAY )) realizations in series" >&2
+fi
 CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TASKS
 MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
+# Measured protocol-v8 cost: wall time per task is set by the collision count
+# and the aspect ratio, not by the particle count.  At fixed box volume the
+# number density scales with N, so the physical time to reach a given cpp
+# falls as 1/N while the per-step cost rises as N; N=10000 therefore costs
+# only 1.1-1.5x N=2000 for the same cpp.  At tau_end=1500 the most expensive
+# coordinate (alpha=0.5, AR=1.2) is about 8.4 h, and the half-step sentinel
+# arm doubles that.  These defaults carry roughly a 2x margin.
 case "$MODE" in
-  numerics-pilot|engineering) DEFAULT_WALLTIME=04:00:00 ;;
-  stability-sentinel|stability) DEFAULT_WALLTIME=24:00:00 ;;
+  numerics-pilot|engineering) DEFAULT_WALLTIME=06:00:00 ;;
+  stability-sentinel) DEFAULT_WALLTIME=24:00:00 ;;
+  stability) DEFAULT_WALLTIME=16:00:00 ;;
   domain-pilot) DEFAULT_WALLTIME=04:00:00 ;;
   sweep|map) DEFAULT_WALLTIME=16:00:00 ;;
   tails|sphere-controls) DEFAULT_WALLTIME=20:00:00 ;;

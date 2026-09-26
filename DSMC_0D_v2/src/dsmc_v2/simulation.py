@@ -537,12 +537,24 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     # more; ``maybe_sample`` is idempotent when the schedule is already full.
     non_gaussian.maybe_sample(time, collisions / float(count), state)
     non_gaussian_summary = non_gaussian.close()
+    # Which clock stopped the march.  A campaign that declares ``tau_end``
+    # measures its trajectory in collisions per particle; if such a run exits
+    # on the physical-time ceiling instead, it is truncated, not complete.
+    # Protocol v7 reported no such thing, so near-sphere near-elastic tasks
+    # silently returned short trajectories after a full walltime allocation.
+    termination_reason = (
+        "collision_target" if tau_end is None or collisions / count >= tau_end
+        else "time_ceiling")
     total_seconds = wallclock.perf_counter() - march_started
     closure_collision_seconds = 0.0 if kernel is None else kernel.closure_seconds
     closure_seconds = closure_state_seconds + closure_collision_seconds
     diagnostics = {
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
+        "termination_reason": termination_reason,
+        "requested_tau_end": tau_end,
+        "requested_t_end": None if not np.isfinite(end_time) else end_time,
+        "final_time": time,
         "volume": volume, "number_density": count / volume,
         "routing": routing, "angular": angular, "flow": flow_mode,
         "orientation_integrator": orientation_integrator,

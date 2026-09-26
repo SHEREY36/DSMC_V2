@@ -54,7 +54,7 @@ def test_engineering_design_pairs_scaled_and_unscaled(tmp_path):
     assert {row["arm"] for row in rows} == {"scaled", "unscaled", "dt_half"}
     assert len({(row["alpha"], row["aspect_ratio"]) for row in rows}) == 5
     assert {int(row["particles"]) for row in rows} == {10000}
-    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v7"}
+    assert {row["protocol_version"] for row in rows} == {"hcs-ng-v8"}
     assert {row["orientation_integrator"] for row in rows} == {
         "symmetric_midpoint_v1"}
     assert {row["model_variant"] for row in rows} == {"baseline"}
@@ -87,7 +87,7 @@ def test_engineering_requires_complete_passing_numerics_pilot(tmp_path):
         "--pilot-summary", str(pilot),
     ]
     pilot.write_text(json.dumps({
-        "mode": "numerics-pilot", "protocol_version": "hcs-ng-v7",
+        "mode": "numerics-pilot", "protocol_version": "hcs-ng-v8",
         "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "artifact_sha256": digest,
@@ -118,21 +118,39 @@ def test_domain_pilot_uses_every_artifact_alpha_ar_pair(tmp_path):
         1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0}
 
 
-def test_stability_design_brackets_roots_and_uses_common_dissipation_horizon(tmp_path):
+def test_stability_design_brackets_roots_on_the_measured_collision_horizon(tmp_path):
     _, rows = make_manifest(tmp_path, "stability", _test_artifact(tmp_path))
-    assert len(rows) == 148
+    assert len(rows) == 144
     assert {float(row["initial_theta"]) for row in rows} == {0.025, 0.225, 1.5}
     assert all(float(row["initial_theta"]) in (
         (0.025, 1.5) if float(row["aspect_ratio"]) <= 1.35 else (0.225, 1.5))
         for row in rows)
-    assert {float(row["dissipation_horizon"]) for row in rows
-            if float(row["alpha"]) < 1.0} == {600.0}
+    # The long-time requirement rides the collision clock, not accumulated
+    # cooling: the measured attractor relaxation is flat in alpha, so the run
+    # length must not scale as 1/(1-alpha**2).
+    assert {float(row["tau_end"]) for row in rows} == {1500.0}
+    assert {float(row["sample_start_tau"]) for row in rows} == {500.0}
+    assert {float(row["sample_delta_tau"]) for row in rows} == {5.0}
+    assert {float(row["relaxation_horizon"]) for row in rows} == {390.0}
     for row in rows:
-        alpha = float(row["alpha"])
-        if alpha < 1.0:
-            assert np.isclose((1.0 - alpha**2) * float(row["tau_end"]), 600.0)
+        assert float(row["sample_start_tau"]) >= float(row["relaxation_horizon"])
+    # The screen must resolve what it tests, so it runs at production N.
+    assert {int(row["particles"]) for row in rows} == {10000}
     assert {row["arm"] for row in rows} == {"scaled"}
     assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
+
+
+def test_production_grid_excludes_the_out_of_domain_near_sphere_corner(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    for mode in ("sweep", "stability"):
+        _, rows = make_manifest(tmp_path / mode, mode, artifact)
+        cases = {(float(row["alpha"]), float(row["aspect_ratio"]))
+                 for row in rows}
+        # alpha=0.5, AR=1.1 drives a20 past the artifact's a2_tr hull, so half
+        # its evaluation-window closure queries fall back to the base law.
+        assert (0.50, 1.10) not in cases
+        assert (0.50, 1.20) in cases and (0.80, 1.10) in cases
+        assert len(cases) == 36
 
 
 def test_stability_sentinel_repeats_long_horizon_at_half_dt(tmp_path):
@@ -143,8 +161,8 @@ def test_stability_sentinel_repeats_long_horizon_at_half_dt(tmp_path):
     assert len({int(row["seed"]) for row in rows}) == 4
     assert {row["arm"] for row in rows} == {"scaled", "dt_half"}
     assert {float(row["initial_theta"]) for row in rows} == {0.025, 0.225, 1.5}
-    assert {float(row["dissipation_horizon"]) for row in rows
-            if float(row["alpha"]) < 1.0} == {600.0}
+    assert {float(row["tau_end"]) for row in rows} == {1500.0}
+    assert {int(row["particles"]) for row in rows} == {10000}
     assert {float(row["dt"]) for row in rows if row["arm"] == "dt_half"} == {0.00125}
 
 
@@ -157,8 +175,8 @@ def test_stability_requires_complete_passing_sentinel_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(pilot)]
     pilot.write_text(json.dumps({
-        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v7",
-        "analysis_revision": "hcs-ng-analysis-v2",
+        "mode": "stability-sentinel", "protocol_version": "hcs-ng-v8",
+        "analysis_revision": "hcs-ng-analysis-v3",
         "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "long_time_stability_campaign_pass": True,
@@ -191,7 +209,7 @@ def test_sentinel_requires_passing_v7_engineering_gate(tmp_path):
     cases = ((0.50, 1.35), (0.50, 3.0), (0.80, 2.0),
              (0.95, 2.0), (1.00, 3.0))
     summary.write_text(json.dumps({
-        "mode": "engineering", "protocol_version": "hcs-ng-v7",
+        "mode": "engineering", "protocol_version": "hcs-ng-v8",
         "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "artifact_sha256": digest,
@@ -419,6 +437,86 @@ def test_stationarity_gate_detects_delayed_departure():
     assert unresolved["reason"] == "late_window_drift_under_resolved"
 
 
+def test_a_run_stopped_by_the_time_ceiling_is_not_a_complete_case(tmp_path):
+    """Protocol v7 pinned t_end=1e5 while asking for tau_end=6154 at
+    alpha=0.95.  Near-sphere rods collide several times less often per unit
+    time, so four tasks exited on the physical-time ceiling at cpp=4872 after
+    a full 16-hour allocation and still reported ``run_status: complete``.
+    The truncation must now name itself and fail the case closed."""
+    module = _analysis_module()
+    prefix = tmp_path / "task"
+    (tmp_path / "task_ng_moments.csv").write_text("tau,a20\n1.0,0.0\n")
+    row = {"task_id": "0", "output_prefix": str(prefix), "replicate": "0",
+           "seed": "1", "initial_theta": "1.0", "tau_end": "6153.8",
+           "orientation_integrator": "symmetric_midpoint_v1"}
+    payload = {"run_status": "complete", "cpp": 4872.4,
+               "orientation_integrator": "symmetric_midpoint_v1",
+               "non_gaussian": {}}
+    for reason, accepted in (("collision_target", True),
+                             ("time_ceiling", False),
+                             (None, True)):     # legacy result: no field
+        body = dict(payload)
+        if reason is not None:
+            body["termination_reason"] = reason
+        Path(str(prefix) + ".json").write_text(json.dumps(body))
+        try:
+            module.replicate_record(row)
+            raised = False
+        except RuntimeError as error:
+            raised = True
+            assert "time_ceiling" in str(error)
+        assert raised != accepted, reason
+
+
+def test_drift_resolution_is_not_taken_from_two_replicates():
+    """Analysis v2 built the tolerance from the spread of two drift values --
+    a standard error with one degree of freedom -- and then multiplied it by
+    3.0 as if it were a normal quantile.  Two realizations that happen to
+    agree collapsed the tolerance and failed a quiet run; two that happen to
+    disagree inflated it past the ceiling.  v3 must take its resolution from
+    within-realization precision instead."""
+    module = _analysis_module()
+    rng = np.random.default_rng(20260925)
+    noise = 0.004
+
+    # Identical-by-luck replicates must not manufacture a near-zero tolerance.
+    twin = rng.normal(0.0, noise, 60)
+    lucky = module.replicate_stationarity([twin, twin.copy()], "a20")
+    assert lucky["pass"]
+    assert lucky["statistical_resolution_3se"] > 1.0e-6
+    assert lucky["resolution_source"] == "detrended_autocorrelation_consistent"
+
+    # A constant per-seed offset is not a drift and must not be charged as one.
+    offset = module.replicate_stationarity(
+        [rng.normal(0.0, noise, 60) + 0.05,
+         rng.normal(0.0, noise, 60) - 0.05], "a20")
+    assert offset["pass"]
+
+    # Real power is kept: a genuine trend across the window is still caught.
+    ramp = np.linspace(0.0, 0.05, 60)
+    drifting = module.replicate_stationarity(
+        [ramp + rng.normal(0.0, noise, 60),
+         ramp + rng.normal(0.0, noise, 60)], "a20")
+    assert not drifting["pass"]
+    assert drifting["reason"] == "late_window_drift_resolved"
+
+
+def test_stationarity_false_rejection_rate_is_negligible_at_production_scale():
+    """The v7 screen ran N=2000 with 40 late samples, where per-snapshot
+    scatter (sd(a20) = 0.016-0.065) was several times the 0.01 drift it was
+    asked to resolve.  At the v8 window and particle count a stationary
+    coordinate must essentially never be rejected."""
+    module = _analysis_module()
+    rng = np.random.default_rng(902)
+    rejected = 0
+    trials = 120
+    for _ in range(trials):
+        curves = [rng.normal(0.0, 0.013, 201) for _ in range(2)]
+        if not module.replicate_stationarity(curves, "a20")["pass"]:
+            rejected += 1
+    assert rejected <= 2, f"{rejected}/{trials} stationary coordinates rejected"
+
+
 def test_full_domain_correction_preflight_fails_closed(tmp_path):
     surface = np.array([[0.8, 0.2, 2.0], [0.8, 1.0, 2.0],
                         [0.95, 0.2, 3.0], [0.95, 1.0, 3.0]])
@@ -436,10 +534,10 @@ def test_full_domain_correction_preflight_fails_closed(tmp_path):
     assert subprocess.run(command).returncode == 0
 
 
-def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
+def test_sweep_design_is_two_sided_and_includes_elastic_control(tmp_path):
     _, rows = make_manifest(tmp_path, "sweep", _test_artifact(tmp_path))
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}
-    assert len(cases) == 37 and len(rows) == 37 * 10
+    assert len(cases) == 36 and len(rows) == 36 * 10
     assert min(ar for _, ar in cases) == 1.1
     assert {float(row["dt"]) for row in rows if row["arm"] == "scaled"} == {0.0025}
     assert {alpha for alpha, ar in cases if ar == 2.0} == {
@@ -448,6 +546,16 @@ def test_sweep_design_avoids_near_sphere_and_includes_elastic_control(tmp_path):
         1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0}
     assert {int(row["particles"]) for row in rows} == {10000}
     assert {row["arm"] for row in rows} == {"scaled"}
+    # Production carries the attraction test: five realizations from each of
+    # the two bracketing starts, not ten from one.
+    assert {float(row["initial_theta"]) for row in rows} == {0.025, 0.225, 1.5}
+    for case in cases:
+        starts = {float(row["initial_theta"]) for row in rows
+                  if (float(row["alpha"]), float(row["aspect_ratio"])) == case}
+        assert len(starts) == 2 and max(starts) == 1.5
+        assert len([row for row in rows
+                    if (float(row["alpha"]),
+                        float(row["aspect_ratio"])) == case]) == 10
 
 
 def test_ng_analysis_runs_after_any_array_outcome():
@@ -457,9 +565,12 @@ def test_ng_analysis_runs_after_any_array_outcome():
 
 
 def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
+    # The two-sided production sweep starts every AR <= 1.35 coordinate from
+    # theta0 = 0.025, so it now depends on the sampler's low-theta extension
+    # in a way the old one-sided (theta0 = 1) design did not.
     surface = np.array([[alpha, theta, ar]
                         for alpha in (0.5, 0.8, 0.95, 1.0)
-                        for theta in (0.2, 1.0, 2.0)
+                        for theta in (0.025, 0.2, 1.0, 2.0)
                         for ar in (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)])
     artifact = tmp_path / "full.npz"
     # No beta surface: the sweep must not depend on the correction hull.
@@ -472,7 +583,7 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
     missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
     assert missing.returncode != 0 and "pilot-summary" in missing.stderr
     for payload, ok in (
-            ({"mode": "engineering", "protocol_version": "hcs-ng-v7",
+            ({"mode": "engineering", "protocol_version": "hcs-ng-v8",
               "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
@@ -482,29 +593,62 @@ def test_sweep_requires_passing_long_time_stability_on_same_bytes(tmp_path):
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v8",
               "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": False,
-              "n_tasks": 148, "n_completed_tasks": 148,
+              "analysis_revision": "hcs-ng-analysis-v3",
+              "n_tasks": 144, "n_completed_tasks": 144,
+              "two_sided_attraction_pass": True,
               "failed_tasks": [], "missing_tasks": [],
               "artifact_sha256": digest}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v8",
               "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": "0" * 64}, False),
-            ({"mode": "stability", "protocol_version": "hcs-ng-v7",
+            ({"mode": "stability", "protocol_version": "hcs-ng-v8",
               "orientation_integrator": "symmetric_midpoint_v1",
               "model_variant": "baseline", "invariant_corrections": False,
               "long_time_stability_campaign_pass": True,
               "artifact_sha256": digest,
-              "n_tasks": 148, "n_completed_tasks": 148,
+              "analysis_revision": "hcs-ng-analysis-v3",
+              "n_tasks": 144, "n_completed_tasks": 144,
+              "two_sided_attraction_pass": True,
               "failed_tasks": [], "missing_tasks": []}, True)):
         pilot.write_text(json.dumps(payload))
         result = subprocess.run(command + ["--pilot-summary", str(pilot)],
                                 cwd=ROOT, text=True, capture_output=True)
         assert (result.returncode == 0) == ok, result.stderr
+
+
+def test_two_sided_sweep_requires_the_low_theta_sampler_extension(tmp_path):
+    """The old theta0=1 sweep never queried the low-theta hull; the two-sided
+    design does, so an artifact without that extension must fail closed."""
+    narrow = np.array([[alpha, theta, ar]
+                       for alpha in (0.5, 0.8, 0.95, 1.0)
+                       for theta in (0.2, 1.0, 2.0)
+                       for ar in (1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0)])
+    artifact = tmp_path / "narrow.npz"
+    np.savez_compressed(artifact, surface_coordinates=narrow)
+    manifest, _ = make_manifest(tmp_path, "sweep", artifact)
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    pilot = tmp_path / "pilot.json"
+    pilot.write_text(json.dumps({
+        "mode": "stability", "protocol_version": "hcs-ng-v8",
+        "analysis_revision": "hcs-ng-analysis-v3",
+        "orientation_integrator": "symmetric_midpoint_v1",
+        "model_variant": "baseline", "invariant_corrections": False,
+        "long_time_stability_campaign_pass": True,
+        "two_sided_attraction_pass": True, "artifact_sha256": digest,
+        "n_tasks": 144, "n_completed_tasks": 144,
+        "failed_tasks": [], "missing_tasks": []}))
+    blocked = subprocess.run(
+        [sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+         "--manifest", str(manifest), "--artifact", str(artifact),
+         "--pilot-summary", str(pilot)], cwd=ROOT, text=True, capture_output=True)
+    assert blocked.returncode != 0
+    assert "hull misses campaign cases" in blocked.stderr
 
 
 def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
@@ -516,12 +660,12 @@ def test_tails_requires_complete_passing_sweep_on_same_bytes(tmp_path):
                "--manifest", str(manifest), "--artifact", str(artifact),
                "--pilot-summary", str(summary)]
     payload = {
-        "mode": "sweep", "protocol_version": "hcs-ng-v7",
+        "mode": "sweep", "protocol_version": "hcs-ng-v8",
         "orientation_integrator": "symmetric_midpoint_v1",
         "model_variant": "baseline", "invariant_corrections": False,
         "study_campaign_pass": True, "scientific_outputs_released": True,
         "artifact_sha256": digest,
-        "n_tasks": 370, "n_completed_tasks": 370,
+        "n_tasks": 360, "n_completed_tasks": 360,
         "failed_tasks": [], "missing_tasks": [],
     }
     summary.write_text(json.dumps(payload))
