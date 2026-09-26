@@ -55,7 +55,7 @@ def main() -> None:
                    if mode in ("stability", "sweep", "map", "tails") else None)
     if expected_dt is not None and arm_dt != expected_dt:
         raise SystemExit(
-            f"{mode} manifest has wrong protocol-v7 step sizes: {arm_dt}")
+            f"{mode} manifest has wrong protocol-v8 step sizes: {arm_dt}")
     protocols = {row.get("protocol_version", "") for row in rows}
     if protocols != {PROTOCOL_VERSION}:
         raise SystemExit(
@@ -127,7 +127,7 @@ def main() -> None:
         if pilot.get("arm_dt") != {
                 "scaled": [0.0025], "unscaled": [0.0025],
                 "dt_half": [0.00125]}:
-            raise SystemExit("numerics pilot used the wrong protocol-v7 step sizes")
+            raise SystemExit("numerics pilot used the wrong protocol-v8 step sizes")
         controls = pilot.get("scaled_unscaled_equivalence", [])
         for control in ("unscaled", "dt_half"):
             passed = {(float(item["alpha"]), float(item["aspect_ratio"]))
@@ -145,7 +145,7 @@ def main() -> None:
         if pilot.get("mode") != "engineering":
             raise SystemExit("pilot summary is not an engineering-mode summary")
         if pilot.get("protocol_version") != PROTOCOL_VERSION:
-            raise SystemExit("engineering pilot is incompatible with HCS-NG v7")
+            raise SystemExit("engineering pilot is incompatible with HCS-NG v8")
         if pilot.get("orientation_integrator") != ORIENTATION_INTEGRATOR:
             raise SystemExit("engineering pilot used a different orientation integrator")
         if pilot.get("model_variant") != model_variant:
@@ -157,11 +157,11 @@ def main() -> None:
         if pilot.get("artifact_sha256") != artifact_hash:
             raise SystemExit("engineering pilot did not use these artifact bytes")
         if pilot.get("n_tasks") != 120:
-            raise SystemExit("engineering pilot does not contain the 120-task protocol-v7 design")
+            raise SystemExit("engineering pilot does not contain the 120-task protocol-v8 design")
         if pilot.get("arm_dt") != {
                 "scaled": [0.0025], "unscaled": [0.0025],
                 "dt_half": [0.00125]}:
-            raise SystemExit("engineering pilot used the wrong protocol-v7 step sizes")
+            raise SystemExit("engineering pilot used the wrong protocol-v8 step sizes")
         if pilot.get("n_completed_tasks") != pilot.get("n_tasks"):
             raise SystemExit("engineering pilot is incomplete")
         controls = pilot.get("scaled_unscaled_equivalence", [])
