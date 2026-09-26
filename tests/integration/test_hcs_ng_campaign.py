@@ -517,6 +517,51 @@ def test_stationarity_false_rejection_rate_is_negligible_at_production_scale():
     assert rejected <= 2, f"{rejected}/{trials} stationary coordinates rejected"
 
 
+def test_stage_verifier_names_the_failing_coordinates(tmp_path):
+    """A bare AssertionError after a 14-hour allocation costs a diagnosis
+    round-trip.  The verifier must say which coordinate failed which gate."""
+    verify = ROOT / "hpc/verify_hcs_ng_stage.py"
+    summary = tmp_path / "summary.json"
+    passing = {
+        "protocol_version": "hcs-ng-v8",
+        "analysis_revision": "hcs-ng-analysis-v3",
+        "mode": "stability", "n_tasks": 144, "n_completed_tasks": 144,
+        "failed_tasks": [], "missing_tasks": [],
+        "artifact_sha256": "d" * 64,
+        "long_time_stability_campaign_pass": True,
+        "two_sided_attraction_pass": True,
+        "cases": [{"alpha": 0.5, "aspect_ratio": 1.2, "initial_theta": 0.025,
+                   "sampling_complete": True, "runtime_pass": True,
+                   "stationarity_pass": True, "dissipation_horizon_pass": True,
+                   "correction_fallback_pass": True}],
+    }
+    command = [sys.executable, str(verify), "stability", str(summary),
+               "--artifact-sha256", "d" * 64]
+    summary.write_text(json.dumps(passing))
+    assert subprocess.run(command, cwd=ROOT).returncode == 0
+
+    broken = json.loads(json.dumps(passing))
+    broken["cases"][0]["stationarity_pass"] = False
+    broken["long_time_stability_campaign_pass"] = False
+    summary.write_text(json.dumps(broken))
+    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "alpha=0.50 AR=1.20" in result.stderr
+    assert "stationarity_pass" in result.stderr
+
+    # A stale summary from the previous protocol must not authorize anything.
+    stale = json.loads(json.dumps(passing))
+    stale["protocol_version"] = "hcs-ng-v7"
+    summary.write_text(json.dumps(stale))
+    assert subprocess.run(command, cwd=ROOT, capture_output=True).returncode != 0
+
+    # Neither may a summary built from different artifact bytes.
+    other = json.loads(json.dumps(passing))
+    other["artifact_sha256"] = "e" * 64
+    summary.write_text(json.dumps(other))
+    assert subprocess.run(command, cwd=ROOT, capture_output=True).returncode != 0
+
+
 def test_full_domain_correction_preflight_fails_closed(tmp_path):
     surface = np.array([[0.8, 0.2, 2.0], [0.8, 1.0, 2.0],
                         [0.95, 0.2, 3.0], [0.95, 1.0, 3.0]])
