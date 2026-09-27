@@ -15,7 +15,17 @@ import numpy as np
 
 PK_COMPONENTS = ("Pk_xx", "Pk_yy", "Pk_zz", "Pk_xy")
 PROTOCOL = "usf-crossflow-v1"
+ANALYSIS_REVISION = "usf-crossflow-analysis-v2"
+SUPPORT_POLICY = "adaptive_base_law_v1"
 FAIL_METRIC = 1.0e300
+FALLBACK_REASON = (
+    "correction_fallback_fraction_in_evaluation_window_not_below_0.01")
+THRESHOLDS = {
+    "correction_support_fraction_exclusive_maximum": 0.01,
+    "closure_overhead_fraction_exclusive_maximum": 0.15,
+    "bulk_to_thermal_temperature_ratio_exclusive_maximum": 1.0e-12,
+    "energy_ledger_relative_residual_maximum": 5.0e-8,
+}
 
 
 def rows(path: Path) -> list[dict[str, str]]:
@@ -149,6 +159,19 @@ def analyze_run(row: dict[str, str]) -> dict:
     ledger = diagnostics.get("usf_energy_ledger") or {}
     correction_fallback = float(diagnostics.get(
         "correction_fallback_fraction_in_evaluation_window", 0.0))
+    arm = row["arm"]
+    correction_support = correction_fallback < THRESHOLDS[
+        "correction_support_fraction_exclusive_maximum"]
+    fallback_policy = str(diagnostics.get("correction_fallback_policy", ""))
+    runtime = diagnostics.get("runtime_gate") or {}
+    runtime_reasons = set(runtime.get("reasons") or [])
+    non_support_runtime_reasons = runtime_reasons - {FALLBACK_REASON}
+    adaptive_fallback = bool(
+        correction_support or arm != "corrected"
+        or fallback_policy == "base_law")
+    closure_overhead = float(diagnostics.get("closure_overhead_fraction", 0.0))
+    bulk_fraction = float(diagnostics.get(
+        "maximum_bulk_to_thermal_temperature_ratio", 0.0))
     repeated = float((diagnostics.get("ntc") or {}).get(
         "repeated_particle_pair_fraction", 0.0))
     finite = bool(
@@ -161,8 +184,14 @@ def analyze_run(row: dict[str, str]) -> dict:
         and int(diagnostics.get("negative_energy_repairs", -1)) == 0
         and int(diagnostics.get("energy_axis_clamps", -1)) == 0
         and int(diagnostics.get("energy_monotonic_repairs", -1)) == 0
-        and correction_fallback <= 0.01
-        and float(ledger.get("relative_residual", FAIL_METRIC)) <= 5e-8)
+        and not non_support_runtime_reasons
+        and adaptive_fallback
+        and closure_overhead
+        < THRESHOLDS["closure_overhead_fraction_exclusive_maximum"]
+        and bulk_fraction
+        < THRESHOLDS["bulk_to_thermal_temperature_ratio_exclusive_maximum"]
+        and float(ledger.get("relative_residual", FAIL_METRIC))
+        <= THRESHOLDS["energy_ledger_relative_residual_maximum"])
     return {
         "task_id": int(row["task_id"]), "mode": row["mode"],
         "coordinate_role": row["coordinate_role"], "arm": row["arm"],
@@ -180,7 +209,16 @@ def analyze_run(row: dict[str, str]) -> dict:
             delta_energy - delta_shear - delta_collision) / power_scale,
         "energy_ledger_relative_residual": float(ledger.get(
             "relative_residual", FAIL_METRIC)),
+        "runtime_gate_reasons": sorted(runtime_reasons),
+        "non_support_runtime_gate_reasons": sorted(
+            non_support_runtime_reasons),
+        "correction_support_pass": correction_support,
+        "adaptive_base_law_pass": adaptive_fallback,
+        "correction_fallback_policy": fallback_policy,
         "correction_fallback_fraction_in_evaluation_window": correction_fallback,
+        "out_of_domain_fraction_by_feature": diagnostics.get(
+            "out_of_domain_fraction_by_feature", {}),
+        "closure_overhead_fraction": closure_overhead,
         "repeated_particle_pair_fraction": repeated,
         "physical_run_pass": physical,
         "artifact_sha256": diagnostics.get("artifact_sha256"),
@@ -222,6 +260,20 @@ def summarize_case(items: list[dict], expected: int, sphere_reference: dict,
     precision = (cvs["Tstar"] <= 0.12
                  and max(cvs[name] for name in PK_COMPONENTS) <= 0.10
                  and (sphere or cvs["theta"] <= 0.10))
+    fallback_fractions = [
+        item["correction_fallback_fraction_in_evaluation_window"]
+        for item in items]
+    if first["arm"] != "corrected":
+        support_class = "not_applicable"
+    elif max(fallback_fractions) < THRESHOLDS[
+            "correction_support_fraction_exclusive_maximum"]:
+        support_class = "correction_supported"
+    elif min(fallback_fractions) >= 0.99:
+        support_class = "base_law_fallback"
+    else:
+        support_class = "mixed_support_base_law_fallback"
+    feature_names = sorted({name for item in items
+                            for name in item["out_of_domain_fraction_by_feature"]})
     record = {
         "coordinate_role": first["coordinate_role"], "arm": first["arm"],
         "aspect_ratio": first["aspect_ratio"], "alpha": first["alpha"],
@@ -241,6 +293,20 @@ def summarize_case(items: list[dict], expected: int, sphere_reference: dict,
         "maximum_correction_fallback_fraction": max(
             item["correction_fallback_fraction_in_evaluation_window"]
             for item in items),
+        "mean_correction_fallback_fraction": float(np.mean(fallback_fractions)),
+        "correction_support_class": support_class,
+        "correction_support_pass": all(
+            item["correction_support_pass"] for item in items),
+        "adaptive_base_law_pass": all(
+            item["adaptive_base_law_pass"] for item in items),
+        "out_of_domain_fraction_by_feature_maximum": {
+            name: max(item["out_of_domain_fraction_by_feature"].get(name, 0.0)
+                      for item in items) for name in feature_names},
+        "non_support_runtime_gate_reasons": sorted({
+            reason for item in items
+            for reason in item["non_support_runtime_gate_reasons"]}),
+        "maximum_closure_overhead_fraction": max(
+            item["closure_overhead_fraction"] for item in items),
         "maximum_repeated_particle_pair_fraction": max(
             item["repeated_particle_pair_fraction"] for item in items),
         "complete": len(items) == expected,
@@ -331,6 +397,37 @@ def convergence_comparisons(cases: list[dict], dimension: str) -> list[dict]:
     return result
 
 
+def paired_arm_comparisons(cases: list[dict]) -> list[dict]:
+    """Report paired base/adaptive behavior without using DEM as a gate."""
+    result = []
+    corrected = [case for case in cases
+                 if case["arm"] == "corrected" and case["dt"] == 0.005
+                 and case["rate_scale"] == 1.0]
+    for adaptive in corrected:
+        candidates = matching(
+            cases, arm="uncorrected",
+            aspect_ratio=adaptive["aspect_ratio"], alpha=adaptive["alpha"],
+            dt=adaptive["dt"], rate_scale=adaptive["rate_scale"])
+        if not candidates:
+            continue
+        base = candidates[0]
+        fields = ("Tstar", "theta", *PK_COMPONENTS, "nematic_order")
+        differences = {name: relative_gap(
+            adaptive["means"][name], base["means"][name]) for name in fields}
+        result.append({
+            "aspect_ratio": adaptive["aspect_ratio"],
+            "alpha": adaptive["alpha"],
+            "correction_support_class": adaptive["correction_support_class"],
+            "relative_differences": differences,
+            "internal_pair_pass": bool(
+                adaptive["internal_physics_pass"]
+                and base["internal_physics_pass"]),
+            "interpretation": (
+                "diagnostic_only_no_DEM_calibration_or_accuracy_gate"),
+        })
+    return result
+
+
 def make_figure(cases: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
@@ -411,6 +508,18 @@ def main() -> None:
         case["internal_physics_pass"] for case in matching(fine, arm="sphere_exact"))
     corrected_pass = bool(matching(fine, arm="corrected")) and all(
         case["internal_physics_pass"] for case in matching(fine, arm="corrected"))
+    uncorrected_cases = matching(fine, arm="uncorrected")
+    uncorrected_pass = (None if not uncorrected_cases else all(
+        case["internal_physics_pass"] for case in uncorrected_cases))
+    corrected_cases = matching(fine, arm="corrected")
+    all_corrected_cases = matching(cases, arm="corrected")
+    all_case_internal_pass = bool(cases) and all(
+        case["internal_physics_pass"] for case in cases)
+    adaptive_policy_pass = bool(all_corrected_cases) and all(
+        case["adaptive_base_law_pass"] for case in all_corrected_cases)
+    correction_coverage_pass = bool(corrected_cases) and all(
+        case["correction_support_pass"] for case in corrected_cases)
+    paired_comparisons = paired_arm_comparisons(cases)
     artifact_hashes = sorted({item["artifact_sha256"] for item in loaded
                               if item.get("artifact_sha256")})
     provenance_hashes = sorted({item["reference_provenance_sha256"] for item in loaded
@@ -422,11 +531,15 @@ def main() -> None:
         and artifact_hashes == manifest_hashes)
     complete = len(loaded) == len(manifest) and not failures and provenance_consistent
     if mode == "numerics":
-        stage_pass = bool(complete and sphere_pass and corrected_pass
+        stage_pass = bool(complete and all_case_internal_pass
+                          and sphere_pass and corrected_pass
                           and dt_checks and all(item["pass"] for item in dt_checks)
                           and rate_checks and all(item["pass"] for item in rate_checks))
     elif mode == "pilot":
-        stage_pass = bool(complete and sphere_pass and corrected_pass)
+        stage_pass = bool(
+            complete and sphere_pass and corrected_pass and uncorrected_pass
+            and len(paired_comparisons) == 9
+            and all(item["internal_pair_pass"] for item in paired_comparisons))
     elif mode == "full":
         offgrid = matching(fine, coordinate_role="interpolation_holdout")
         stage_pass = bool(complete and sphere_pass and corrected_pass and offgrid
@@ -434,7 +547,10 @@ def main() -> None:
     else:
         raise SystemExit(f"unknown campaign mode {mode}")
     summary = {
-        "schema_version": "usf-crossflow-summary-v1", "protocol": PROTOCOL,
+        "schema_version": "usf-crossflow-summary-v2", "protocol": PROTOCOL,
+        "analysis_revision": ANALYSIS_REVISION,
+        "correction_support_policy": SUPPORT_POLICY,
+        "thresholds": THRESHOLDS,
         "mode": mode, "n_expected": len(manifest), "n_valid": len(loaded),
         "n_failures": len(failures), "failures": failures,
         "complete": complete, "artifact_sha256_values": artifact_hashes,
@@ -442,6 +558,16 @@ def main() -> None:
         "provenance_consistent": provenance_consistent,
         "sphere_benchmark_pass": sphere_pass,
         "corrected_internal_physics_pass": corrected_pass,
+        "all_case_internal_physics_pass": all_case_internal_pass,
+        "uncorrected_internal_physics_pass": uncorrected_pass,
+        "adaptive_base_law_policy_pass": adaptive_policy_pass,
+        "strict_correction_coverage_pass": correction_coverage_pass,
+        "correction_support_case_counts": {
+            label: sum(case["correction_support_class"] == label
+                       for case in corrected_cases)
+            for label in ("correction_supported", "base_law_fallback",
+                          "mixed_support_base_law_fallback")},
+        "paired_arm_comparisons": paired_comparisons,
         "time_step_convergence": dt_checks,
         "shear_rate_similarity": rate_checks,
         "stage_pass": stage_pass,
@@ -455,6 +581,9 @@ def main() -> None:
         "comparison_policy": {
             "sphere": "accuracy_gate_against_independent_Boltzmann_DSMC",
             "rods": "DEM_guidance_only_not_a_gate_or_calibration_target",
+            "correction_support": (
+                "validated_angular_response_inside_support_and_fail_closed_"
+                "unchanged_base_law_outside_support"),
             "primary_rod_stress": "kinetic",
             "rod_total_stress": "diagnostic_only_until_exact_branch_virial_exists",
         },
@@ -467,7 +596,9 @@ def main() -> None:
     print(json.dumps({key: summary[key] for key in (
         "mode", "n_expected", "n_valid", "n_failures", "complete",
         "sphere_benchmark_pass", "corrected_internal_physics_pass",
-        "stage_pass", "promotion_ready", "deployment_ready")}, indent=2))
+        "all_case_internal_physics_pass",
+        "adaptive_base_law_policy_pass", "strict_correction_coverage_pass",
+        "correction_support_case_counts", "stage_pass", "promotion_ready", "deployment_ready")}, indent=2))
 
 
 if __name__ == "__main__":

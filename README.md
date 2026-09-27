@@ -167,6 +167,22 @@ microscopic_closure:
   invariant_corrections: true
 ```
 
+Correction support is strict by default. HCS production and every ordinary
+run fail their runtime gate when the invariant state leaves the independently
+validated response domain. The staged USF cross-flow protocol is the only
+workflow that opts into
+
+```yaml
+microscopic_closure:
+  correction_fallback_gate: adaptive_base_law
+```
+
+That mode does not clip, extrapolate, or refit a response. The runtime
+suppresses all response increments outside support and uses the unchanged base
+collision law, while reporting correction coverage separately. USF promotion
+therefore validates this effective adaptive model; it does not claim that the
+learned correction itself covers every USF trajectory.
+
 It preserves the NTC clock and scalar loss. Positive post-collision modal
 energies follow by construction; a non-positive energy raises an error rather
 than triggering a repair.

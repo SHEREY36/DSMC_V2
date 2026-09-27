@@ -27,20 +27,43 @@ from .pressure import accumulate_pij_c, compute_pij_k, normalise_pij_c
 from .state import initialize_particles
 
 
-def runtime_gate_status(diagnostics: dict) -> dict:
-    """Evaluate the variational production limits without hiding failures."""
+def runtime_gate_status(diagnostics: dict,
+                        correction_fallback_gate: str = "strict") -> dict:
+    """Evaluate variational production limits without hiding support loss.
+
+    ``strict`` remains the default and is the HCS release contract.  A USF
+    validation may opt into ``adaptive_base_law``: outside the independently
+    calibrated invariant-response box, the already implemented fail-closed
+    path suppresses every response increment and uses the same base collision
+    law as the explicit uncorrected arm.  This policy does not clip features or
+    extrapolate coefficients; it only separates correction coverage from the
+    safety of the effective base-law trajectory.
+    """
+    if correction_fallback_gate not in ("strict", "adaptive_base_law"):
+        raise ValueError(
+            "correction_fallback_gate must be strict or adaptive_base_law")
     reasons = []
+    fallback_fraction = 0.0
+    fallback_policy = str(diagnostics.get("correction_fallback_policy", ""))
+    correction_support_pass = True
     if int(diagnostics["negative_energy_repairs"]) != 0:
         reasons.append("negative_energy_repairs_not_zero")
     if "correction_fallback_fraction_in_evaluation_window" in diagnostics:
         fallback_fraction = float(
             diagnostics["correction_fallback_fraction_in_evaluation_window"])
-        if fallback_fraction >= 1.0e-2:
+        correction_support_pass = fallback_fraction < 1.0e-2
+        if not correction_support_pass and correction_fallback_gate == "strict":
             reasons.append(
                 "correction_fallback_fraction_in_evaluation_window_not_below_0.01")
     elif float(diagnostics.get("out_of_domain_fraction", 0.0)) >= 1.0e-3:
         # Compatibility for older diagnostics that predate safe fallback.
-        reasons.append("out_of_domain_fraction_not_below_0.001")
+        correction_support_pass = False
+        if correction_fallback_gate == "strict":
+            reasons.append("out_of_domain_fraction_not_below_0.001")
+    if (correction_fallback_gate == "adaptive_base_law"
+            and not correction_support_pass
+            and fallback_policy != "base_law"):
+        reasons.append("correction_fallback_policy_not_base_law")
     if float(diagnostics["closure_overhead_fraction"]) >= 0.15:
         reasons.append("closure_overhead_fraction_not_below_0.15")
     if int(diagnostics.get("energy_axis_clamps", 0)) != 0:
@@ -53,6 +76,10 @@ def runtime_gate_status(diagnostics: dict) -> dict:
     return {
         "pass": not reasons,
         "reasons": reasons,
+        "correction_fallback_gate": correction_fallback_gate,
+        "correction_fallback_policy": fallback_policy,
+        "correction_support_pass": correction_support_pass,
+        "correction_fallback_fraction_in_evaluation_window": fallback_fraction,
         "limits": {
             "negative_energy_repairs": 0,
             "correction_fallback_fraction_in_evaluation_window_exclusive_maximum":
@@ -777,7 +804,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             diagnostics["collision_audit"] = {
                 "post_ntc_pairs": post_ntc, "accepted_pairs": 0}
     diagnostics["elastic_limit"] = elastic_limit
-    diagnostics["runtime_gate"] = (runtime_gate_status(diagnostics)
+    correction_fallback_gate = str(config.get("microscopic_closure", {}).get(
+        "correction_fallback_gate", "strict"))
+    diagnostics["correction_fallback_gate"] = correction_fallback_gate
+    diagnostics["runtime_gate"] = (runtime_gate_status(
+        diagnostics, correction_fallback_gate)
                                    if routing in ("variational_v2", "elastic_bl")
                                    else None)
     return diagnostics

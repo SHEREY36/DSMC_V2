@@ -350,6 +350,29 @@ class VariationalArtifactTests(unittest.TestCase):
         })
         self.assertFalse(rejected["pass"])
         self.assertEqual(len(rejected["reasons"]), 6)
+        adaptive = runtime_gate_status({
+            "negative_energy_repairs": 0,
+            "correction_fallback_fraction_in_evaluation_window": 0.9,
+            "correction_fallback_policy": "base_law",
+            "closure_overhead_fraction": 0.01,
+        }, correction_fallback_gate="adaptive_base_law")
+        self.assertTrue(adaptive["pass"])
+        self.assertFalse(adaptive["correction_support_pass"])
+        self.assertEqual(adaptive["reasons"], [])
+        unsafe_fallback = runtime_gate_status({
+            "negative_energy_repairs": 0,
+            "correction_fallback_fraction_in_evaluation_window": 0.9,
+            "correction_fallback_policy": "clip",
+            "closure_overhead_fraction": 0.01,
+        }, correction_fallback_gate="adaptive_base_law")
+        self.assertFalse(unsafe_fallback["pass"])
+        self.assertIn("correction_fallback_policy_not_base_law",
+                      unsafe_fallback["reasons"])
+        with self.assertRaises(ValueError):
+            runtime_gate_status({
+                "negative_energy_repairs": 0,
+                "closure_overhead_fraction": 0.0,
+            }, correction_fallback_gate="clip")
 
     def test_variational_loss_loader_has_no_gmm_dependency(self):
         with tempfile.TemporaryDirectory() as temporary:

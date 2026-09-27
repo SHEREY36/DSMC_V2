@@ -110,6 +110,9 @@ def main() -> None:
         "artifact": str(artifact),
         "invariant_corrections": arm == "corrected",
         "state_update_cpp": float(row["state_update_cpp"]),
+        # Corrections remain local.  USF explicitly validates the effective
+        # model that falls back to the unchanged base law outside that support.
+        "correction_fallback_gate": "adaptive_base_law",
     })
     config.setdefault("diagnostics", {})["collision_audit"] = not sphere
     # The non-Gaussian accumulator remains off; its start value is also the
@@ -135,8 +138,10 @@ def main() -> None:
         "reference_provenance": str(provenance),
         "reference_provenance_sha256": digest(provenance),
         "usf_study_protocol": "usf-crossflow-v1",
+        "usf_study_support_policy": "adaptive_base_law_v1",
         "validation_case": {
             "task_id": int(row["task_id"]),
+            "source_task_id": int(row.get("source_task_id", row["task_id"])),
             "mode": row["mode"],
             "coordinate_role": row["coordinate_role"],
             "arm": arm,

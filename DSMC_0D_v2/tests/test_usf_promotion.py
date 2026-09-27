@@ -38,7 +38,16 @@ def test_promotion_preserves_bytes_and_binds_both_flow_verdicts(tmp_path):
     provenance_hash = hashlib.sha256(provenance.read_bytes()).hexdigest()
     usf = tmp_path / "usf.json"
     write_json(usf, {
-        "protocol": "usf-crossflow-v1", "mode": "full",
+        "protocol": "usf-crossflow-v1",
+        "analysis_revision": "usf-crossflow-analysis-v2",
+        "correction_support_policy": "adaptive_base_law_v1",
+        "adaptive_base_law_policy_pass": True,
+        "strict_correction_coverage_pass": False,
+        "correction_support_case_counts": {
+            "correction_supported": 40, "base_law_fallback": 24,
+            "mixed_support_base_law_fallback": 6,
+        },
+        "mode": "full",
         "n_expected": 736, "n_valid": 736, "n_failures": 0,
         "complete": True, "stage_pass": True, "promotion_ready": True,
         "deployment_ready": False,
@@ -58,5 +67,11 @@ def test_promotion_preserves_bytes_and_binds_both_flow_verdicts(tmp_path):
     assert promoted["deployment_ready"] is True
     assert promoted["artifact_sha256"] == artifact_hash
     assert promoted["source_evidence_artifact_sha256"] == artifact_hash
+    assert promoted["artifact_status"] == "deployment_ready_hcs_usf_kinetic_v2"
+    assert promoted["release_policy"].endswith("usf-crossflow-v2")
+    assert promoted["validated_runtime_policy"]["USF"] == (
+        "adaptive_base_law_v1")
+    assert promoted["validated_runtime_policy"][
+        "USF_strict_correction_coverage_pass"] is False
     assert promoted["validated_domain"]["USF_unthermostatted_steady"]["alpha"] == [
         0.5, 0.95]

@@ -19,6 +19,7 @@ def load_script(name: str):
 
 MANIFEST = load_script("make_usf_study_manifest")
 ANALYZE = load_script("analyze_usf_study")
+RETRY = load_script("make_usf_retry_manifest")
 
 
 def test_frozen_usf_design_sizes_and_interpolation_coverage(tmp_path):
@@ -79,7 +80,8 @@ def test_usf_run_reduction_uses_kinetic_stress_and_energy_ledger(tmp_path):
         "arm": "corrected", "sphere": "false", "aspect_ratio": "2.0",
         "alpha": "0.8", "dt": "0.005", "rate_scale": "1.0",
         "initial_branch": "cold", "replicate": "0", "particles": "1000",
-        "shear_rate": "0.5", "evaluation_start_tau": "6.0",
+        "shear_rate": "0.5", "volume_fraction": "0.01",
+        "tau_end": "10.0", "evaluation_start_tau": "6.0",
         "output_prefix": str(prefix),
     }
     record = ANALYZE.analyze_run(row)
@@ -90,3 +92,45 @@ def test_usf_run_reduction_uses_kinetic_stress_and_energy_ledger(tmp_path):
     assert record["energy_ledger_increment_residual"] < 1e-14
     assert record["steady_energy_power_imbalance"] < 1e-14
     assert record["physical_run_pass"]
+
+    diagnostics_path = Path(str(prefix) + ".json")
+    diagnostics = json.loads(diagnostics_path.read_text())
+    diagnostics.update({
+        "correction_fallback_fraction_in_evaluation_window": 1.0,
+        "correction_fallback_policy": "base_law",
+        "runtime_gate": {
+            "pass": True,
+            "reasons": [ANALYZE.FALLBACK_REASON],
+        },
+    })
+    diagnostics_path.write_text(json.dumps(diagnostics))
+    fallback_record = ANALYZE.analyze_run(row)
+    assert fallback_record["physical_run_pass"]
+    assert not fallback_record["correction_support_pass"]
+    assert fallback_record["adaptive_base_law_pass"]
+
+    diagnostics["runtime_gate"]["reasons"].append(
+        "negative_energy_repairs_not_zero")
+    diagnostics_path.write_text(json.dumps(diagnostics))
+    unsafe_record = ANALYZE.analyze_run(row)
+    assert not unsafe_record["physical_run_pass"]
+
+    retry_row = dict(row, artifact_sha256="artifact", seed="7")
+    diagnostics["runtime_gate"]["reasons"] = []
+    diagnostics["usf_study_protocol"] = "usf-crossflow-v1"
+    diagnostics["validation_case"].update({
+        "mode": "pilot", "coordinate_role": "test", "arm": "corrected",
+        "initial_branch": "cold", "replicate": 0, "seed": 7,
+        "source_task_id": 0,
+        "source_task_id": 0,
+        "particles": 1000, "alpha": 0.8, "aspect_ratio": 2.0,
+        "shear_rate": 0.5, "rate_scale": 1.0, "dt": 0.005,
+        "volume_fraction": 0.01, "tau_end": 10.0,
+        "evaluation_start_tau": 6.0,
+    })
+    diagnostics_path.write_text(json.dumps(diagnostics))
+    assert RETRY.task_status(retry_row) == (True, "complete")
+    np.savetxt(Path(str(prefix) + "_energy.txt"), np.ones((2, 5)))
+    complete, reason = RETRY.task_status(retry_row)
+    assert not complete
+    assert reason.startswith("invalid_schema:")

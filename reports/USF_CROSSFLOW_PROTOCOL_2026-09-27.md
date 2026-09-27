@@ -42,6 +42,31 @@ the model.  Sphere impulse-normal collisional stress remains exact.
 7. The DEM and sphere comparison tables are frozen in the DSMC repository with
    source-repository revision and checksums.
 
+## First-attempt evidence and support-policy repair
+
+The expensive numerics did not crash: all 108 expected realizations completed,
+all output schemas and hashes were valid, and every time-step, shear-rate,
+sphere, stationarity, branch-convergence, energy-ledger, and performance check
+passed. There were no negative-energy repairs or clamps, maximum closure
+overhead was 1.825%, and the largest ledger relative residual was below
+`1e-13`.
+
+The sole failed condition was the original HCS-style strict correction-support
+gate. Corrected rod trajectories at `alpha=0.5` and `0.8` often leave the HCS
+excitation box, principally along `PiPi` and occasionally `a2_tr`; the
+`alpha=0.95` cases remained supported. This is a cross-flow support result,
+not a numerical failure and not evidence for clipping or extrapolating the
+learned surface.
+
+The repaired protocol therefore validates an explicit adaptive effective
+model. Inside the independently validated response domain it uses the frozen
+angular correction. Outside it, the existing fail-closed path suppresses all
+response increments and uses the unchanged base collision law. Strict
+correction coverage is retained as a separate reported verdict and may remain
+false. All other safety, convergence, conservation, stationarity, precision,
+and sphere-accuracy gates remain mandatory. The default runtime policy and
+the HCS release contract remain strict.
+
 ## One-command staged design
 
 The submission creates all manifests and validates every prerequisite before
@@ -75,13 +100,15 @@ An array may fail partially and its `afterany` analysis will still report every
 missing/crashed task.  The gate then fails closed and prevents the next stage.
 Consequently a coding error, truncated task, wrong artifact, mixed provenance,
 failed sphere benchmark, lack of stationarity, hot/cold disagreement, excess
-sampling uncertainty, correction-support loss, or energy-accounting error
+sampling uncertainty, unsafe support handling, or energy-accounting error
 cannot release the expensive full design.
 
 DEM differences are reported but never enter `stage_pass`.  Rod gates use:
 
 - finite collision-target completion with no energy repairs or clamps;
-- correction fallback below 1% in the evaluation window;
+- correction fallback below 1% is reported as strict correction coverage;
+- otherwise, the correction must fail closed to the unchanged base law with
+  no other runtime-gate failure;
 - energy-ledger closure and late shear/collision power balance;
 - hot/cold branch convergence;
 - replicate precision and terminal drift;

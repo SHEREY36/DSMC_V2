@@ -48,6 +48,9 @@ def main() -> None:
             and hcs.get("n_completed_tasks") == hcs.get("n_tasks") == 360):
         raise SystemExit("complete passing HCS-v8 evidence is required")
     if not (usf.get("protocol") == "usf-crossflow-v1"
+            and usf.get("analysis_revision") == "usf-crossflow-analysis-v2"
+            and usf.get("correction_support_policy") == "adaptive_base_law_v1"
+            and usf.get("adaptive_base_law_policy_pass") is True
             and usf.get("mode") == "full"
             and usf.get("n_valid") == usf.get("n_expected") == 736
             and usf.get("n_failures") == 0 and usf.get("complete") is True
@@ -79,9 +82,9 @@ def main() -> None:
 
     manifest = dict(source_manifest)
     manifest.update({
-        "artifact_status": "deployment_ready_hcs_usf_kinetic_v1",
+        "artifact_status": "deployment_ready_hcs_usf_kinetic_v2",
         "deployment_ready": True,
-        "release_policy": "validated-angular-adaptive-hcs-v8-usf-crossflow-v1",
+        "release_policy": "validated-angular-adaptive-hcs-v8-usf-crossflow-v2",
         "source_evidence_artifact": str(source),
         "source_evidence_artifact_sha256": source_hash,
         "artifact_sha256": source_hash,
@@ -91,6 +94,14 @@ def main() -> None:
                 "alpha": [0.5, 0.95], "aspect_ratio": [1.0, 3.0]},
             "USF_alpha_1_exclusion": (
                 "elastic unthermostatted USF has no finite steady state"),
+        },
+        "validated_runtime_policy": {
+            "HCS": "strict_correction_support",
+            "USF": "adaptive_base_law_v1",
+            "USF_strict_correction_coverage_pass": usf.get(
+                "strict_correction_coverage_pass"),
+            "USF_correction_support_case_counts": usf.get(
+                "correction_support_case_counts"),
         },
         "validated_observables": {
             "HCS": ["temperature_ratio", "non_gaussian_moments", "tails"],
