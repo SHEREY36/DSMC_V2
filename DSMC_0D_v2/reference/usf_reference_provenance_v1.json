@@ -1,0 +1,20 @@
+{
+  "dem_frozen_path": "DSMC_0D_v2/reference/usf_dem_fresh_v1.csv",
+  "dem_frozen_sha256": "279716424e86386d234d9887af60b883cbaacce4eabf9556aae315ac06057256",
+  "dem_rows": 50,
+  "dem_source_relative_path": "runs/fresh_usf/summary.csv",
+  "dem_source_sha256": "6112f23acca7d729406078539eb6a04221064f94ba9bc8953bf11e3f6683d02c",
+  "lammps_repository_revision": "326ffa900cc9326d2fed33455b42f91fefec2bf2",
+  "role": "independent_comparison_only_not_closure_calibration",
+  "schema_version": "usf_reference_provenance_v1",
+  "sphere_frozen_path": "DSMC_0D_v2/reference/usf_sphere_boltzmann_v1.csv",
+  "sphere_frozen_sha256": "b7e4f266e0f5b88fbc8a4168dce9cb43c602d669262331279f25b43d664a5140",
+  "sphere_rows": 10,
+  "sphere_source_relative_path": "runs/fresh_usf/reference/dsmc_spheres_usf.txt",
+  "sphere_source_sha256": "f94469d93bdf4a06072b065530b3b0f7447de94545258fec895314a3a538b444",
+  "stress_policy": {
+    "primary_rod_comparison": "kinetic_stress",
+    "rod_total_stress": "diagnostic_only_missing_exact_DSMC_branch_virial",
+    "sphere_benchmark": "kinetic_stress_against_Boltzmann_DSMC"
+  }
+}

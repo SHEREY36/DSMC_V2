@@ -98,6 +98,12 @@ def _write_row(handle, time: float, tau: float, state, mass: float) -> None:
     handle.write(f"{time:13.6f} {tau:13.6f} {ttr:13.6f} {trot:13.6f} {total:13.6f}\n")
 
 
+def _total_thermal_energy(state, mass: float) -> float:
+    """Return translational peculiar plus rotational energy of the cell."""
+    ttr, trot, _ = state.temperatures(mass)
+    return float(state.count * (1.5 * ttr + trot))
+
+
 def _pair_modal_energies(state, p1: int, p2: int, v1: np.ndarray,
                          v2: np.ndarray, mass: float) -> tuple[float, float]:
     """Translational COM-frame and rotational energy of one selected pair."""
@@ -125,7 +131,11 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     alpha = float(config["system"]["alpha"])
     ktt, ktr = float(config["system"]["kTt"]), float(config["system"]["kTr"])
     volume = float(np.prod(config["system"]["domain"]))
-    count = math.ceil(float(config["system"]["phi"]) * volume / params.volume)
+    declared_count = config["system"].get("particle_count")
+    count = (math.ceil(float(config["system"]["phi"]) * volume / params.volume)
+             if declared_count is None else int(declared_count))
+    if count < 2:
+        raise ValueError("system.particle_count must be at least two")
     sphere = bool(config.get("simulation", {}).get("sphere_collision", False))
     state = initialize_particles(count, ktt, ktr, params.mass, params.inertia,
                                  axis_rng, sphere,
@@ -134,13 +144,18 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                      == "variational_v2"))
     exact_initial_temperatures = bool(config.get("simulation", {}).get(
         "exact_initial_temperatures", False))
-    if exact_initial_temperatures and not sphere:
-        state.set_modal_temperatures(ktt, ktr, params.mass)
+    if exact_initial_temperatures:
+        if sphere:
+            state.set_translational_temperature(ktt, params.mass)
+        else:
+            state.set_modal_temperatures(ktt, ktr, params.mass)
     elastic_limit = config.get("microscopic_closure", {}).get(
         "elastic_limit", "exact_bl")
     if elastic_limit not in ("exact_bl", "closure"):
         raise ValueError("microscopic_closure.elastic_limit must be exact_bl or closure")
-    if not sphere and alpha >= 1.0 and elastic_limit == "exact_bl":
+    if sphere:
+        routing, angular, closure = "sphere_exact", "exact_sphere", None
+    elif alpha >= 1.0 and elastic_limit == "exact_bl":
         # alpha=1 is a singular point of the fitted closure (no loss, and the
         # near-sphere exchange is too slow to reach equipartition in any
         # affordable run). It gets its own exact block and never queries the
@@ -183,6 +198,9 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     if hcs_rescale and flow_mode != "hcs":
         raise ValueError("HCS temperature rescaling is only valid for flow.mode=hcs")
     initial_ttr, _, initial_total = state.temperatures(params.mass)
+    initial_thermal_energy = _total_thermal_energy(state, params.mass)
+    cumulative_shear_energy = 0.0
+    cumulative_collision_energy = 0.0
     rescale_reference = initial_ttr if sphere else initial_total
     # A two-temperature spherocylinder can transfer rotational energy into
     # translation even while its total HCS energy cools.  The old majorant was
@@ -250,6 +268,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             output_path.stem + "_orientation.txt")
     if orientation_path is not None:
         orientation_path.parent.mkdir(parents=True, exist_ok=True)
+    energy_path = (output_path.with_name(output_path.stem + "_energy.txt")
+                   if flow_mode == "usf" else None)
+    if energy_path is not None:
+        energy_path.parent.mkdir(parents=True, exist_ok=True)
     non_gaussian = NonGaussianDiagnostics(
         config, output_path, count, params.mass, params.inertia, sphere)
     theta_minimum, theta_maximum = np.inf, -np.inf
@@ -284,9 +306,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     pressure_context = pressure_path.open("w", buffering=65536) if pressure_path else nullcontext(None)
     orientation_context = (orientation_path.open("w", buffering=65536)
                            if orientation_path else nullcontext(None))
+    energy_context = (energy_path.open("w", buffering=65536)
+                      if energy_path else nullcontext(None))
     with (output_path.open("w", buffering=65536) as handle,
           pressure_context as pressure_handle,
           orientation_context as orientation_handle,
+          energy_context as energy_handle,
           non_gaussian as non_gaussian):
         while time < end_time and (tau_end is None or collisions / count < tau_end
                                    or collisions / count >= output_index * dtau):
@@ -307,6 +332,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                           + " ".join(f"{value:13.6f}" for value in values) + "\n")
                     pressure_accumulator[:] = 0.0
                     last_pressure_time = time
+                if energy_handle is not None:
+                    thermal_energy = _total_thermal_energy(state, params.mass)
+                    residual = (thermal_energy - initial_thermal_energy
+                                - cumulative_shear_energy
+                                - cumulative_collision_energy)
+                    energy_handle.write(
+                        f"{time:13.6f} {tau:13.6f} {thermal_energy:18.9e} "
+                        f"{cumulative_shear_energy:18.9e} "
+                        f"{cumulative_collision_energy:18.9e} {residual:18.9e}\n")
+                    energy_handle.flush()
                 if orientation_handle is not None:
                     q = state.orientation_tensor()
                     values = [q[0, 0], q[0, 1], q[0, 2],
@@ -326,7 +361,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             if orientation_integrator == "symmetric_midpoint_v1":
                 state.advance_axes(0.5 * dt)
             if flow_mode == "usf":
-                state.velocity[:, 0] -= shear_rate * state.velocity[:, 1] * dt
+                vx, vy = state.velocity[:, 0], state.velocity[:, 1]
+                shear_increment = shear_rate * dt
+                # Exact kinetic-energy change of c_x <- c_x-a*c_y*dt.
+                cumulative_shear_energy += params.mass * (
+                    -shear_increment * float(np.dot(vx, vy))
+                    + 0.5 * shear_increment**2 * float(np.dot(vy, vy)))
+                vx -= shear_increment * vy
             ttr, trot, _ = state.temperatures(params.mass)
             theta = ttr / trot if trot > 0.0 else 1.0
             theta_minimum = min(theta_minimum, theta)
@@ -427,6 +468,12 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     if cr < 0.0:
                         normal, cr = -normal, -cr
                     speed = float(np.linalg.norm(vrel))
+                    pair_thermal_before = None
+                    if flow_mode == "usf":
+                        pair_thermal_before = float(
+                            0.5 * params.mass * (np.dot(v1, v1) + np.dot(v2, v2))
+                            + state.rotational_energy[p1]
+                            + state.rotational_energy[p2])
                     pair_before = None
                     if audit_enabled and not sphere and routing != "elastic_bl":
                         pair_before = _pair_modal_energies(
@@ -488,6 +535,15 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                                 - theta * (expected_erot_f - erot_i))
                             audit["theta_energy_sum"] += total_i * theta
                     if added:
+                        if pair_thermal_before is not None:
+                            pair_thermal_after = float(
+                                0.5 * params.mass * (
+                                    np.dot(state.velocity[p1], state.velocity[p1])
+                                    + np.dot(state.velocity[p2], state.velocity[p2]))
+                                + state.rotational_energy[p1]
+                                + state.rotational_energy[p2])
+                            cumulative_collision_energy += (
+                                pair_thermal_after - pair_thermal_before)
                         ntc_collision_pairs += 1
                         if (p1 in step_collision_particles
                                 or p2 in step_collision_particles):
@@ -548,6 +604,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     total_seconds = wallclock.perf_counter() - march_started
     closure_collision_seconds = 0.0 if kernel is None else kernel.closure_seconds
     closure_seconds = closure_state_seconds + closure_collision_seconds
+    final_thermal_energy = _total_thermal_energy(state, params.mass)
+    energy_residual = (final_thermal_energy - initial_thermal_energy
+                       - cumulative_shear_energy
+                       - cumulative_collision_energy)
     diagnostics = {
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
@@ -613,6 +673,22 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "pressure_output": None if pressure_path is None else str(pressure_path),
         "orientation_output": (None if orientation_path is None
                                else str(orientation_path)),
+        "energy_output": None if energy_path is None else str(energy_path),
+        "collisional_stress_status": (
+            "exact_sphere_impulse_normal_v1" if sphere else
+            "diagnostic_normal_proxy_missing_rod_branch_vector"),
+        "usf_energy_ledger": (None if flow_mode != "usf" else {
+            "initial_thermal_energy": initial_thermal_energy,
+            "final_thermal_energy": final_thermal_energy,
+            "cumulative_shear_energy": cumulative_shear_energy,
+            "cumulative_collision_energy": cumulative_collision_energy,
+            "residual": energy_residual,
+            "relative_residual": abs(energy_residual) / max(
+                abs(initial_thermal_energy),
+                abs(cumulative_shear_energy),
+                abs(cumulative_collision_energy), 1.0e-30),
+        }),
+
         "hcs_rescale_temperature": hcs_rescale,
         "minimum_theta_tr_over_rot": (
             None if not np.isfinite(theta_minimum) else theta_minimum),

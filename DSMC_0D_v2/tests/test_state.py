@@ -88,6 +88,19 @@ class StateTests(unittest.TestCase):
         self.assertAlmostEqual(after[0], before[0] * 2.5**2, places=13)
         self.assertAlmostEqual(after[1], before[1] * 2.5**2, places=13)
 
+    def test_set_translational_temperature_is_exact_and_preserves_sphere_rotation(self):
+        np.random.seed(1401)
+        state = initialize_particles(
+            257, 0.7, 1.3, 1.0, 0.7, np.random.default_rng(1402),
+            sphere=True, isotropic_rotation=True)
+        state.set_translational_temperature(2.25, 1.0)
+        ttr, trot, _ = state.temperatures(1.0)
+        self.assertAlmostEqual(ttr, 2.25, places=13)
+        self.assertEqual(trot, 0.0)
+        np.testing.assert_allclose(np.mean(state.velocity, axis=0), 0.0,
+                                   atol=1.0e-14)
+        np.testing.assert_array_equal(state.rotational_energy, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

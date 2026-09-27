@@ -112,6 +112,17 @@ class ParticleState:
         self.rotational_energy *= rotation_scale * rotation_scale
         self.normalize_constraints()
 
+    def set_translational_temperature(self, ttr: float, mass: float) -> None:
+        """Set the realized peculiar translational temperature exactly."""
+        target = float(ttr)
+        if not np.isfinite(target) or target <= 0.0:
+            raise ValueError("target translational temperature must be positive")
+        current, _, _ = self.temperatures(float(mass))
+        if current <= 0.0:
+            raise ValueError("cannot normalize a state with non-positive temperature")
+        self.velocity -= np.mean(self.velocity, axis=0)
+        self.velocity *= np.sqrt(target / current)
+
     def orientation_tensor(self) -> np.ndarray:
         """Return the traceless nematic tensor Q=<uu>-I/3."""
         second_moment = self.axis.T @ self.axis / float(self.count)
