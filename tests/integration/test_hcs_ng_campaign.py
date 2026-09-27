@@ -2,6 +2,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -560,6 +561,71 @@ def test_stage_verifier_names_the_failing_coordinates(tmp_path):
     other["artifact_sha256"] = "e" * 64
     summary.write_text(json.dumps(other))
     assert subprocess.run(command, cwd=ROOT, capture_output=True).returncode != 0
+
+
+def _figure_module():
+    path = ROOT / "DSMC_0D_v2/scripts/hcs_ng_paper_figures.py"
+    spec = importlib.util.spec_from_file_location("hcs_ng_paper_figures", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cooling_rate_reduces_to_the_smooth_sphere_law():
+    """alpha_eff is only meaningful if the cooling-rate relation collapses to
+    Haff's law for a smooth sphere. Per unit tau there are N/2 pair events each
+    removing a fraction L of the pair internal energy 2(Ttr+Trot), against a
+    total 5T = 3Ttr+2Trot, so zeta* = 2L(1+theta)/(3+2theta). With rotation
+    equipartitioned and the smooth-sphere loss L = (1-a^2)/2 this must return
+    zeta* = (1-a^2)/3, the form Hong et al. (2022) fit."""
+    module = _figure_module()
+    for alpha in (0.5, 0.7, 0.9, 0.99):
+        # The smooth-sphere reference: (2/3)L with L = (1-a^2)/2.
+        assert abs(module.smooth_sphere_zeta(alpha)
+                   - (2.0 / 3.0) * (1.0 - alpha**2) / 2.0) < 1.0e-12
+        # alpha_eff inverts that reference exactly.
+        sci = {(alpha, 2.0): {"observables": {
+            "theta_rot_over_tr": {"mean": 1.0}}}}
+        z = float(module.smooth_sphere_zeta(alpha))
+        loss = {(alpha, 2.0): z * 5.0 / 4.0}      # invert zeta* at theta = 1
+        assert abs(module.zeta_star(sci, loss, alpha, 2.0) - z) < 1.0e-12
+        assert abs(module.alpha_eff(sci, loss, alpha, 2.0) - alpha) < 1.0e-9
+
+    # A rod is NOT a smooth sphere at theta = 1: it still carries two
+    # rotational degrees of freedom in both the pair energy and the total.
+    sci = {(0.8, 2.0): {"observables": {"theta_rot_over_tr": {"mean": 1.0}}}}
+    L = (1.0 - 0.8**2) / 2.0
+    assert abs(module.zeta_star(sci, {(0.8, 2.0): L}, 0.8, 2.0)
+               - 0.8 * L) < 1.0e-12
+
+    # A rotational reservoir that holds energy slows the cooling of the total.
+    hot = {(0.8, 2.0): {"observables": {"theta_rot_over_tr": {"mean": 4.0}}}}
+    cold = {(0.8, 2.0): {"observables": {"theta_rot_over_tr": {"mean": 1.0}}}}
+    same = {(0.8, 2.0): 0.05}
+    assert (module.zeta_star(hot, same, 0.8, 2.0)
+            > module.zeta_star(cold, same, 0.8, 2.0))
+
+    # An elastic gas does not cool, whatever its shape.
+    elastic = {(1.0, 3.0): {"observables": {"theta_rot_over_tr": {"mean": 1.0}}}}
+    assert module.zeta_star(elastic, {(1.0, 3.0): 0.0}, 1.0, 3.0) == 0.0
+    assert module.alpha_eff(elastic, {(1.0, 3.0): 0.0}, 1.0, 3.0) == 1.0
+
+
+def test_paper_figures_refuse_an_unreleased_sweep(tmp_path):
+    """The figures are a scientific output; they must not be producible from a
+    summary whose verdict has not passed."""
+    results = tmp_path / "sweep"
+    results.mkdir()
+    (results / "summary.json").write_text(json.dumps({
+        "science_cases": [], "scientific_outputs_released": False}))
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "DSMC_0D_v2/scripts/hcs_ng_paper_figures.py"),
+         "--results", str(results), "--output", str(tmp_path / "out")],
+        cwd=ROOT, text=True, capture_output=True,
+        env={**os.environ, "MPLBACKEND": "Agg"})
+    assert proc.returncode != 0
+    assert "scientific outputs" in proc.stderr
 
 
 def test_full_domain_correction_preflight_fails_closed(tmp_path):
