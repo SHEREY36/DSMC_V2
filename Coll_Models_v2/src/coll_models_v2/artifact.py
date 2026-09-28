@@ -182,7 +182,8 @@ def _baseline_source_digest(nodes: list[dict]) -> str:
 
 
 def write_coefficient_rows(node_estimate_directories, output_path,
-                           release_policy: str = "strict") -> dict:
+                           release_policy: str = "strict",
+                           response_order: int = 1) -> dict:
     """Compile the expensive response/support fit once for all array tasks."""
     directories = ([node_estimate_directories]
                    if isinstance(node_estimate_directories, (str, os.PathLike))
@@ -193,7 +194,8 @@ def write_coefficient_rows(node_estimate_directories, output_path,
     keys = [_node_key(node) for node in nodes]
     if len(keys) != len(set(keys)):
         raise ValueError("coefficient inputs contain duplicate grid/ensemble keys")
-    rows = _fit_coefficient_rows(nodes, release_policy=release_policy)
+    rows = _fit_coefficient_rows(
+        nodes, release_policy=release_policy, response_order=response_order)
     payload = {
         "schema": "correction-coefficient-surface-v1",
         "source_digest": _coefficient_source_digest(nodes),
@@ -201,6 +203,7 @@ def write_coefficient_rows(node_estimate_directories, output_path,
         "n_source_nodes": len(nodes),
         "n_coefficient_nodes": len(rows),
         "release_policy": release_policy,
+        "response_order": response_order,
         "coefficient_rows": rows,
     }
     target = Path(output_path)
@@ -210,7 +213,8 @@ def write_coefficient_rows(node_estimate_directories, output_path,
 
 
 def _coefficient_rows_from_cache(nodes: list[dict], path,
-                                 full_validation: bool = True) -> list[dict]:
+                                 full_validation: bool = True,
+                                 allowed_release_policy: str = "strict") -> list[dict]:
     if path is None:
         return _fit_coefficient_rows(nodes)
     payload = json.loads(Path(path).read_text())
@@ -221,10 +225,10 @@ def _coefficient_rows_from_cache(nodes: list[dict], path,
     if payload.get("schema") != "correction-coefficient-surface-v1" \
             or actual_digest != expected_digest:
         raise ValueError("stale or mismatched correction coefficient cache")
-    if payload.get("release_policy", "strict") != "strict":
+    if payload.get("release_policy", "strict") != allowed_release_policy:
         raise ValueError(
-            "selective evidence coefficients cannot enter a production artifact; "
-            "use build_selective_evidence_artifact.py")
+            "coefficient release policy does not match the explicitly requested "
+            f"artifact policy {allowed_release_policy!r}")
     rows = payload.get("coefficient_rows", [])
     expected = ({_node_key(node)[:3] for node in nodes
                  if int(node.get("ensemble_id", 0)) != 0}
@@ -238,8 +242,10 @@ def _coefficient_rows_from_cache(nodes: list[dict], path,
 
 
 def _fit_coefficient_rows(nodes: list[dict],
-                          release_policy: str = "strict") -> list[dict]:
-    if release_policy not in ("strict", "validated-angular-only-v1"):
+                          release_policy: str = "strict",
+                          response_order: int = 1) -> list[dict]:
+    if release_policy not in ("strict", "validated-angular-only-v1",
+                              "quadratic-evidence-v1"):
         raise ValueError(f"unsupported correction release policy: {release_policy}")
     rows = []
     grouped = defaultdict(list)
@@ -248,9 +254,16 @@ def _fit_coefficient_rows(nodes: list[dict],
     for key, group in sorted(grouped.items()):
         if len(group) <= 1:
             continue
-        fitted = fit_correction_coefficients(group)
+        fitted = fit_correction_coefficients(group, response_order=response_order)
         if not fitted["identifiable"]:
             raise ValueError(f"excitation design is rank deficient at {key}")
+        # Preserve term-level evidence before a group-level release policy can
+        # hold a whole energy/angular block back. Direct USF evidence may
+        # later release that block, but it must not turn statistically
+        # unresolved feature directions on by accident.
+        fitted["beta_evidence_deployed"] = fitted["beta_deployed"]
+        fitted["beta_quadratic_evidence_deployed"] = \
+            fitted["beta_quadratic_deployed"]
         if release_policy == "strict" and not fitted["linearity_pass"]:
             raise ValueError(
                 f"multivariate natural-parameter response is nonlinear at {key}")
@@ -263,16 +276,20 @@ def _fit_coefficient_rows(nodes: list[dict],
                              > CENTRAL_AMPLITUDE + 1.0e-12}, reverse=True)
         if release_policy == "validated-angular-only-v1":
             deployed = np.asarray(fitted["beta_deployed"], dtype=bool)
+            quadratic_deployed = np.asarray(
+                fitted["beta_quadratic_deployed"], dtype=bool)
             # The completed full-domain gate showed that the current energy
             # response degrades held-out conditional laws.  Hold all four
             # energy rows at zero; this evidence artifact tests only the
             # independently successful angular response.
             deployed[:4] = False
+            quadratic_deployed[:4] = False
             for index, name in enumerate(("eta1", "eta2"), start=4):
                 parameter = fitted["parameter_fits"][name]
                 if parameter.get("material_response", False) \
                         and not parameter.get("linearity_pass", False):
                     deployed[index] = False
+                    quadratic_deployed[index] = False
             central = [node for node in excited
                        if np.isclose(abs(float(node["excitation"]["eta"])),
                                      CENTRAL_AMPLITUDE)]
@@ -281,7 +298,9 @@ def _fit_coefficient_rows(nodes: list[dict],
                 for node in central))
             if not training_pass:
                 deployed[:] = False
+                quadratic_deployed[:] = False
             fitted["beta_deployed"] = deployed.tolist()
+            fitted["beta_quadratic_deployed"] = quadratic_deployed.tolist()
             validations = [assess_angular_support(
                 baseline, excited, fitted, amplitude) for amplitude in candidates]
             support = next((item for item in validations if item["pass"]),
@@ -289,7 +308,9 @@ def _fit_coefficient_rows(nodes: list[dict],
                             "reason": "no_independent_angular_support"})
             if not support["pass"]:
                 deployed[4:] = False
+                quadratic_deployed[4:] = False
                 fitted["beta_deployed"] = deployed.tolist()
+                fitted["beta_quadratic_deployed"] = quadratic_deployed.tolist()
             fitted["release_policy"] = release_policy
             fitted["energy_release"] = "held_back_distribution_validation_failure"
             fitted["angular_training_sentinel_pass"] = training_pass
@@ -301,6 +322,45 @@ def _fit_coefficient_rows(nodes: list[dict],
             support = next((item for item in validations if item["pass"]),
                            {"pass": False, "amplitude": CENTRAL_AMPLITUDE,
                             "reason": "no_larger_amplitude_passed"})
+            if release_policy == "quadratic-evidence-v1":
+                deployed = np.asarray(fitted["beta_deployed"], dtype=bool)
+                quadratic_deployed = np.asarray(
+                    fitted["beta_quadratic_deployed"], dtype=bool)
+                parameter_fits = fitted["parameter_fits"]
+                energy_parameter_pass = all(
+                    (not parameter_fits[name].get("material_response", False))
+                    or parameter_fits[name].get("linearity_pass", False)
+                    for name in ("lambda1", "lambda2", "lambda3", "lambda4"))
+                angular_parameter_pass = all(
+                    (not parameter_fits[name].get("material_response", False))
+                    or parameter_fits[name].get("linearity_pass", False)
+                    for name in ("eta1", "eta2"))
+                best = validations[0] if validations else {}
+                energy_distribution_pass = bool(
+                    energy_parameter_pass
+                    and best.get("tangent_to_exact_w1_maximum", np.inf)
+                    <= best.get("tangent_maximum_tolerance", 5.0e-3)
+                    and best.get("corrected_energy_w1_p95", np.inf)
+                    < best.get("baseline_energy_w1_p95", -np.inf)
+                    and best.get("exact_response_energy_w1_p95", np.inf)
+                    < best.get("baseline_energy_w1_p95", -np.inf))
+                angular_distribution_pass = bool(
+                    angular_parameter_pass
+                    and best.get("corrected_angular_w1_p95", np.inf)
+                    < best.get("baseline_angular_w1_p95", -np.inf))
+                if not energy_distribution_pass:
+                    deployed[:4] = False
+                    quadratic_deployed[:4] = False
+                if not angular_distribution_pass:
+                    deployed[4:] = False
+                    quadratic_deployed[4:] = False
+                fitted["beta_deployed"] = deployed.tolist()
+                fitted["beta_quadratic_deployed"] = quadratic_deployed.tolist()
+                fitted["local_energy_release"] = energy_distribution_pass
+                fitted["local_angular_release"] = angular_distribution_pass
+                fitted["release_policy"] = release_policy
+                if energy_distribution_pass or angular_distribution_pass:
+                    support = best
         trust_amplitude = (float(support["amplitude"]) if support["pass"]
                            else CENTRAL_AMPLITUDE)
         trust_features = np.asarray([
@@ -347,12 +407,25 @@ def _correction_spec(nodes: list[dict], coefficient_rows: list[dict]):
         upper = np.asarray(row["feature_upper"], dtype=float)
         beta = np.asarray(row["beta"], dtype=float) * np.asarray(
             row["beta_deployed"], dtype=bool)
+        quadratic = np.asarray(row.get(
+            "beta_quadratic", np.zeros_like(beta)), dtype=float) * np.asarray(
+                row.get("beta_quadratic_deployed", row["beta_deployed"]),
+                dtype=bool)
         center = np.asarray(row["feature_center"], dtype=float)
         component_bounds = []
         for component in beta:
             lo = np.where(component >= 0.0, lower - center, upper - center)
             hi = np.where(component >= 0.0, upper - center, lower - center)
             component_bounds.append((float(component @ lo), float(component @ hi)))
+        delta_lower, delta_upper = lower - center, upper - center
+        squared_upper = np.maximum(delta_lower * delta_lower,
+                                   delta_upper * delta_upper)
+        for index, component in enumerate(quadratic):
+            component_bounds[index] = (
+                component_bounds[index][0]
+                + float(np.minimum(component, 0.0) @ squared_upper),
+                component_bounds[index][1]
+                + float(np.maximum(component, 0.0) @ squared_upper))
         # The table axis contains lambda1 + lambda3*z_in + lambda4*loss.  A
         # conservative unit interval for both covariates bounds every runtime
         # shift without assuming their correlation.
@@ -415,12 +488,21 @@ def _local_correction_plan(baseline: list[dict], coefficient_rows: list[dict]):
         beta = np.asarray([np.asarray(item["beta"], dtype=float)
                            * np.asarray(item["beta_deployed"], dtype=bool)
                            for item in neighbours])
+        quadratic = np.asarray([
+            np.asarray(item.get("beta_quadratic",
+                                np.zeros_like(item["beta"])), dtype=float)
+            * np.asarray(item.get("beta_quadratic_deployed",
+                                  item["beta_deployed"]), dtype=bool)
+            for item in neighbours])
         lower = np.asarray([item["feature_lower"] for item in neighbours])
         upper = np.asarray([item["feature_upper"] for item in neighbours])
         center = np.asarray([item["feature_center"] for item in neighbours])
         delta_lo = np.min(lower - center, axis=0)
         delta_hi = np.max(upper - center, axis=0)
         beta_lo, beta_hi = np.min(beta, axis=0), np.max(beta, axis=0)
+        quadratic_lo = np.min(quadratic, axis=0)
+        quadratic_hi = np.max(quadratic, axis=0)
+        squared_hi = np.maximum(delta_lo * delta_lo, delta_hi * delta_hi)
         parameter_bounds = []
         for parameter in range(beta.shape[1]):
             products = np.stack((
@@ -430,6 +512,13 @@ def _local_correction_plan(baseline: list[dict], coefficient_rows: list[dict]):
                 beta_hi[parameter] * delta_hi))
             parameter_bounds.append((float(np.sum(np.min(products, axis=0))),
                                      float(np.sum(np.max(products, axis=0)))))
+            q_products = np.stack((np.zeros_like(squared_hi),
+                                   quadratic_lo[parameter] * squared_hi,
+                                   quadratic_hi[parameter] * squared_hi))
+            lo, hi = parameter_bounds[-1]
+            parameter_bounds[-1] = (
+                lo + float(np.sum(np.min(q_products, axis=0))),
+                hi + float(np.sum(np.max(q_products, axis=0))))
         memory_radius = max(abs(parameter_bounds[2][0]),
                             abs(parameter_bounds[2][1]))
         lo = parameter_bounds[0][0] - memory_radius \
@@ -506,7 +595,8 @@ def _atomic_savez(path: Path, **arrays) -> None:
 def precompute_artifact_node(run_directories, node_estimates, output_directory,
                              index: int, bl, propensity_offsets: int = 128,
                              propensity_workers: int = 1,
-                             coefficient_rows_path=None) -> Path:
+                             coefficient_rows_path=None,
+                             coefficient_release_policy: str = "strict") -> Path:
     """Build the independent geometry and sampler payload for one node.
 
     This is the unit executed by the Negishi Slurm array.  The final aggregator
@@ -527,7 +617,8 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     nodes = _load_node_estimates(estimate_inputs, grouped)
     coefficient_rows = _coefficient_rows_from_cache(
         nodes, coefficient_rows_path,
-        full_validation=coefficient_rows_path is None)
+        full_validation=coefficient_rows_path is None,
+        allowed_release_policy=coefficient_release_policy)
     baseline = sorted(
         (node for node in nodes if int(node["ensemble_id"]) == 0),
         key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
@@ -896,7 +987,8 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
 def build_artifact(run_directories, output_directory, bl=None,
                    n_bootstrap: int = 200, node_estimates=None,
                    propensity_offsets: int = 128,
-                   precomputed_directory=None, coefficient_rows_path=None) -> dict:
+                   precomputed_directory=None, coefficient_rows_path=None,
+                   coefficient_release_policy: str = "strict") -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -917,7 +1009,9 @@ def build_artifact(run_directories, output_directory, bl=None,
     if not baseline:
         raise ValueError("artifact requires baseline ensemble_id=0 nodes")
     baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
-    coefficient_rows = _coefficient_rows_from_cache(nodes, coefficient_rows_path)
+    coefficient_rows = _coefficient_rows_from_cache(
+        nodes, coefficient_rows_path,
+        allowed_release_policy=coefficient_release_policy)
     correction_plan, correction_bounds, correction_digest = _local_correction_plan(
         baseline, coefficient_rows)
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]
@@ -1015,6 +1109,18 @@ def build_artifact(run_directories, output_directory, bl=None,
     beta_se = np.array([row["beta_se"] for row in coefficient_rows], dtype=float) \
         if coefficient_rows else np.empty_like(beta)
     beta_deployed = np.array([row["beta_deployed"] for row in coefficient_rows], dtype=bool) \
+        if coefficient_rows else np.empty_like(beta, dtype=bool)
+    beta_quadratic = np.array([
+        row.get("beta_quadratic", np.zeros_like(row["beta"]))
+        for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty_like(beta)
+    beta_quadratic_se = np.array([
+        row.get("beta_quadratic_se", np.zeros_like(row["beta_se"]))
+        for row in coefficient_rows], dtype=float) \
+        if coefficient_rows else np.empty_like(beta)
+    beta_quadratic_deployed = np.array([
+        row.get("beta_quadratic_deployed", row["beta_deployed"])
+        for row in coefficient_rows], dtype=bool) \
         if coefficient_rows else np.empty_like(beta, dtype=bool)
     beta_feature_center = np.array([row["feature_center"] for row in coefficient_rows],
                                    dtype=float) \
@@ -1131,6 +1237,9 @@ def build_artifact(run_directories, output_directory, bl=None,
         correction_trust_amplitude=np.array(CENTRAL_AMPLITUDE),
         beta_trust_amplitude=beta_trust_amplitude,
         beta_coordinates=beta_coordinates, beta=beta, beta_se=beta_se,
+        beta_quadratic=beta_quadratic,
+        beta_quadratic_se=beta_quadratic_se,
+        beta_quadratic_deployed=beta_quadratic_deployed,
         beta_deployed=beta_deployed, beta_feature_center=beta_feature_center,
         beta_feature_lower=beta_feature_lower,
         beta_feature_upper=beta_feature_upper,
@@ -1154,7 +1263,12 @@ def build_artifact(run_directories, output_directory, bl=None,
         "diagnostics": list(DIAGNOSTIC_NAMES),
         "n_runs": len(paths), "n_nodes": len(nodes), "n_baseline_nodes": len(baseline),
         "n_coefficient_nodes": len(coefficient_rows),
-        "coefficient_fit": "shared_baseline_gls_central_amplitudes_multivariate_v2",
+        "coefficient_fit": (coefficient_rows[0].get("fit_method")
+                            if coefficient_rows else None),
+        "coefficient_release_policy": coefficient_release_policy,
+        "artifact_status": ("candidate_not_deployable_pending_hcs_usf_validation"
+                            if coefficient_release_policy != "strict" else
+                            "production_build_requires_external_validation"),
         "correction_parameters": list(CORRECTION_PARAMETER_NAMES),
         "correction_trust_amplitude": CENTRAL_AMPLITUDE,
         "correction_trust_amplitudes": sorted(

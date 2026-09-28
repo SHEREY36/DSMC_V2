@@ -33,7 +33,11 @@ INDEX=${SLURM_ARRAY_TASK_ID:?}
 
 while (( INDEX < ROWS )); do
   COEFFICIENT_ARGS=()
-  [[ -n "${COEFFICIENT_ROWS:-}" ]] && COEFFICIENT_ARGS+=(--coefficient-rows "$COEFFICIENT_ROWS")
+  if [[ -n "${COEFFICIENT_ROWS:-}" ]]; then
+    COEFFICIENT_ARGS+=(--coefficient-rows "$COEFFICIENT_ROWS")
+    COEFFICIENT_ARGS+=(--coefficient-release-policy \
+      "${COEFFICIENT_RELEASE_POLICY:-strict}")
+  fi
   PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     hpc/python.sh hpc/precompute_artifact_task.py \
       --manifest "$MANIFEST" --node-estimates "${NODE_ESTIMATES[@]}" \

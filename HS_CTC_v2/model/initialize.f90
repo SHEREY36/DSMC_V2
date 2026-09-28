@@ -133,6 +133,12 @@
 		write(1011,'(A,I0,A)') '  "nsamples": ', NSAMPLES, ','
 		write(1011,'(A,I0,A)') '  "seed": ', RUN_SEED, ','
 		write(1011,'(A,I0,A)') '  "ensemble_id": ', ENSEMBLE_ID, ','
+		IF (REPLAY_MODE) THEN
+			write(1011,'(A)') '  "sampling_mode": "dsmc_post_ntc_replay_v1",'
+			write(1011,'(A,I0,A)') '  "replay_record_count": ', REPLAY_RECORD_COUNT, ','
+		ELSE
+			write(1011,'(A)') '  "sampling_mode": "isotropic_collision_flux_v1",'
+		END IF
 		write(1011,'(A)') '  "rng_contract": "event_stream_common_across_alpha",'
 		write(1011,'(A,A,A)') '  "output_mode": "', TRIM(OUTPUT_MODE), '",' 
 		write(1011,'(A)') '  "normal_contact_velocity": "translational_relative_velocity_only",'

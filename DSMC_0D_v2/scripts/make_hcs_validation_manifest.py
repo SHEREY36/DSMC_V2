@@ -100,7 +100,8 @@ def main() -> None:
               "use 0 for the exact every-time-step reference"))
     parser.add_argument("--include-diagnostics", action="store_true")
     parser.add_argument("--mode", choices=("compact", "evidence", "full-domain",
-                                            "learned-extremes"),
+                                            "learned-extremes",
+                                            "full-domain-extremes"),
                         default="compact")
     parser.add_argument("--artifact")
     parser.add_argument(
@@ -109,7 +110,7 @@ def main() -> None:
     parser.add_argument(
         "--theta0", type=float, action="append", default=[],
         help=("retain selected learned initial theta values; valid only for "
-              "--mode learned-extremes and may be repeated"))
+              "the learned-extreme modes and may be repeated"))
     args = parser.parse_args()
 
     if args.replicates < 1:
@@ -118,18 +119,19 @@ def main() -> None:
         parser.error("--state-update-cpp must be nonnegative")
     rows = []
     learned_starts = None
-    if args.mode in ("full-domain", "learned-extremes"):
+    if args.mode in ("full-domain", "learned-extremes",
+                     "full-domain-extremes"):
         if not args.artifact:
             parser.error(f"--artifact is required for --mode {args.mode}")
         artifact = Path(args.artifact)
         if not artifact.is_file():
             parser.error(f"artifact does not exist: {artifact}")
         cases = full_domain_cases(artifact)
-        if args.mode == "learned-extremes":
+        if args.mode in ("learned-extremes", "full-domain-extremes"):
             learned_starts = learned_extreme_starts(artifact)
     else:
         if args.theta0:
-            parser.error("--theta0 is valid only for --mode learned-extremes")
+            parser.error("--theta0 is valid only for a learned-extreme mode")
         cases = GATE_CASES + (DIAGNOSTIC_CASES if args.include_diagnostics else ())
     if args.case:
         requested = set()

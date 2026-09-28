@@ -8,6 +8,9 @@
 	double precision :: TCOLL, dt
 	integer(int64) :: RUN_SEED = 12345_int64
 	integer :: ENSEMBLE_ID = 0
+	logical :: REPLAY_MODE = .FALSE.
+	character(len=512) :: REPLAY_FILE = ''
+	integer(int64) :: REPLAY_RECORD_COUNT = 0_int64
 	double precision :: TTR_INPUT = 1.D0, TROT_INPUT = 1.D0, AR_INPUT = 1.D0
 	character(len=16) :: OUTPUT_MODE = 'v2'
 	logical :: WRITE_LEGACY = .FALSE., WRITE_V2 = .TRUE.

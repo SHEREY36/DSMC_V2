@@ -544,6 +544,16 @@ def main() -> None:
         offgrid = matching(fine, coordinate_role="interpolation_holdout")
         stage_pass = bool(complete and sphere_pass and corrected_pass and offgrid
                           and all(case["internal_physics_pass"] for case in offgrid))
+    elif mode == "response-validation":
+        response_holdouts = matching(
+            fine, coordinate_role="response_interpolation_holdout")
+        stage_pass = bool(
+            complete and sphere_pass and corrected_pass and uncorrected_pass
+            and len(paired_comparisons) == 33
+            and all(item["internal_pair_pass"] for item in paired_comparisons)
+            and len(response_holdouts) == 24
+            and all(item["internal_physics_pass"] for item in response_holdouts)
+            and correction_coverage_pass)
     else:
         raise SystemExit(f"unknown campaign mode {mode}")
     summary = {

@@ -143,7 +143,8 @@ def _pair_modal_energies(state, p1: int, p2: int, v1: np.ndarray,
 
 def run_simulation(config: dict, seed: int, output_path: str | Path,
                    pressure_path: str | Path | None = None,
-                   orientation_path: str | Path | None = None) -> dict:
+                   orientation_path: str | Path | None = None,
+                   pair_observer=None) -> dict:
     """Run one realization while preserving the v1 clock and scalar kernel."""
     flow = config.get("flow", {})
     flow_mode = flow.get("mode", "hcs")
@@ -486,7 +487,17 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 # velocity on the second event. Its frequency is therefore a
                 # direct and inexpensive time-step quality diagnostic.
                 step_collision_particles: set[int] = set()
-                for position in accepted:
+                if pair_observer is not None and len(accepted):
+                    observed_p1 = workspace.p1[accepted].copy()
+                    observed_p2 = workspace.p2[accepted].copy()
+                    observed_v1 = workspace.v1[accepted].copy()
+                    observed_v2 = workspace.v2[accepted].copy()
+                    observed_w1 = state.omega[observed_p1].copy()
+                    observed_w2 = state.omega[observed_p2].copy()
+                    observed_u1 = state.axis[observed_p1].copy()
+                    observed_u2 = state.axis[observed_p2].copy()
+                    observed_mean_velocity = np.mean(state.velocity, axis=0)
+                for accepted_index, position in enumerate(accepted):
                     p1, p2 = int(workspace.p1[position]), int(workspace.p2[position])
                     normal = workspace.eij[position].copy()
                     v1, v2 = state.velocity[p1].copy(), state.velocity[p2].copy()
@@ -495,6 +506,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     if cr < 0.0:
                         normal, cr = -normal, -cr
                     speed = float(np.linalg.norm(vrel))
+                    if pair_observer is not None:
+                        pair_observer.observe(
+                            tau=collisions / float(count),
+                            v1=observed_v1[accepted_index],
+                            v2=observed_v2[accepted_index],
+                            omega1=observed_w1[accepted_index],
+                            omega2=observed_w2[accepted_index],
+                            axis1=observed_u1[accepted_index],
+                            axis2=observed_u2[accepted_index],
+                            mean_velocity=observed_mean_velocity, trot=trot)
                     pair_thermal_before = None
                     if flow_mode == "usf":
                         pair_thermal_before = float(
@@ -754,6 +775,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "exact_initial_temperatures": exact_initial_temperatures,
         "non_gaussian": non_gaussian_summary,
     }
+    if pair_observer is not None and hasattr(pair_observer, "diagnostics"):
+        diagnostics["ctc_replay_sampling"] = pair_observer.diagnostics()
     if audit_enabled:
         accepted = int(audit["accepted_pairs"])
         post_ntc = int(audit["post_ntc_pairs"])

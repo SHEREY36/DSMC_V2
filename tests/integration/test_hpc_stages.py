@@ -196,6 +196,25 @@ class HPCStageTests(unittest.TestCase):
                              {0.0125, 0.2, 2.0})
             self.assertNotIn(1.0, {float(row["theta0"]) for row in rows})
 
+            promotion_manifest = Path(temporary) / "far_hcs_promotion.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts"
+                    / "make_hcs_validation_manifest.py"),
+                "--mode", "full-domain-extremes", "--artifact", str(artifact),
+                "--replicates", "2", "--output", str(promotion_manifest),
+                "--results", str(Path(temporary) / "promotion_results"),
+            ], check=True, capture_output=True, text=True)
+            with promotion_manifest.open(newline="") as handle:
+                promotion_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(promotion_rows), len(rows))
+            self.assertEqual({row["campaign_mode"] for row in promotion_rows},
+                             {"full-domain-extremes"})
+            self.assertTrue(all(
+                float(row["theta0"]) <= 0.2 + 1.0e-12
+                or float(row["theta0"]) >= 2.0 - 1.0e-12
+                for row in promotion_rows))
+
         learned_submitter = (ROOT / "hpc" / "submit_hcs_learned_low.sh").read_text()
         self.assertIn("--theta0 0.0125 --theta0 0.2", learned_submitter)
         self.assertIn("12 * 2 * REPLICATES", learned_submitter)
@@ -361,6 +380,125 @@ class HPCStageTests(unittest.TestCase):
             self.assertEqual(subprocess.run(command).returncode, 0)
             artifact.write_bytes(b"candidate-b")
             self.assertNotEqual(subprocess.run(command).returncode, 0)
+
+    def test_nonlinear_usf_campaign_covers_full_rod_grid_and_holdouts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "base.npz"
+            artifact.write_bytes(b"frozen-base-artifact")
+            reference = (ROOT / "DSMC_0D_v2" / "reference"
+                         / "usf_dem_fresh_v1.csv")
+            harvest = root / "harvest.csv"
+            subprocess.run([
+                sys.executable, str(ROOT / "hpc" / "make_usf_response_manifest.py"),
+                "--tag", "contract", "--output", str(harvest),
+                "--results", str(root / "harvest"), "--artifact", str(artifact),
+                "--reference", str(reference), "--particles", "20000",
+                "--reservoir-capacity", "100000",
+            ], check=True, capture_output=True, text=True)
+            with harvest.open(newline="") as handle:
+                harvest_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(harvest_rows), 42)
+            self.assertEqual(
+                {float(row["aspect_ratio"]) for row in harvest_rows},
+                {1.1, 1.2, 1.35, 1.5, 2.0, 2.5, 3.0})
+            self.assertEqual(
+                {row["initial_branch"] for row in harvest_rows}, {"cold", "hot"})
+
+            validation = root / "validation.csv"
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts"
+                    / "make_usf_study_manifest.py"),
+                "--mode", "response-validation", "--artifact", str(artifact),
+                "--reference", str(reference), "--output", str(validation),
+                "--results", str(root / "validation"), "--particles", "1000",
+                "--replicates", "2",
+            ], check=True, capture_output=True, text=True)
+            with validation.open(newline="") as handle:
+                validation_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(validation_rows), 276)
+            roles = {role: sum(row["coordinate_role"] == role
+                               for row in validation_rows)
+                     for role in {row["coordinate_role"]
+                                  for row in validation_rows}}
+            self.assertEqual(roles, {
+                "sphere_control": 12,
+                "direct_response_validation": 168,
+                "response_interpolation_holdout": 96,
+            })
+
+        submitter = (ROOT / "hpc" / "submit_usf_nonlinear_pipeline.sh").read_text()
+        self.assertIn("--array=0-167%64", submitter)
+        self.assertIn("--array=0-167%85", submitter)
+        self.assertIn("--array=0-127%128", submitter)
+        self.assertIn("--array=0-275%144", submitter)
+        self.assertIn("PIPELINE_DRY_RUN", submitter)
+        self.assertIn("afterok:$HCS_QA_JOB:$USF_QA_JOB", submitter)
+
+    def test_nonlinear_candidate_promotion_binds_all_evidence_to_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "closure_v2.npz"
+            artifact.write_bytes(b"nonlinear-candidate")
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            coefficient_hash = "coefficient-row-digest"
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "artifact_status": (
+                    "candidate_not_deployable_pending_hcs_usf_validation"),
+                "correction_digest": coefficient_hash,
+            }))
+            direct = root / "direct.json"
+            direct.write_text(json.dumps({
+                "energy_release_alphas": [0.5, 0.8, 0.95],
+                "angular_release_alphas": [0.5, 0.8, 0.95],
+                "coefficient_rows_sha256": coefficient_hash,
+            }))
+            hcs = root / "hcs.json"
+            hcs.write_text(json.dumps({
+                "full_domain_physics_gate_pass": True,
+                "production_gate_pass": True,
+                "artifact_sha256": artifact_hash,
+            }))
+            usf = root / "usf.json"
+            usf.write_text(json.dumps({
+                "stage_pass": True,
+                "strict_correction_coverage_pass": True,
+                "artifact_sha256_values": [artifact_hash],
+            }))
+            output = root / "promotion.json"
+            command = [
+                sys.executable,
+                str(ROOT / "DSMC_0D_v2" / "scripts"
+                    / "finalize_usf_response_candidate.py"),
+                "--artifact", str(artifact), "--direct-report", str(direct),
+                "--hcs-summary", str(hcs), "--usf-summary", str(usf),
+                "--output", str(output),
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(output.read_text())["pass"])
+            promoted = json.loads(manifest.read_text())
+            self.assertEqual(
+                promoted["artifact_status"],
+                "deployment_ready_hcs_usf_internal_v1")
+            self.assertFalse(promoted["dem_used_as_fit_target"])
+
+            # A report produced from different coefficient rows must fail
+            # closed even when every scalar HCS/USF flag says pass.
+            manifest.write_text(json.dumps({
+                "artifact_status": (
+                    "candidate_not_deployable_pending_hcs_usf_validation"),
+                "correction_digest": coefficient_hash,
+            }))
+            mismatched = json.loads(direct.read_text())
+            mismatched["coefficient_rows_sha256"] = "different-rows"
+            direct.write_text(json.dumps(mismatched))
+            failed = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn(
+                "direct_response_coefficients_do_not_match_artifact",
+                json.loads(output.read_text())["reasons"])
 
 
 if __name__ == "__main__":

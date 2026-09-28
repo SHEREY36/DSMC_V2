@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--gamma-max-table", required=True)
     parser.add_argument("--one-hit-table", required=True)
     parser.add_argument("--coefficient-rows")
+    parser.add_argument("--coefficient-release-policy", default="strict")
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
     args = parser.parse_args()
@@ -36,7 +37,8 @@ def main() -> None:
         runs, args.node_estimates, args.output, args.index, bl,
         propensity_offsets=args.propensity_offsets,
         propensity_workers=args.workers,
-        coefficient_rows_path=args.coefficient_rows)
+        coefficient_rows_path=args.coefficient_rows,
+        coefficient_release_policy=args.coefficient_release_policy)
     print(f"artifact node {args.index} complete: {target}", flush=True)
 
 

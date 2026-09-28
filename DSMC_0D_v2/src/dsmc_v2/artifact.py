@@ -269,6 +269,13 @@ class VariationalClosure:
         if self.beta.ndim == 2:
             self.beta = self.beta[:, None, :]
             self.beta_deployed = self.beta_deployed[:, None, :]
+        self.beta_quadratic = np.asarray(
+            data["beta_quadratic"] if "beta_quadratic" in data.files
+            else np.zeros_like(self.beta), dtype=float)
+        self.beta_quadratic_deployed = np.asarray(
+            data["beta_quadratic_deployed"]
+            if "beta_quadratic_deployed" in data.files
+            else self.beta_deployed, dtype=bool)
         self.beta_feature_center = np.asarray(
             data["beta_feature_center"] if "beta_feature_center" in data.files
             else np.zeros((len(self.beta_coordinates), len(FEATURE_NAMES))), dtype=float)
@@ -285,6 +292,10 @@ class VariationalClosure:
                                len(FEATURE_NAMES)) \
                 or self.beta_deployed.shape != self.beta.shape:
             raise ValueError("natural-parameter response tensor has invalid shape")
+        if self.beta_quadratic.shape != self.beta.shape \
+                or self.beta_quadratic_deployed.shape != self.beta.shape \
+                or np.any(~np.isfinite(self.beta_quadratic)):
+            raise ValueError("quadratic response tensor has invalid shape")
         if self.beta_feature_center.shape != (len(self.beta_coordinates),
                                                len(FEATURE_NAMES)):
             raise ValueError("beta_feature_center must be (coefficient node, feature)")
@@ -311,7 +322,9 @@ class VariationalClosure:
         for axis in range(3):
             if not np.all(np.diff(np.unique(self.coordinates[:, axis])) > 0.0):
                 raise ValueError("artifact physical grid axes must be strictly monotone")
-        if corrections_enabled and (self.beta_deployed.size == 0 or not np.any(self.beta_deployed)):
+        if corrections_enabled and (self.beta_deployed.size == 0 or not (
+                np.any(self.beta_deployed)
+                or np.any(self.beta_quadratic_deployed))):
             raise ValueError("natural-parameter corrections requested but no beta is deployed")
         self.corrections_enabled = bool(corrections_enabled)
         self.out_of_domain_queries = 0
@@ -322,6 +335,10 @@ class VariationalClosure:
         self._coordinate_index = {
             tuple(float(value) for value in row): index
             for index, row in enumerate(self.coordinates)
+        }
+        self._beta_coordinate_index = {
+            tuple(float(value) for value in row): index
+            for index, row in enumerate(self.beta_coordinates)
         }
         self._coordinate_axes = tuple(
             np.unique(self.coordinates[:, axis]) for axis in range(3))
@@ -337,6 +354,8 @@ class VariationalClosure:
         if len(self.beta_coordinates) >= 4:
             self._interpolators["beta"] = LinearNDInterpolator(
                 self.beta_coordinates, self.beta)
+            self._interpolators["beta_quadratic"] = LinearNDInterpolator(
+                self.beta_coordinates, self.beta_quadratic)
             self._interpolators["beta_feature_center"] = LinearNDInterpolator(
                 self.beta_coordinates, self.beta_feature_center)
             self._interpolators["beta_feature_lower"] = LinearNDInterpolator(
@@ -346,6 +365,9 @@ class VariationalClosure:
         if len(self.beta_coordinates):
             self._interpolators["beta_mask"] = NearestNDInterpolator(
                 self.beta_coordinates, self.beta_deployed.astype(float))
+            self._interpolators["beta_quadratic_mask"] = NearestNDInterpolator(
+                self.beta_coordinates,
+                self.beta_quadratic_deployed.astype(float))
         if len(self.coordinates):
             self._interpolators["joint_mask"] = NearestNDInterpolator(
                 self.coordinates, self.joint_deployed.astype(float))
@@ -499,23 +521,52 @@ class VariationalClosure:
         atable = self._weighted(
             self.angular_tables, vertex_indices, vertex_weights).astype(float)
         beta = np.zeros((len(self.correction_parameter_names), len(FEATURE_NAMES)))
+        beta_quadratic = np.zeros_like(beta)
         parameter_correction = np.zeros(len(self.correction_parameter_names))
         if self.corrections_enabled:
-            beta = self._interpolate(self.beta_coordinates, self.beta,
-                                     query, "natural-parameter coefficients",
-                                     self._interpolators.get("beta")).astype(float)
-            feature_center = self._interpolate(
-                self.beta_coordinates, self.beta_feature_center, query,
-                "correction feature centre",
-                self._interpolators.get("beta_feature_center")).astype(float)
-            feature_lower = self._interpolate(
-                self.beta_coordinates, self.beta_feature_lower, query,
-                "correction feature lower bound",
-                self._interpolators.get("beta_feature_lower")).astype(float)
-            feature_upper = self._interpolate(
-                self.beta_coordinates, self.beta_feature_upper, query,
-                "correction feature upper bound",
-                self._interpolators.get("beta_feature_upper")).astype(float)
+            beta_vertex_indices = [self._beta_coordinate_index.get(tuple(
+                float(value) for value in self.coordinates[index]))
+                for index in vertex_indices]
+            if all(index is not None for index in beta_vertex_indices):
+                beta_vertex_indices = np.asarray(beta_vertex_indices, dtype=int)
+                beta = self._weighted(
+                    self.beta, beta_vertex_indices, vertex_weights).astype(float)
+                beta_quadratic = self._weighted(
+                    self.beta_quadratic, beta_vertex_indices,
+                    vertex_weights).astype(float)
+                feature_center = self._weighted(
+                    self.beta_feature_center, beta_vertex_indices,
+                    vertex_weights).astype(float)
+                feature_lower = self._weighted(
+                    self.beta_feature_lower, beta_vertex_indices,
+                    vertex_weights).astype(float)
+                feature_upper = self._weighted(
+                    self.beta_feature_upper, beta_vertex_indices,
+                    vertex_weights).astype(float)
+            else:
+                # Backward compatibility for historical partial correction
+                # surfaces. Complete candidates use the same tensor/Delaunay
+                # physical stencil as every base-law field above.
+                beta = self._interpolate(
+                    self.beta_coordinates, self.beta, query,
+                    "natural-parameter coefficients",
+                    self._interpolators.get("beta")).astype(float)
+                beta_quadratic = self._interpolate(
+                    self.beta_coordinates, self.beta_quadratic, query,
+                    "quadratic natural-parameter coefficients",
+                    self._interpolators.get("beta_quadratic")).astype(float)
+                feature_center = self._interpolate(
+                    self.beta_coordinates, self.beta_feature_center, query,
+                    "correction feature centre",
+                    self._interpolators.get("beta_feature_center")).astype(float)
+                feature_lower = self._interpolate(
+                    self.beta_coordinates, self.beta_feature_lower, query,
+                    "correction feature lower bound",
+                    self._interpolators.get("beta_feature_lower")).astype(float)
+                feature_upper = self._interpolate(
+                    self.beta_coordinates, self.beta_feature_upper, query,
+                    "correction feature upper bound",
+                    self._interpolators.get("beta_feature_upper")).astype(float)
             raw_outside = ((features < feature_lower)
                            | (features > feature_upper))
             domain_outside = ((domain_features < feature_lower)
@@ -527,9 +578,13 @@ class VariationalClosure:
             exact_beta = self._exact(self.beta_coordinates, query)
             if len(exact_beta):
                 deployed = self.beta_deployed[exact_beta[0]]
+                quadratic_deployed = self.beta_quadratic_deployed[exact_beta[0]]
             else:
                 deployed = np.asarray(
                     self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
+                quadratic_deployed = np.asarray(
+                    self._interpolators["beta_quadratic_mask"](
+                        query[None, :]))[0] >= 0.5
             # The response surface is evidence for a local correction, not a
             # license to extrapolate it.  Outside its measured feature box,
             # retain the calibrated base collision law and suppress every
@@ -538,9 +593,13 @@ class VariationalClosure:
             # retained statistical window.
             if ood:
                 beta.fill(0.0)
+                beta_quadratic.fill(0.0)
             else:
                 beta *= deployed
-                parameter_correction = beta @ (features - feature_center)
+                beta_quadratic *= quadratic_deployed
+                feature_delta = features - feature_center
+                parameter_correction = (beta @ feature_delta
+                                        + beta_quadratic @ (feature_delta * feature_delta))
             correction = dict(zip(self.correction_parameter_names,
                                   parameter_correction.tolist()))
             for index, name in enumerate(("lambda1", "lambda2", "lambda3", "lambda4")):

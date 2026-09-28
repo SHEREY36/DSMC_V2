@@ -21,7 +21,7 @@ CORRECTION_PARAMETER_NAMES = tuple(name for _, name in CORRECTION_PARAMETERS)
 LINEARITY_TOLERANCE = 0.15
 
 
-def fit_correction_coefficients(nodes: list[dict]) -> dict:
+def fit_correction_coefficients(nodes: list[dict], response_order: int = 1) -> dict:
     """Fit all six natural-parameter responses at one physical grid node.
 
     Central ``|eta|=0.25`` excitations determine the Jacobian and the
@@ -39,10 +39,13 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
 
     fits = {}
     beta, beta_se, deployed = [], [], []
+    beta_quadratic, beta_quadratic_se, quadratic_deployed = [], [], []
     elastic = np.isclose(float(baseline["alpha"]), 1.0, atol=1.0e-12, rtol=0.0)
     structurally_zero = {"lambda1", "lambda2", "lambda4"} if elastic else set()
     for section, name in CORRECTION_PARAMETERS:
-        fitted = fit_response(baseline, excited, FEATURE_NAMES, section, name)
+        fitted = fit_response(
+            baseline, excited, FEATURE_NAMES, section, name,
+            polynomial_order=response_order)
         row = np.array([fitted["coefficients"][feature] for feature in FEATURE_NAMES])
         row_se = np.array([
             fitted["coefficient_standard_errors"][feature]
@@ -52,9 +55,20 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
             fitted["coefficient_deployed"][feature]
             for feature in FEATURE_NAMES
         ], dtype=bool)
+        row_quadratic = np.array([
+            fitted.get("quadratic_coefficients", {}).get(feature, 0.0)
+            for feature in FEATURE_NAMES])
+        row_quadratic_se = np.array([
+            fitted.get("quadratic_coefficient_standard_errors", {}).get(
+                feature, 0.0) for feature in FEATURE_NAMES])
+        row_quadratic_deployed = np.array([
+            fitted.get("quadratic_coefficient_deployed", {}).get(
+                feature, False) for feature in FEATURE_NAMES], dtype=bool)
         if name in structurally_zero:
             row[:] = 0.0
+            row_quadratic[:] = 0.0
             row_deployed[:] = False
+            row_quadratic_deployed[:] = False
             fitted["elastic_constraint_applied"] = True
             fitted["immaterial_response_suppressed"] = False
             fitted["linearity_pass"] = True
@@ -64,7 +78,9 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
             # amplifies feature noise and can make an otherwise harmless
             # held-out relative error block the entire physical node.
             row[:] = 0.0
+            row_quadratic[:] = 0.0
             row_deployed[:] = False
+            row_quadratic_deployed[:] = False
             fitted["elastic_constraint_applied"] = False
             fitted["immaterial_response_suppressed"] = True
             fitted["linearity_pass"] = True
@@ -83,6 +99,9 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
         beta.append(row)
         beta_se.append(row_se)
         deployed.append(row_deployed)
+        beta_quadratic.append(row_quadratic)
+        beta_quadratic_se.append(row_quadratic_se)
+        quadratic_deployed.append(row_quadratic_deployed)
 
     ranks = {fit["design_rank"] for fit in fits.values()}
     conditions = [fit["condition_number_scaled"] for fit in fits.values()]
@@ -99,10 +118,17 @@ def fit_correction_coefficients(nodes: list[dict]) -> dict:
         "beta": np.asarray(beta).tolist(),
         "beta_se": np.asarray(beta_se).tolist(),
         "beta_deployed": np.asarray(deployed).tolist(),
-        "fit_method": "shared_baseline_gls_central_amplitudes_multivariate_v2",
+        "beta_quadratic": np.asarray(beta_quadratic).tolist(),
+        "beta_quadratic_se": np.asarray(beta_quadratic_se).tolist(),
+        "beta_quadratic_deployed": np.asarray(
+            quadratic_deployed, dtype=bool).tolist(),
+        "response_order": response_order,
+        "fit_method": ("shared_baseline_gls_additive_quadratic_v1"
+                       if response_order == 2 else
+                       "shared_baseline_gls_central_amplitudes_multivariate_v2"),
         "design_rank": min(ranks),
         "condition_number": max(conditions),
-        "identifiable": bool(ranks == {len(FEATURE_NAMES)}),
+        "identifiable": bool(ranks == {response_order * len(FEATURE_NAMES)}),
         "parameter_fits": fits,
         "validation_relative_rmse": validation,
         "maximum_validation_relative_rmse": max(

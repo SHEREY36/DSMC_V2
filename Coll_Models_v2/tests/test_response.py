@@ -106,6 +106,78 @@ class ResponseFitTests(unittest.TestCase):
         self.assertTrue(fitted["linearity_pass"])
         self.assertTrue(np.all(fitted["beta_deployed"]))
 
+    def test_additive_quadratic_fit_uses_035_and_holds_out_05(self):
+        count = len(FEATURE_NAMES)
+        linear = np.linspace(-0.4, 0.5, count)
+        quadratic = np.linspace(0.15, -0.1, count)
+        baseline = {
+            "alpha": 0.8, "ensemble_id": 0,
+            "cell_features": dict(zip(FEATURE_NAMES, np.zeros(count))),
+            "energy": {"lambda1": 0.0},
+            "uncertainty": {"lambda1": {"standard_error": 1.0e-6}},
+        }
+        nodes = []
+        for feature_index, family in enumerate(FEATURE_NAMES):
+            for eta in (-0.5, -0.35, -0.25, 0.25, 0.35, 0.5):
+                delta = np.zeros(count); delta[feature_index] = eta
+                nodes.append({
+                    "ensemble_id": len(nodes) + 1,
+                    "cell_features": dict(zip(FEATURE_NAMES, delta)),
+                    "energy": {"lambda1": float(
+                        linear @ delta + quadratic @ (delta * delta))},
+                    "uncertainty": {"lambda1": {"standard_error": 1.0e-6}},
+                    "excitation": {"family": family, "eta": eta},
+                })
+        from coll_models_v2.response import fit_response
+        fitted = fit_response(
+            baseline, nodes, FEATURE_NAMES, "energy", "lambda1",
+            polynomial_order=2)
+        np.testing.assert_allclose(
+            [fitted["coefficients"][name] for name in FEATURE_NAMES],
+            linear, atol=1.0e-10)
+        np.testing.assert_allclose(
+            [fitted["quadratic_coefficients"][name] for name in FEATURE_NAMES],
+            quadratic, atol=1.0e-10)
+        self.assertEqual(fitted["design_rank"], 2 * count)
+        self.assertEqual(fitted["n_validation"], 2 * count)
+        self.assertLess(fitted["validation_relative_rmse"], 1.0e-10)
+
+    def test_quadratic_term_has_an_independent_deployment_mask(self):
+        count = len(FEATURE_NAMES)
+        baseline = {
+            "alpha": 0.8, "ensemble_id": 0,
+            "cell_features": dict(zip(FEATURE_NAMES, np.zeros(count))),
+            "energy": {name: 0.0 for section, name in CORRECTION_PARAMETERS
+                       if section == "energy"},
+            "angular": {name: 0.0 for section, name in CORRECTION_PARAMETERS
+                        if section == "angular"},
+            "uncertainty": {name: {"standard_error": 1.0e-6}
+                            for _, name in CORRECTION_PARAMETERS},
+        }
+        nodes = [baseline]
+        for feature_index, family in enumerate(FEATURE_NAMES):
+            for eta in (-0.5, -0.35, -0.25, 0.25, 0.35, 0.5):
+                delta = np.zeros(count); delta[feature_index] = eta
+                response = 0.4 * eta * eta
+                node = {
+                    "alpha": 0.8, "ensemble_id": len(nodes),
+                    "cell_features": dict(zip(FEATURE_NAMES, delta)),
+                    "energy": {}, "angular": {},
+                    "uncertainty": {name: {"standard_error": 1.0e-6}
+                                    for _, name in CORRECTION_PARAMETERS},
+                    "excitation": {"family": family, "eta": eta},
+                }
+                for section, name in CORRECTION_PARAMETERS:
+                    node[section][name] = response
+                nodes.append(node)
+        fitted = fit_correction_coefficients(nodes, response_order=2)
+        np.testing.assert_allclose(fitted["beta"], 0.0, atol=1.0e-12)
+        self.assertTrue(np.all(np.asarray(
+            fitted["beta_quadratic_deployed"])))
+        self.assertEqual(
+            np.asarray(fitted["beta_quadratic_deployed"]).shape,
+            np.asarray(fitted["beta_deployed"]).shape)
+
     def test_elastic_fit_enforces_detailed_balance_rows(self):
         center = np.zeros(len(FEATURE_NAMES))
         baseline = {

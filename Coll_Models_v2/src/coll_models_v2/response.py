@@ -13,6 +13,7 @@ import numpy as np
 
 
 CENTRAL_AMPLITUDE = 0.25
+QUADRATIC_TRAINING_AMPLITUDE = 0.35
 VALIDATION_AMPLITUDE = 0.50
 
 
@@ -26,8 +27,18 @@ def _standard_error(node: dict, name: str) -> float:
 
 
 def fit_response(baseline: dict, excited: list[dict], feature_names,
-                 section: str, parameter: str) -> dict:
-    """Fit central amplitudes with shared-baseline GLS and test on extremes."""
+                 section: str, parameter: str,
+                 polynomial_order: int = 1) -> dict:
+    """Fit a local invariant response with shared-baseline GLS.
+
+    Order one retains the original ``|eta|=0.25`` Jacobian fit.  Order two
+    uses both 0.25 and 0.35 amplitudes for the additive basis
+    ``[dx, dx**2]`` and still reserves 0.50 as an untouched extrapolation
+    test.  Cross-feature quadratic products are deliberately excluded: the
+    18 excitation families do not identify all 105 of them defensibly.
+    """
+    if polynomial_order not in (1, 2):
+        raise ValueError("response polynomial order must be one or two")
     feature_names = tuple(feature_names)
     base_features = baseline.get("cell_features") or baseline["proposal_features"]
     base_x = np.array([base_features[name] for name in feature_names], dtype=float)
@@ -43,12 +54,18 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
                       - _value(baseline, section, parameter) for node in usable])
     amplitude = np.abs(np.array([node["excitation"]["eta"] for node in usable],
                                 dtype=float))
-    train = np.isclose(amplitude, CENTRAL_AMPLITUDE)
+    train = (np.isclose(amplitude, CENTRAL_AMPLITUDE)
+             if polynomial_order == 1 else
+             (np.isclose(amplitude, CENTRAL_AMPLITUDE)
+              | np.isclose(amplitude, QUADRATIC_TRAINING_AMPLITUDE)))
     validate = np.isclose(amplitude, VALIDATION_AMPLITUDE)
-    if np.sum(train) < len(feature_names):
-        raise ValueError("too few central-amplitude observations for response fit")
+    design_all = (x_all if polynomial_order == 1
+                  else np.column_stack((x_all, x_all * x_all)))
+    parameter_count = polynomial_order * len(feature_names)
+    if np.sum(train) < parameter_count:
+        raise ValueError("too few training observations for response fit")
 
-    x, y = x_all[train], y_all[train]
+    x, y = design_all[train], y_all[train]
     excited_se = np.array([_standard_error(node, parameter) for node in usable])[train]
     base_se = _standard_error(baseline, parameter)
     finite = excited_se[np.isfinite(excited_se) & (excited_se > 0.0)]
@@ -66,7 +83,7 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
     def score(mask: np.ndarray) -> tuple[float | None, float | None]:
         if not np.any(mask):
             return None, None
-        residual = y_all[mask] - x_all[mask] @ beta
+        residual = y_all[mask] - design_all[mask] @ beta
         rmse = float(np.sqrt(np.mean(residual * residual)))
         response_scale = max(float(np.ptp(y_all[mask])),
                              float(np.max(np.abs(y_all[mask]))), 1.0e-12)
@@ -89,12 +106,16 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
     maximum_standardized_shift = float(np.max(
         np.abs(y_all) / np.maximum(
             np.hypot(base_se, all_excited_se), 1.0e-30)))
-    return {
+    count = len(feature_names)
+    result = {
         "feature_order": list(feature_names),
         "feature_center": base_x.tolist(),
-        "coefficients": dict(zip(feature_names, beta.tolist())),
-        "coefficient_standard_errors": dict(zip(feature_names, beta_se.tolist())),
-        "coefficient_deployed": dict(zip(feature_names, deployed.tolist())),
+        "polynomial_order": polynomial_order,
+        "coefficients": dict(zip(feature_names, beta[:count].tolist())),
+        "coefficient_standard_errors": dict(zip(
+            feature_names, beta_se[:count].tolist())),
+        "coefficient_deployed": dict(zip(
+            feature_names, deployed[:count].tolist())),
         "design_rank": int(np.linalg.matrix_rank(x)),
         "condition_number_scaled": float(np.linalg.cond(
             x / np.where(np.linalg.norm(x, axis=0) > 0.0,
@@ -108,5 +129,17 @@ def fit_response(baseline: dict, excited: list[dict], feature_names,
         "validation_rmse": validation_rmse,
         "validation_relative_rmse": validation_relative,
         "maximum_contribution_halfwidth": dict(zip(
-            feature_names, contribution_halfwidth.tolist())),
+            feature_names, contribution_halfwidth[:count].tolist())),
     }
+    if polynomial_order == 2:
+        result.update({
+            "quadratic_coefficients": dict(zip(
+                feature_names, beta[count:].tolist())),
+            "quadratic_coefficient_standard_errors": dict(zip(
+                feature_names, beta_se[count:].tolist())),
+            "quadratic_coefficient_deployed": dict(zip(
+                feature_names, deployed[count:].tolist())),
+            "quadratic_maximum_contribution_halfwidth": dict(zip(
+                feature_names, contribution_halfwidth[count:].tolist())),
+        })
+    return result

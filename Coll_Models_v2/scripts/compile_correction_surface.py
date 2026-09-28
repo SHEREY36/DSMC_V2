@@ -15,10 +15,13 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument(
         "--release-policy",
-        choices=("strict", "validated-angular-only-v1"), default="strict")
+        choices=("strict", "validated-angular-only-v1",
+                 "quadratic-evidence-v1"), default="strict")
+    parser.add_argument("--response-order", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
     payload = write_coefficient_rows(
-        args.node_estimates, args.output, release_policy=args.release_policy)
+        args.node_estimates, args.output, release_policy=args.release_policy,
+        response_order=args.response_order)
     print(json.dumps({key: payload[key] for key in (
         "schema", "release_policy", "n_source_nodes", "n_coefficient_nodes")},
         indent=2))

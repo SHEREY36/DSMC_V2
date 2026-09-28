@@ -156,6 +156,37 @@ def campaign_rows(mode: str, results: Path, particles: int, phi: float,
                            rate_scales=(1.0,), replicates=replicates,
                            particles=particles, phi=phi, results=results,
                            reference=reference)
+    elif mode == "response-validation":
+        # Paired base/candidate dynamics on every direct-response coordinate.
+        # No DEM value is a target or gate; its frozen table is used only by
+        # add_coordinate to shorten the cold/hot transient.
+        for alpha in (0.50, 0.80, 0.95):
+            add_coordinate(
+                rows, mode=mode, role="sphere_control", ar=1.0,
+                alpha=alpha, arm="sphere_exact", dt_values=(0.005,),
+                rate_scales=(1.0,), replicates=replicates,
+                particles=particles, phi=phi, results=results,
+                reference=reference)
+        for ar in ARTIFACT_ARS:
+            for alpha in (0.50, 0.80, 0.95):
+                for arm in ("uncorrected", "corrected"):
+                    add_coordinate(
+                        rows, mode=mode, role="direct_response_validation",
+                        ar=ar, alpha=alpha, arm=arm, dt_values=(0.005,),
+                        rate_scales=(1.0,), replicates=replicates,
+                        particles=particles, phi=phi, results=results,
+                        reference=reference)
+        # Untouched tensor-cell midpoints test interpolation across every AR
+        # interval and both inelastic alpha intervals. They are validation
+        # states only and never enter the direct-response fit.
+        for ar, alpha in INTERPOLATION_CASES:
+            for arm in ("uncorrected", "corrected"):
+                add_coordinate(
+                    rows, mode=mode, role="response_interpolation_holdout",
+                    ar=ar, alpha=alpha, arm=arm, dt_values=(0.005,),
+                    rate_scales=(1.0,), replicates=replicates,
+                    particles=particles, phi=phi, results=results,
+                    reference=reference)
     else:
         raise ValueError(f"unsupported mode: {mode}")
     return rows
@@ -163,7 +194,8 @@ def campaign_rows(mode: str, results: Path, particles: int, phi: float,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("numerics", "pilot", "full"), required=True)
+    parser.add_argument("--mode", choices=("numerics", "pilot", "full",
+                                            "response-validation"), required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--results", required=True)
     parser.add_argument("--reference", default="DSMC_0D_v2/reference/usf_dem_fresh_v1.csv")
@@ -177,7 +209,8 @@ def main() -> None:
         raise SystemExit("the production USF protocol requires at least 1000 particles")
     if not 0.0 < args.volume_fraction < 0.1:
         raise SystemExit("volume fraction must lie in (0, 0.1)")
-    replicates = args.replicates or (2 if args.mode == "numerics" else 4)
+    replicates = args.replicates or (
+        2 if args.mode in ("numerics", "response-validation") else 4)
     if not 1 <= replicates <= len(SEEDS):
         raise SystemExit(f"replicates must lie in [1,{len(SEEDS)}]")
     rows = campaign_rows(

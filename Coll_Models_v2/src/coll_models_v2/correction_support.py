@@ -21,6 +21,22 @@ HELDOUT_AMPLITUDE = 0.5
 TANGENT_MAXIMUM_TOLERANCE = 5.0e-3
 
 
+def response_increment(fitted: dict, features: np.ndarray) -> np.ndarray:
+    """Natural-parameter increment for the fitted local response order."""
+    deployed = np.asarray(fitted["beta_deployed"], dtype=bool)
+    linear = np.asarray(fitted["beta"], dtype=float) * deployed
+    delta = np.asarray(features, dtype=float) - np.asarray(
+        fitted["feature_center"], dtype=float)
+    result = linear @ delta
+    if int(fitted.get("response_order", 1)) >= 2:
+        quadratic_deployed = np.asarray(
+            fitted.get("beta_quadratic_deployed", deployed), dtype=bool)
+        quadratic = (np.asarray(fitted["beta_quadratic"], dtype=float)
+                     * quadratic_deployed)
+        result += quadratic @ (delta * delta)
+    return result
+
+
 def _memory_shift(energy: dict, z_in: float) -> float:
     if energy.get("kernel_form") == LOGIT_CUBIC_KERNEL:
         coefficients = np.asarray(energy["memory_coefficients"], dtype=float).copy()
@@ -99,14 +115,11 @@ def assess_heldout_support(baseline: dict, excited: list[dict], fitted: dict,
                 "reason": "incomplete_heldout_design"}
 
     probability = np.linspace(0.0, 1.0, 65)
-    beta = (np.asarray(fitted["beta"], dtype=float)
-            * np.asarray(fitted["beta_deployed"], dtype=bool))
-    center = np.asarray(fitted["feature_center"], dtype=float)
     baseline_energy, corrected_energy, exact_energy, tangent_error = [], [], [], []
     baseline_angle, corrected_angle = [], []
     for node in heldout:
         features = np.asarray([node["cell_features"][name] for name in FEATURE_NAMES])
-        delta = beta @ (features - center)
+        delta = response_increment(fitted, features)
         predicted = {"energy": dict(baseline["energy"]),
                      "angular": dict(baseline["angular"])}
         for index, (section, name) in enumerate(CORRECTION_PARAMETERS):
@@ -179,15 +192,12 @@ def assess_angular_support(baseline: dict, excited: list[dict], fitted: dict,
 
     parameter_names = tuple(fitted["parameter_order"])
     eta_indices = [parameter_names.index(name) for name in ("eta1", "eta2")]
-    beta = (np.asarray(fitted["beta"], dtype=float)
-            * np.asarray(fitted["beta_deployed"], dtype=bool))
-    center = np.asarray(fitted["feature_center"], dtype=float)
     probability = np.linspace(0.0, 1.0, 65)
     baseline_errors, corrected_errors = [], []
     for node in heldout:
         features = np.asarray([node["cell_features"][name]
                                for name in FEATURE_NAMES])
-        delta = beta @ (features - center)
+        delta = response_increment(fitted, features)
         exact = angular_quantiles(np.array([
             node["angular"]["eta1"], node["angular"]["eta2"]]), probability)
         base = angular_quantiles(np.array([

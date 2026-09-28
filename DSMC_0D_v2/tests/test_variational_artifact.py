@@ -97,6 +97,27 @@ class VariationalArtifactTests(unittest.TestCase):
             np.testing.assert_allclose(state["angular_parameters"], [0.06, -0.02])
             np.testing.assert_allclose(state["joint_parameters"], [0.16, -0.12, 0.3])
 
+    def test_quadratic_response_uses_its_own_mask(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            count = len(data["surface_coordinates"])
+            beta = np.zeros((count, 1, len(FEATURE_NAMES)))
+            quadratic = np.zeros_like(beta)
+            quadratic[:, 0, 0] = 0.7
+            data["beta"] = beta
+            data["beta_deployed"] = np.zeros_like(beta, dtype=bool)
+            data["beta_quadratic"] = quadratic
+            data["beta_quadratic_deployed"] = quadratic != 0.0
+            data["beta_feature_center"] = np.zeros(
+                (count, len(FEATURE_NAMES)))
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.2
+            state = closure.kernel_state(0.8, 0.1, 1.5, features)
+            self.assertAlmostEqual(state["energy_correction"], 0.7 * 0.2**2)
+
     def test_load_interpolate_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
@@ -164,6 +185,25 @@ class VariationalArtifactTests(unittest.TestCase):
             indices = state["energy_vertex_indices"]
             np.testing.assert_allclose(closure.coordinates[indices, 0], 0.8)
             self.assertAlmostEqual(float(np.sum(state["energy_vertex_weights"])), 1.0)
+
+    def test_correction_interpolation_uses_the_same_physical_stencil(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            data = dict(np.load(path, allow_pickle=False))
+            coordinates = data["surface_coordinates"]
+            beta = np.zeros((len(coordinates), 1, len(FEATURE_NAMES)))
+            beta[:, 0, 0] = np.where(
+                np.isclose(coordinates[:, 0], 0.8), 0.2, 9.0)
+            data["beta"] = beta
+            data["beta_deployed"] = beta != 0.0
+            data["beta_feature_center"] = np.zeros(
+                (len(coordinates), len(FEATURE_NAMES)))
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
+            state = closure.kernel_state(0.8, 0.75, 1.75, features)
+            self.assertAlmostEqual(state["energy_correction"], 0.02)
 
     def test_energy_sampler_evaluates_nodes_before_mixing(self):
         with tempfile.TemporaryDirectory() as temporary:

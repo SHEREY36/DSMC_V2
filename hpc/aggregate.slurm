@@ -25,6 +25,8 @@ if [[ -n "${COEFFICIENT_ROWS:-}" ]]; then
   [[ "$COEFFICIENT_ROWS" = /* ]] \
     && COEFFICIENT_ARGS+=(--coefficient-rows "$COEFFICIENT_ROWS") \
     || COEFFICIENT_ARGS+=(--coefficient-rows "$ROOT/$COEFFICIENT_ROWS")
+  COEFFICIENT_ARGS+=(--coefficient-release-policy \
+    "${COEFFICIENT_RELEASE_POLICY:-strict}")
 fi
 export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
 ESTIMATE_ARGS=(--node-estimates)

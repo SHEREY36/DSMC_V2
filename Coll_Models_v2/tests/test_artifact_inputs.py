@@ -24,7 +24,7 @@ class ArtifactInputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "coefficients.json"
             path.write_text(json.dumps(payload))
-            with self.assertRaisesRegex(ValueError, "selective evidence"):
+            with self.assertRaisesRegex(ValueError, "release policy"):
                 _coefficient_rows_from_cache(nodes, path)
 
     def test_precomputed_node_must_cover_exact_shards(self):

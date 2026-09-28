@@ -215,7 +215,8 @@ def main() -> None:
                # artifact-derived full-domain design.  Downstream scientific
                # campaigns must not promote a compact six-case gate.
                "full_domain_physics_gate_pass": bool(
-                   campaign_mode == "full-domain" and artifact_consistent
+                   campaign_mode in ("full-domain", "full-domain-extremes")
+                   and artifact_consistent
                    and all_cases_physics_pass),
                "production_gate_pass": bool(
                    campaign_mode not in ("evidence", "learned-extremes")
@@ -229,9 +230,11 @@ def main() -> None:
     gate_keys = [(1.0, 2.0), (0.95, 2.0), (0.8, 2.0),
                  (1.0, 3.0), (0.95, 3.0), (0.8, 3.0)]
     available = (sorted(grouped)
-                 if campaign_mode in ("full-domain", "learned-extremes")
+                 if campaign_mode in ("full-domain", "learned-extremes",
+                                      "full-domain-extremes")
                  else [key for key in gate_keys if key in grouped])
-    ncols = 4 if campaign_mode in ("full-domain", "learned-extremes") else 3
+    ncols = 4 if campaign_mode in ("full-domain", "learned-extremes",
+                                   "full-domain-extremes") else 3
     nrows = max(1, int(np.ceil(len(available) / ncols)))
     fig, axes = plt.subplots(nrows, ncols, figsize=(12.0, 3.5 * nrows), squeeze=False)
     theta_starts = sorted({float(row["theta0"]) for row, _ in series})

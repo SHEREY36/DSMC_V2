@@ -373,20 +373,54 @@ def incoming_partition_diagnostics(run: RunDataV2, propensity: np.ndarray | None
                             + np.sum((c2 - centre) ** 2, axis=1))
     partition = translational / attempt_energy(run)
 
+    index = outcome_attempt_indices(run)
+    weight = outcome_weights(run, propensity=propensity, offsets=offsets)
+    accepted = float(np.sum(weight * partition[index]) / np.sum(weight))
+
+    if run.metadata.get("sampling_mode") == "dsmc_post_ntc_replay_v1":
+        # A replay shard deliberately carries a non-Maxwellian, anisotropic
+        # USF incoming law.  Testing it against the analytic isotropic
+        # Maxwellian density would reject precisely the physics being
+        # measured.  The valid distribution-free test is instead that inverse
+        # propensity weighting maps accepted contacts back to the replay
+        # proposal ensemble.
+        proposal = float(np.mean(partition))
+        proposal_spread = float(np.std(partition, ddof=1))
+        proposal_se = proposal_spread / np.sqrt(len(partition))
+        normalised = weight / np.sum(weight)
+        accepted_variance = float(np.sum(
+            normalised * (partition[index] - accepted) ** 2))
+        accepted_se = np.sqrt(accepted_variance / effective_sample_size(weight))
+        combined_se = float(np.hypot(proposal_se, accepted_se))
+        difference = accepted - proposal
+        return {
+            "contract": "replay_distribution_free_balance_v1",
+            "theta": theta,
+            "expected_mean": None,
+            "expected_spread": None,
+            "proposal_mean": proposal,
+            "proposal_spread": proposal_spread,
+            "reweighted_accepted_mean": accepted,
+            "difference": difference,
+            "relative_difference": difference / max(abs(proposal), 1.0e-30),
+            "standard_error": combined_se,
+            "z_score": difference / combined_se if combined_se > 0.0 else np.inf,
+            "pass": bool(abs(difference) <= 3.0 * combined_se
+                         or abs(difference) <= RELATIVE_BIAS_TOLERANCE
+                         * max(abs(proposal), 1.0e-30)),
+        }
+
     nodes, quad = _legendre_nodes(quadrature, 0.0, 1.0)
     mass_law = incoming_partition_density(theta, nodes) * quad
     mass_law /= np.sum(mass_law)
     expected = float(mass_law @ nodes)
     expected_spread = float(np.sqrt(mass_law @ (nodes - expected) ** 2))
 
-    index = outcome_attempt_indices(run)
-    weight = outcome_weights(run, propensity=propensity, offsets=offsets)
-    accepted = float(np.sum(weight * partition[index]) / np.sum(weight))
-
     count = len(partition)
     standard_error = float(np.std(partition, ddof=1) / np.sqrt(count))
     difference = float(np.mean(partition) - expected)
     return {
+        "contract": "isotropic_maxwellian_generator_v1",
         "theta": theta,
         "expected_mean": expected,
         "expected_spread": expected_spread,

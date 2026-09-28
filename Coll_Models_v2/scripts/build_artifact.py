@@ -24,6 +24,8 @@ def main():
                              "parallel artifact precompute array")
     parser.add_argument("--coefficient-rows",
                         help="validated shared correction coefficient surface")
+    parser.add_argument("--coefficient-release-policy", default="strict",
+                        choices=("strict", "quadratic-evidence-v1"))
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
     args = parser.parse_args()
@@ -46,7 +48,8 @@ def main():
     result = build_artifact(
         runs, args.output, bl, args.bootstrap, args.node_estimates,
         precomputed_directory=args.precomputed_directory,
-        coefficient_rows_path=args.coefficient_rows)
+        coefficient_rows_path=args.coefficient_rows,
+        coefficient_release_policy=args.coefficient_release_policy)
     print(f"Wrote {result['artifact_type']} with {result['n_nodes']} node(s) to {args.output}")
 
 
