@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from coll_models_v2.artifact import (
+    _artifact_nodes_and_coefficients,
+    _baseline_source_digest,
     _coefficient_rows_from_cache,
     _coefficient_source_digest,
     _load_node_estimates,
@@ -12,6 +14,69 @@ from coll_models_v2.estimate import NODE_ESTIMATE_CONTRACT
 
 
 class ArtifactInputTests(unittest.TestCase):
+    def test_frozen_coefficient_surface_reloads_only_baseline_estimates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline_directory = root / "baseline"
+            excitation_directory = root / "historical_excitation"
+            baseline_directory.mkdir(); excitation_directory.mkdir()
+            shard = root / "baseline_shard"; shard.mkdir()
+            common = {
+                "alpha": 0.5, "theta": 0.0125, "aspect_ratio": 1.2,
+                "source_runs": [str(shard)],
+                "estimator_contract": NODE_ESTIMATE_CONTRACT,
+                "cell_features": {}, "incoming_law": {},
+                "incoming_law_energy": {},
+            }
+            baseline = dict(common, ensemble_id=0,
+                            qa={"precision_pass": True})
+            rejected = dict(
+                common, ensemble_id=12, excitation_status="pass",
+                excitation={"family": "a2_rot", "eta": 0.5,
+                            "usable": True},
+                qa={"precision_pass": False, "sentinel_pass": False,
+                    "continuation_reasons": [
+                        "model_form", "lambda1_contribution_precision"]})
+            (baseline_directory / "alpha_base.json").write_text(
+                json.dumps(baseline))
+            (excitation_directory / "alpha_excited.json").write_text(
+                json.dumps(rejected))
+            cache = root / "coefficients.json"
+            cache.write_text(json.dumps({
+                "schema": "correction-coefficient-surface-v1",
+                "release_policy": "quadratic-evidence-v1",
+                "n_source_nodes": 2,
+                "source_digest": _coefficient_source_digest(
+                    [baseline, rejected]),
+                "baseline_source_digest": _baseline_source_digest([baseline]),
+                "coefficient_rows": [{"coordinates": [0.5, 0.0125, 1.2]}],
+            }))
+            nodes, rows = _artifact_nodes_and_coefficients(
+                [baseline_directory, excitation_directory],
+                {(0.5, 0.0125, 1.2, 0): [shard]}, cache,
+                "quadratic-evidence-v1", verify_frozen_sources=True)
+            self.assertEqual([node["ensemble_id"] for node in nodes], [0])
+            self.assertEqual(rows[0]["coordinates"], [0.5, 0.0125, 1.2])
+
+            rejected["qa"]["new_unfrozen_field"] = True
+            (excitation_directory / "alpha_excited.json").write_text(
+                json.dumps(rejected))
+            with self.assertRaisesRegex(ValueError, "source files do not match"):
+                _artifact_nodes_and_coefficients(
+                    [baseline_directory, excitation_directory],
+                    {(0.5, 0.0125, 1.2, 0): [shard]}, cache,
+                    "quadratic-evidence-v1", verify_frozen_sources=True)
+            del rejected["qa"]["new_unfrozen_field"]
+            (excitation_directory / "alpha_excited.json").write_text(
+                json.dumps(rejected))
+
+            # Without a frozen, provenance-bound surface the excitation is a
+            # live input and must still fail closed under its current QA.
+            with self.assertRaisesRegex(ValueError, "has not passed closure QA"):
+                _artifact_nodes_and_coefficients(
+                    [baseline_directory, excitation_directory],
+                    {(0.5, 0.0125, 1.2, 0): [shard]})
+
     def test_selective_evidence_cache_cannot_enter_production_builder(self):
         nodes = [{"alpha": 0.8, "theta": 1.0, "aspect_ratio": 2.0,
                   "ensemble_id": 0}]

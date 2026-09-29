@@ -241,6 +241,49 @@ def _coefficient_rows_from_cache(nodes: list[dict], path,
     return rows
 
 
+def _artifact_nodes_and_coefficients(node_estimates, expected_groups,
+                                     coefficient_rows_path=None,
+                                     coefficient_release_policy: str = "strict",
+                                     verify_frozen_sources: bool = False):
+    """Load the estimates required by an artifact build.
+
+    A frozen coefficient surface already carries both the digest of every
+    excitation estimate used to fit it and a separate digest of the baseline
+    estimates used to construct the sampler tables. Once that surface is
+    supplied, reloading historical excitation directories is redundant and
+    can incorrectly re-apply a newer pointwise QA policy to an older, already
+    gated response-design point. In that mode the first estimate directory is
+    the canonical baseline grid; its digest and complete coefficient coverage
+    are still checked below.
+    """
+    estimate_inputs = node_estimates
+    full_validation = coefficient_rows_path is None
+    directories = None
+    if not full_validation \
+            and not isinstance(node_estimates, (str, os.PathLike)):
+        directories = list(node_estimates)
+        if not directories:
+            raise ValueError("artifact requires a baseline node-estimate directory")
+        estimate_inputs = directories[0]
+    nodes = _load_node_estimates(estimate_inputs, expected_groups)
+    coefficient_rows = _coefficient_rows_from_cache(
+        nodes, coefficient_rows_path, full_validation=full_validation,
+        allowed_release_policy=coefficient_release_policy)
+    if verify_frozen_sources and directories and len(directories) > 1:
+        paths = [path for directory in directories
+                 for path in sorted(Path(directory).glob("alpha_*.json"))]
+        source_nodes = [json.loads(path.read_text()) for path in paths]
+        source_keys = [_node_key(node) for node in source_nodes]
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("coefficient source files contain duplicate keys")
+        payload = json.loads(Path(coefficient_rows_path).read_text())
+        if payload.get("n_source_nodes") != len(source_nodes) \
+                or payload.get("source_digest") \
+                != _coefficient_source_digest(source_nodes):
+            raise ValueError("frozen coefficient source files do not match cache")
+    return nodes, coefficient_rows
+
+
 def _fit_coefficient_rows(nodes: list[dict],
                           release_policy: str = "strict",
                           response_order: int = 1) -> list[dict]:
@@ -610,15 +653,9 @@ def precompute_artifact_node(run_directories, node_estimates, output_directory,
     # The shared cache has already read and fitted every excitation.  Array
     # tasks need only the 144 baselines; re-reading ~15,000 excitation JSONs
     # in each of 144 processes would multiply metadata I/O for no new check.
-    estimate_inputs = (node_estimates[0]
-                       if coefficient_rows_path is not None
-                       and not isinstance(node_estimates, (str, os.PathLike))
-                       else node_estimates)
-    nodes = _load_node_estimates(estimate_inputs, grouped)
-    coefficient_rows = _coefficient_rows_from_cache(
-        nodes, coefficient_rows_path,
-        full_validation=coefficient_rows_path is None,
-        allowed_release_policy=coefficient_release_policy)
+    nodes, coefficient_rows = _artifact_nodes_and_coefficients(
+        node_estimates, grouped, coefficient_rows_path,
+        coefficient_release_policy)
     baseline = sorted(
         (node for node in nodes if int(node["ensemble_id"]) == 0),
         key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
@@ -998,20 +1035,22 @@ def build_artifact(run_directories, output_directory, bl=None,
     for path in paths:
         grouped[_path_key(path)].append(path)
     if node_estimates:
-        nodes = _load_node_estimates(node_estimates, grouped)
+        nodes, coefficient_rows = _artifact_nodes_and_coefficients(
+            node_estimates, grouped, coefficient_rows_path,
+            coefficient_release_policy, verify_frozen_sources=True)
     else:
         nodes = [estimate_node(shards, bl, n_bootstrap=n_bootstrap)
                  for _, shards in sorted(grouped.items())]
         failed = [node for node in nodes if not node["qa"]["sentinel_pass"]]
         if failed:
             raise ValueError(f"{len(failed)} node(s) failed variational closure gates")
+        coefficient_rows = _coefficient_rows_from_cache(
+            nodes, coefficient_rows_path,
+            allowed_release_policy=coefficient_release_policy)
     baseline = [node for node in nodes if int(node["ensemble_id"]) == 0]
     if not baseline:
         raise ValueError("artifact requires baseline ensemble_id=0 nodes")
     baseline.sort(key=lambda row: (row["alpha"], row["theta"], row["aspect_ratio"]))
-    coefficient_rows = _coefficient_rows_from_cache(
-        nodes, coefficient_rows_path,
-        allowed_release_policy=coefficient_release_policy)
     correction_plan, correction_bounds, correction_digest = _local_correction_plan(
         baseline, coefficient_rows)
     coordinates = np.array([[row["alpha"], row["theta"], row["aspect_ratio"]]

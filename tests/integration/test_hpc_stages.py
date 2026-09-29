@@ -448,6 +448,19 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("--array=0-231%112", resume)
         self.assertIn("--array=0-275%144", resume)
 
+        post_precompute = (
+            ROOT / "hpc" / "resume_usf_nonlinear_after_precompute.sh"
+        ).read_text()
+        self.assertIn("exactly 144 artifact precompute payloads", post_precompute)
+        self.assertNotIn("analyze_usf_response.slurm", post_precompute)
+        self.assertNotIn("artifact_precompute_stride.slurm", post_precompute)
+        self.assertNotIn("usf_response_harvest_array.slurm", post_precompute)
+        self.assertNotIn("usf_response_ctc_array.slurm", post_precompute)
+        self.assertNotIn("usf_response_estimate_array.slurm", post_precompute)
+        self.assertIn("hpc/aggregate.slurm", post_precompute)
+        self.assertIn("--array=0-231%112", post_precompute)
+        self.assertIn("--array=0-275%144", post_precompute)
+
     def test_nonlinear_candidate_promotion_binds_all_evidence_to_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

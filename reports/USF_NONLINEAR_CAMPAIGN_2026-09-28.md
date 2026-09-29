@@ -234,3 +234,31 @@ temperatures. The DEM comparison remains guidance, never a fitting target.
 The resume workflow reuses all completed collision data and estimates, builds
 this selective candidate, and subjects the combination of released and
 base-law blocks to the originally planned 232 HCS and 276 paired USF runs.
+
+## V2 artifact-pack recovery — 2026-09-29
+
+All 144 two-core artifact precompute payloads completed. The subsequent serial
+pack stopped before writing `closure_v2.npz` because it reloaded four historical
+excitation-estimate directories and applied the current pointwise QA policy to
+an obsolete held-out design point at `(alpha, theta, AR, ensemble) =
+(0.5, 0.0125, 1.2, 12)`. That point carries both `model_form` and
+`lambda1_contribution_precision` legacy labels. It is not a candidate runtime
+node, and every alpha-0.5 response block is suppressed by the independent
+direct-response decision above.
+
+The precompute path already implemented the intended frozen-surface contract:
+the coefficient JSON is bound to all 15,696 source estimates by its full source
+digest, while its separate baseline digest binds the 144 production estimates
+used for sampler construction. The serial packer now uses that same contract.
+It validates the frozen release policy, complete coefficient coordinates,
+baseline digest, every precompute coordinate and estimate digest, correction
+digest, schema, table resolution, numerical ordering, and interpolation error;
+it does not redundantly reinterpret historical virtual design points.
+
+The repaired pack was reproduced locally using the exact copied Negishi cache.
+It wrote a 144-node schema-2.4 artifact in about 25 seconds. That artifact then
+generated exactly 232 HCS and 276 USF validation tasks and contained the
+intended masks: no energy response at any alpha, angular response only at
+alpha 0.8. The post-precompute resume script submits only pack, manifest
+preparation, HCS/USF validation, QA, and promotion. It does not repeat DSMC,
+CTC, estimation, response analysis, or the 256-core precompute stage.
