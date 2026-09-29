@@ -6,7 +6,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
+# Replay data plus the two-pass contact buffers remain well below 4 GiB.
+# Keeping memory at or below the four-core allocation prevents Negishi from
+# billing a fifth CPU solely to satisfy memory.
+#SBATCH --mem=4G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/ctc_replay_%A_%a.out
 #SBATCH --error=logs/ctc_replay_%A_%a.err

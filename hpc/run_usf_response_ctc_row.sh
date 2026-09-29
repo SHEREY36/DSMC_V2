@@ -25,7 +25,11 @@ if [[ -e "$OUTPUT_DIR" ]]; then
 fi
 [[ -x HS_CTC_v2/build/SphCyl ]] || { echo "CTC executable is missing" >&2; exit 2; }
 mkdir -p "$(dirname "$OUTPUT_DIR")"
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
+# Run directly inside the batch allocation. Negishi may grant an extra billed
+# CPU to satisfy a whole-job memory request, leaving SLURM_CPUS_PER_TASK and
+# SLURM_TRES_PER_TASK inconsistent; a nested srun then aborts before launch.
+# The CTC design and array accounting deliberately use four OpenMP threads.
+export OMP_NUM_THREADS=${CTC_OMP_THREADS:-4}
 export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
 export OMP_PLACES=${OMP_PLACES:-cores}
 export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
@@ -38,7 +42,7 @@ if [[ "$ROLE" == usf_replay ]]; then
   OUTPUT_PATH=$(resolve_path "$OUTPUT_DIR")
   [[ -f "$SOURCE_PATH" && -f "$REPLAY_PATH" ]] || {
     echo "replay source files are missing" >&2; exit 2; }
-  srun ./build/SphCyl "$ALPHA" "$THETA" 1.0 "$AR" "$OUTPUT_PATH" \
+  ./build/SphCyl "$ALPHA" "$THETA" 1.0 "$AR" "$OUTPUT_PATH" \
     "$SEED" "$NSAMPLES" v2 "$ENSEMBLE" "$REPLAY_PATH"
   cd "$ROOT"
   hpc/python.sh hpc/attach_replay_provenance.py "$OUTPUT_PATH" "$SOURCE_PATH"

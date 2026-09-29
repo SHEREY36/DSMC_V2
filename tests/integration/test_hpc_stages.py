@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from dsmc_v2_contracts import FEATURE_NAMES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -429,6 +430,7 @@ class HPCStageTests(unittest.TestCase):
             })
 
         submitter = (ROOT / "hpc" / "submit_usf_nonlinear_pipeline.sh").read_text()
+        self.assertIn("usf_nonlinear_v2_20260928", submitter)
         self.assertIn("--array=0-167%64", submitter)
         self.assertIn("--array=0-167%85", submitter)
         self.assertIn("--array=0-127%128", submitter)
@@ -499,6 +501,99 @@ class HPCStageTests(unittest.TestCase):
             self.assertIn(
                 "direct_response_coefficients_do_not_match_artifact",
                 json.loads(output.read_text())["reasons"])
+
+    def test_replay_manifest_requires_unique_hash_bound_reservoirs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "base.npz"
+            artifact.write_bytes(b"frozen-base")
+            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            manifest = root / "harvest.csv"
+            rows = []
+            for task in range(42):
+                prefix = root / "harvest" / f"task_{task:02d}"
+                prefix.parent.mkdir(parents=True, exist_ok=True)
+                branch = "cold" if task % 2 == 0 else "hot"
+                row = {
+                    "task_id": task,
+                    "protocol_version": "usf-direct-response-v1",
+                    "tag": "fixture", "alpha": "0.8",
+                    "aspect_ratio": "1.5", "initial_branch": branch,
+                    "windows": "0:1;1:2;2:3;3:4",
+                    "artifact": str(artifact),
+                    "artifact_sha256": artifact_hash,
+                    "output_prefix": str(prefix),
+                }
+                reservoirs = []
+                for window in range(4):
+                    stem = Path(f"{prefix}_replay_window_{window:02d}")
+                    binary = Path(f"{stem}.bin")
+                    binary.write_bytes(bytes((task, window)) + bytes(142))
+                    binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+                    source = {
+                        "schema_version": "dsmc-ctc-replay-v1",
+                        "record_dtype": "little_endian_float64",
+                        "record_width": 18, "record_count": 1,
+                        "sampling_contract": (
+                            "post_ntc_pre_orientation_collision_flux_v1"),
+                        "cell_measure_debiasing": (
+                            "inverse_physical_selection_speed_v1"),
+                        "alpha": 0.8, "aspect_ratio": 1.5, "theta": 1.0,
+                        "tau_window": [float(window), float(window + 1)],
+                        "window_index": window,
+                        "source_provenance": {
+                            "protocol_version": "usf-direct-response-v1",
+                            "tag": "fixture", "task_id": task,
+                            "initial_branch": branch,
+                        },
+                        "binary_file": str(binary),
+                        "binary_sha256": binary_hash,
+                        "cell_features": {name: 0.0 for name in FEATURE_NAMES},
+                        "domain_features": {name: 0.0 for name in FEATURE_NAMES},
+                        "qa": {"pass": True},
+                    }
+                    metadata = Path(f"{stem}.json")
+                    metadata.write_text(json.dumps(source))
+                    reservoirs.append({
+                        "binary": str(binary), "metadata": str(metadata),
+                        **source,
+                    })
+                Path(f"{prefix}_SUCCESS.json").write_text(json.dumps({
+                    "task_id": task,
+                    "protocol_version": "usf-direct-response-v1",
+                    "tag": "fixture", "alpha": 0.8, "aspect_ratio": 1.5,
+                    "initial_branch": branch, "artifact": str(artifact),
+                    "artifact_sha256": artifact_hash,
+                    "reservoirs": reservoirs,
+                }))
+                rows.append(row)
+            with manifest.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader(); writer.writerows(rows)
+
+            script = ROOT / "hpc" / "make_usf_response_ctc_manifest.py"
+            output = root / "ctc.csv"
+            command = [
+                str(ROOT / "hpc" / "python.sh"), str(script),
+                "--harvest-manifest", str(manifest), "--output", str(output),
+                "--results", str(root / "ctc"), "--replay-samples", "1",
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            with output.open(newline="") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 168)
+
+            first_success = Path(f"{rows[0]['output_prefix']}_SUCCESS.json")
+            corrupted = json.loads(first_success.read_text())
+            corrupted["reservoirs"][1] = corrupted["reservoirs"][0]
+            first_success.write_text(json.dumps(corrupted))
+            failed_command = command.copy()
+            failed_command[5] = str(root / "duplicate.csv")
+            failed_command[7] = str(root / "ctc2")
+            failed = subprocess.run(
+                failed_command,
+                capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("duplicate replay path", failed.stderr)
 
 
 if __name__ == "__main__":

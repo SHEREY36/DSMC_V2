@@ -5,7 +5,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=2G
+# Prior HCS campaigns peak near 0.64 GiB. Staying below the per-core memory
+# ratio is required for the intended 112+144 concurrent validation split.
+#SBATCH --mem=1800M
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/hcs_gate_%A_%a.out
 #SBATCH --error=logs/hcs_gate_%A_%a.err

@@ -6,7 +6,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=6G
+# The completed N=50,000 campaign measured 728 MiB maximum RSS. This retains
+# more than 2x headroom without turning a one-core realization into a
+# memory-billed four-core job.
+#SBATCH --mem=1500M
 #SBATCH --time=1-00:00:00
 #SBATCH --output=logs/usf_harvest_%A_%a.out
 #SBATCH --error=logs/usf_harvest_%A_%a.err

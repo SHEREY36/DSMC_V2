@@ -77,6 +77,39 @@ class CollisionFluxReplayTests(unittest.TestCase):
                     100, 4, alpha=0.8, aspect_ratio=2.0,
                     mass=1.0, inertia=1.0)
 
+    def test_dotted_prefix_keeps_every_window_and_provenance_unique(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            sampler = CollisionFluxReservoir(
+                Path(temporary) / "AR_1.500_alpha_0.800_hot_replay",
+                [(0.0, 1.0), (1.0, 2.0)], 100, 19,
+                alpha=0.8, aspect_ratio=1.5, mass=1.0, inertia=1.0,
+                source_provenance={"task_id": 7, "initial_branch": "hot"})
+            for window_tau in (0.5, 1.5):
+                for index in range(100):
+                    sign = -1.0 if index % 2 else 1.0
+                    sampler.observe(
+                        tau=window_tau,
+                        v1=np.array([sign, 0.0, 0.0]),
+                        v2=np.array([-sign, 0.0, 0.0]),
+                        omega1=np.array([0.0, np.sqrt(2.0), 0.0]),
+                        omega2=np.array([0.0, -np.sqrt(2.0), 0.0]),
+                        axis1=np.array([1.0, 0.0, 0.0]),
+                        axis2=np.array([1.0, 0.0, 0.0]),
+                        mean_velocity=np.zeros(3), trot=1.0)
+            outputs = sampler.finalize()
+            binaries = [Path(item["binary"]) for item in outputs]
+            metadata = [Path(item["metadata"]) for item in outputs]
+            self.assertEqual(len(set(binaries)), 2)
+            self.assertEqual(len(set(metadata)), 2)
+            self.assertTrue(all(path.is_file() for path in binaries + metadata))
+            self.assertTrue(all("alpha_0.800_hot_replay_window_" in path.name
+                                for path in binaries))
+            for index, path in enumerate(metadata):
+                payload = json.loads(path.read_text())
+                self.assertEqual(payload["window_index"], index)
+                self.assertEqual(payload["source_provenance"], {
+                    "task_id": 7, "initial_branch": "hot"})
+
 
 if __name__ == "__main__":
     unittest.main()

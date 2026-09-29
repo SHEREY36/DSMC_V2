@@ -80,11 +80,11 @@ isotropic Maxwellian tail.
 
 | Stage | Tasks | Per task | Maximum concurrent CPUs |
 |---|---:|---:|---:|
-| DSMC state harvest | 42 | 1 CPU, 6 GiB, N=50,000 | 42 |
-| Exact CTC replay | 168 | 4 CPUs, 8 GiB | 256 (64 tasks) |
-| Exact-law estimation | 168 | 3 CPUs, 6 GiB | 255 (85 tasks) |
-| Artifact precomputation | 128 | 2 CPUs | 256 |
-| Far-from-equipartition full-domain HCS validation | 232 | 1 CPU | 112 |
+| DSMC state harvest | 42 | 1 CPU, 1500 MiB, N=50,000 | 42 |
+| Exact CTC replay | 168 | 4 CPUs, 4 GiB | 256 (64 tasks) |
+| Exact-law estimation | 168 | 3 CPUs, 4 GiB | 255 (85 tasks) |
+| Artifact precomputation | 128 | 2 CPUs, 3500 MiB | 256 |
+| Far-from-equipartition full-domain HCS validation | 232 | 1 CPU, 1800 MiB | 112 |
 | Paired USF + sphere validation | 276 | 1 CPU | 144 alongside HCS |
 
 The last two arrays can occupy 112+144=256 CPUs concurrently. The HCS starts
@@ -137,9 +137,9 @@ git pull --ff-only origin closure-v2-repairs
 module load conda
 hpc/python.sh hpc/verify_python_environment.py
 set -o pipefail
-TAG=usf_nonlinear_v1_20260928 \
+TAG=usf_nonlinear_v2_20260928 \
   bash hpc/submit_usf_nonlinear_pipeline.sh \
-  | tee logs/usf_nonlinear_v1_20260928_submission.log
+  | tee logs/usf_nonlinear_v2_20260928_submission.log
 ```
 
 The submission prints every dependent job ID. Monitor with:
@@ -173,3 +173,26 @@ The `.npz` is built on Negishi after the exact-response gate; the expensive
 collision data are not copied into the artifact. The artifact contains the
 base surfaces, nonlinear response coefficients and masks, local feature
 support, and sampler tables required by DSMC.
+
+## Recovery audit after the first submission
+
+The first `usf_nonlinear_v1_20260928` submission is retained only as an audit
+record and must not be resumed. All 42 DSMC trajectories completed, but replay
+reservoir names contained decimal parameter values and were passed through
+`Path.with_suffix`. That operation treated the alpha and window portion of the
+stem as a suffix, so 168 intended reservoirs collapsed onto seven AR-specific
+files and later windows overwrote earlier ones. The scalar trajectory outputs
+remain valid, but the replay samples cannot be reconstructed from them.
+
+All 168 downstream CTC tasks then stopped before entering the executable. The
+jobs requested four CPUs and eight GiB; Negishi's memory accounting allocated
+five CPUs and exposed inconsistent `SLURM_CPUS_PER_TASK=5` and
+`SLURM_TRES_PER_TASK=cpu=4` values to the nested `srun` command. No exact CTC
+physics was executed and no candidate artifact was produced.
+
+The recovery uses appended `.bin`/`.json` extensions, embeds source-task and
+window provenance in every reservoir, verifies unique paths, byte counts,
+hashes, schemas, sampling contracts, feature order, and parameter values before
+submitting CTC, invokes the executable directly inside the batch allocation,
+and requests measured memory footprints that preserve the intended CPU counts.
+The corrected pipeline defaults to the fresh `usf_nonlinear_v2_20260928` tag.

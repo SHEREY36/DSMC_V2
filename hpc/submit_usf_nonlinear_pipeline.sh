@@ -2,7 +2,9 @@
 # Submit one end-to-end, fail-closed nonlinear USF closure campaign on Negishi.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
-TAG=${TAG:-usf_nonlinear_v1_20260928}
+# v1 replay reservoirs were invalidated by a decimal-filename collision. Keep
+# the recovery campaign on a fresh namespace even when TAG is not supplied.
+TAG=${TAG:-usf_nonlinear_v2_20260928}
 BASE_ARTIFACT=${BASE_ARTIFACT:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
 HARVEST_MANIFEST=manifests/${TAG}_harvest.csv
 HARVEST_RESULTS=results/${TAG}/harvest

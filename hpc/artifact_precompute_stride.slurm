@@ -10,7 +10,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=4G
+# Measured peak use is about 1.4 GiB; stay below Negishi's two-core memory
+# allocation while retaining more than 2x headroom.
+#SBATCH --mem=3500M
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/artifact_pre_%A_%a.out
 #SBATCH --error=logs/artifact_pre_%A_%a.err

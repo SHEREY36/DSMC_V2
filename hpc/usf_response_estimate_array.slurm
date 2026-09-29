@@ -6,7 +6,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=3
-#SBATCH --mem=6G
+# Three CPUs remain the dominant TRES request at this memory size on Negishi.
+#SBATCH --mem=4G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/usf_exact_fit_%A_%a.out
 #SBATCH --error=logs/usf_exact_fit_%A_%a.err

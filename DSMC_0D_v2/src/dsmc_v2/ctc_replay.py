@@ -58,7 +58,8 @@ class CollisionFluxReservoir:
 
     def __init__(self, output_prefix: str | Path, windows: list[tuple[float, float]],
                  capacity: int, seed: int, *, alpha: float, aspect_ratio: float,
-                 mass: float, inertia: float):
+                 mass: float, inertia: float,
+                 source_provenance: dict | None = None):
         if capacity < 100:
             raise ValueError("replay reservoir capacity must be at least 100")
         parsed = [ReplayWindow(float(start), float(end)) for start, end in windows]
@@ -76,6 +77,7 @@ class CollisionFluxReservoir:
         self.aspect_ratio = float(aspect_ratio)
         self.mass = float(mass)
         self.inertia = float(inertia)
+        self.source_provenance = dict(source_provenance or {})
         self.rng = [np.random.default_rng(int(seed) + 7919 * (i + 1))
                     for i in range(len(ordered))]
         self.records = [np.empty((self.capacity, REPLAY_WIDTH), dtype="<f8")
@@ -208,8 +210,11 @@ class CollisionFluxReservoir:
             if not np.all(np.isfinite(records)):
                 raise ValueError(f"replay window {index} contains NaN or Inf")
             stem = Path(f"{self.output_prefix}_window_{index:02d}")
-            binary = stem.with_suffix(".bin")
-            temporary = binary.with_suffix(".bin.tmp")
+            # ``Path.with_suffix`` is not safe here: decimal points in names
+            # such as ``AR_1.500_alpha_0.800`` are interpreted as a suffix and
+            # would collapse every branch/window to ``AR_1.500_alpha_0.bin``.
+            binary = Path(f"{stem}.bin")
+            temporary = Path(f"{binary}.tmp")
             records.tofile(temporary)
             os.replace(temporary, binary)
             measured = self._measure_cell(
@@ -244,13 +249,15 @@ class CollisionFluxReservoir:
                 "mass": self.mass,
                 "moi_perpendicular": self.inertia,
                 "tau_window": [window.start_tau, window.end_tau],
+                "window_index": index,
+                "source_provenance": self.source_provenance,
                 "binary_file": str(binary),
                 "binary_sha256": _sha256(binary),
                 "sampling_contract": "post_ntc_pre_orientation_collision_flux_v1",
                 "qa": replay_qa,
                 **measured,
             }
-            metadata = stem.with_suffix(".json")
+            metadata = Path(f"{stem}.json")
             metadata.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
             outputs.append({"binary": str(binary), "metadata": str(metadata), **payload})
         return outputs

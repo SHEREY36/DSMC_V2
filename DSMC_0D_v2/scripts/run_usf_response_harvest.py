@@ -92,7 +92,13 @@ def main() -> None:
         Path(str(prefix) + "_replay"), windows,
         int(row["reservoir_capacity"]), int(row["seed"]),
         alpha=alpha, aspect_ratio=ar, mass=params.mass,
-        inertia=params.inertia)
+        inertia=params.inertia,
+        source_provenance={
+            "protocol_version": row["protocol_version"],
+            "tag": row["tag"],
+            "task_id": args.task,
+            "initial_branch": row["initial_branch"],
+        })
     diagnostics = run_simulation(
         config, int(row["seed"]), Path(str(prefix) + ".txt"),
         Path(str(prefix) + "_pressure.txt"),
