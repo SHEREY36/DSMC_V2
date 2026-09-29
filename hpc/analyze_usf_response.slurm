@@ -5,13 +5,14 @@
 #SBATCH --job-name=usf_resp_gate
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
-#SBATCH --time=04:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --time=00:30:00
 #SBATCH --output=logs/usf_resp_gate_%j.out
 #SBATCH --error=logs/usf_resp_gate_%j.err
 set -euo pipefail
 ROOT=${SLURM_SUBMIT_DIR:-$PWD}; cd "$ROOT"
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 OMP_NUM_THREADS=1
 LOCAL=${1:?local coefficient output}; DIRECT=${2:?direct estimates}
 FINAL=${3:?final coefficient output}; REPORT=${4:?report output}
 BASE=${5:?base artifact}

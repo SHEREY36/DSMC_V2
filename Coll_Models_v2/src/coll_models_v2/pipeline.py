@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 
@@ -28,7 +29,20 @@ def group_runs(paths) -> dict[tuple[float, float, float, int], list[Path]]:
     return dict(grouped)
 
 
-def precision_status(result: dict) -> tuple[bool, list[str]]:
+DIRECT_RESPONSE_PRECISION_CONTRACT = "direct-pointwise-uncertainty-v1"
+
+
+def _required_uncertainties(result: dict) -> list[str]:
+    required = ["lambda1", "lambda2", "lambda3", "eta1", "eta2"]
+    if result.get("energy", {}).get("kernel_form") == "conditional_logit_cubic_v3":
+        required += ["lambda5", "lambda6"]
+    else:
+        required.append("reset_mean")
+    return required
+
+
+def precision_status(result: dict, *, excitation_contribution: bool = True
+                     ) -> tuple[bool, list[str]]:
     if "energy" not in result:
         # Read-only schema-2.1 QA adapter. Clock/loss discrepancies stay audit
         # only, exactly as they did in the released legacy pipeline.
@@ -59,22 +73,42 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
     # it; lambda3 (and, where selected, the higher memory coefficients) carry
     # the dependence on the incoming partition.  A negative diagnostic must
     # therefore be reported but cannot veto a kernel that never consumes it.
-    required = ["lambda1", "lambda2", "lambda3", "eta1", "eta2"]
-    if result.get("energy", {}).get("kernel_form") == "conditional_logit_cubic_v3":
-        required += ["lambda5", "lambda6"]
-    else:
-        required.append("reset_mean")
-    for name in required:
+    for name in _required_uncertainties(result):
         interval = result.get("uncertainty", {}).get(name)
         if interval is None:
             reasons.append(f"{name}_precision_missing")
     # Excitation continuation is driven by the contribution uncertainty, not
     # a relative coefficient error that diverges at a true zero coefficient.
-    if int(result.get("ensemble_id", 0)) != 0:
+    if excitation_contribution and int(result.get("ensemble_id", 0)) != 0:
         x = result.get("cell_features") or result["proposal_features"]
         lambda_se = result.get("uncertainty", {}).get("lambda1", {}).get("standard_error")
         if lambda_se is None or max(abs(value) for value in x.values()) * 1.96 * lambda_se > 0.005:
             reasons.append("lambda1_contribution_precision")
+    return not reasons, reasons
+
+
+def direct_response_precision_status(result: dict) -> tuple[bool, list[str]]:
+    """Pointwise QA for direct USF replay estimates.
+
+    A replay ``ensemble_id`` is a unique task index, not an excitation
+    amplitude.  The excitation-only lambda1 contribution test must therefore
+    not be inferred from that identifier.  Direct-response regression uses
+    the reported standard errors as weights and independently tests resolved
+    train/holdout improvements; this gate verifies that those uncertainty
+    inputs are finite, ordered, and non-negative.
+    """
+    _, reasons = precision_status(result, excitation_contribution=False)
+    for name in _required_uncertainties(result):
+        interval = result.get("uncertainty", {}).get(name)
+        if not isinstance(interval, dict):
+            continue
+        values = [interval.get(key) for key in
+                  ("standard_error", "ci_low", "ci_high")]
+        if (any(value is None or not math.isfinite(float(value))
+                for value in values)
+                or float(values[0]) < 0.0
+                or float(values[1]) > float(values[2])):
+            reasons.append(f"{name}_uncertainty_invalid")
     return not reasons, reasons
 
 

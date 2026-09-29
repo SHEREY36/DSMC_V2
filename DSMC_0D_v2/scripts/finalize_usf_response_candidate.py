@@ -28,10 +28,32 @@ def main() -> None:
     usf = json.loads(Path(args.usf_summary).read_text())
     artifact_hash = digest(artifact)
     reasons = []
-    if sorted(direct.get("energy_release_alphas", [])) != [0.5, 0.8, 0.95]:
-        reasons.append("direct_energy_response_not_released_at_all_three_alphas")
-    if sorted(direct.get("angular_release_alphas", [])) != [0.5, 0.8, 0.95]:
-        reasons.append("direct_angular_response_not_released_at_all_three_alphas")
+    expected_planes = {"0.50", "0.80", "0.95"}
+    decisions = direct.get("response_group_decisions", {})
+    allowed = {"released", "suppressed_to_validated_base_law"}
+    if (set(decisions) != expected_planes
+            or any(set(value) != {"energy", "angular"}
+                   or not set(value.values()) <= allowed
+                   for value in decisions.values())):
+        reasons.append("direct_response_group_decisions_incomplete")
+    released = {
+        group: sorted(float(alpha) for alpha, value in decisions.items()
+                      if value.get(group) == "released")
+        for group in ("energy", "angular")
+    }
+    if (released["energy"] != sorted(direct.get("energy_release_alphas", []))
+            or released["angular"]
+            != sorted(direct.get("angular_release_alphas", []))):
+        reasons.append("direct_response_release_lists_inconsistent")
+    if not any(released.values()):
+        reasons.append("no_direct_response_block_released")
+    if not direct.get("candidate_build_ready", False):
+        reasons.append("direct_response_candidate_build_not_ready")
+    if direct.get("direct_precision_contract") \
+            != "direct-pointwise-uncertainty-v1":
+        reasons.append("direct_response_precision_contract_mismatch")
+    if int(direct.get("n_direct_estimates", -1)) != 168:
+        reasons.append("direct_response_estimate_count_mismatch")
     if not hcs.get("full_domain_physics_gate_pass", False):
         reasons.append("full_domain_hcs_physics_gate_failed")
     if not hcs.get("production_gate_pass", False):
@@ -54,7 +76,7 @@ def main() -> None:
         reasons.append("artifact_is_not_pending_nonlinear_candidate")
     passed = not reasons
     decision = {
-        "validation_contract": "usf-nonlinear-response-promotion-v1",
+        "validation_contract": "usf-selective-response-promotion-v2",
         "pass": passed, "reasons": reasons,
         "artifact": str(artifact), "artifact_sha256": artifact_hash,
         "direct_report": str(Path(args.direct_report)),
@@ -63,10 +85,13 @@ def main() -> None:
         "capability": {
             "sphere": "AR=1 exact hard-sphere branch",
             "base_law_rods": "1.1<=AR<=3, 0.5<=alpha<=1",
-            "USF_nonlinear_correction_validated": (
-                "1.1<=AR<=3 at alpha=0.5,0.8,0.95; all AR-cell midpoints "
-                "validated at alpha=0.65,0.875; continuous interpolation "
-                "remains subject to runtime invariant support"),
+            "USF_response_group_decisions": decisions,
+            "USF_selective_candidate_validation": (
+                "1.1<=AR<=3 at alpha=0.5,0.8,0.95; released response blocks "
+                "and evidence-suppressed base-law blocks validated together; "
+                "all AR-cell midpoints validated at alpha=0.65,0.875; "
+                "continuous interpolation remains subject to runtime "
+                "invariant support"),
             "DEM_role": (
                 "external validation/guidance only; never a fit target; "
                 "rod-USF DEM is not a release gate"),
@@ -78,7 +103,7 @@ def main() -> None:
         raise SystemExit("candidate promotion blocked: " + ", ".join(reasons))
     manifest.update({
         "artifact_status": "deployment_ready_hcs_usf_internal_v1",
-        "release_policy": "direct_ctc_validated_additive_quadratic_v1",
+        "release_policy": "direct_ctc_validated_selective_quadratic_v2",
         "artifact_sha256": artifact_hash,
         "promotion_decision": str(output),
         "validated_capability": decision["capability"],

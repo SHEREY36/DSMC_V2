@@ -11,7 +11,10 @@ from pathlib import Path
 import numpy as np
 
 from coll_models_v2.estimate import estimate_node
-from coll_models_v2.pipeline import precision_status
+from coll_models_v2.pipeline import (
+    DIRECT_RESPONSE_PRECISION_CONTRACT,
+    direct_response_precision_status,
+)
 from dsmc_v2_contracts import FEATURE_NAMES, load_run, validate_run
 
 
@@ -64,8 +67,11 @@ def main() -> None:
         anchor=anchor, cell_features_override=features,
         ensemble_id_override=int(row["ensemble_id"]),
         kernel_form="sinkhorn_bridge_v2")
-    passed, reasons = precision_status(result)
-    result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
+    passed, reasons = direct_response_precision_status(result)
+    result["qa"].update(
+        precision_pass=passed,
+        continuation_reasons=reasons,
+        precision_contract=DIRECT_RESPONSE_PRECISION_CONTRACT)
     result["direct_response_provenance"] = {
         "contract": "usf-direct-response-v1",
         "ctc_manifest": str(Path(args.manifest)),

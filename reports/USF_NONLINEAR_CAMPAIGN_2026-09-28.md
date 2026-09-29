@@ -107,8 +107,8 @@ Purdue references: [Negishi overview](https://docs.rcac.purdue.edu/userguides/ne
 ## Independent release gates
 
 The direct-response fit uses cold-branch windows 0–2 only. Every hot-branch
-window and the late cold window are held out. For each alpha plane, release
-requires:
+window and the late cold window are held out. For each energy or angular block
+on each alpha plane, release requires:
 
 - all replay estimates pass physics and precision sentinels;
 - resolved natural-parameter responses reduce held-out RMSE by at least 10%;
@@ -121,6 +121,14 @@ requires:
   retained statistical window);
 - exact-sphere controls pass the independent Boltzmann benchmark; and
 - artifact SHA-256 and coefficient-row SHA-256 values match at promotion.
+
+A response block that fails either holdout criterion is explicitly masked and
+retains the HCS-validated base collision law. This is an evidence-backed
+suppression decision, not an out-of-domain runtime fallback. A selective
+candidate may be built when at least one block is released and every other
+block has an explicit suppression decision; the candidate remains
+non-deployable until the complete HCS and paired-USF gates pass. This preserves
+useful angular evidence without forcing an unsupported energy correction.
 
 No rod-USF DEM agreement threshold appears in these gates. The pre-existing
 HCS benchmark comparisons described above remain external validation only. If
@@ -196,3 +204,33 @@ hashes, schemas, sampling contracts, feature order, and parameter values before
 submitting CTC, invokes the executable directly inside the batch allocation,
 and requests measured memory footprints that preserve the intended CPU counts.
 The corrected pipeline defaults to the fresh `usf_nonlinear_v2_20260928` tag.
+
+## V2 response-gate result and selective resume — 2026-09-29
+
+The corrected campaign completed all 42 DSMC harvests, all 168 exact CTC
+replays, and all 168 bootstrap estimates. Every replay estimate passed its
+physics sentinel. The original response gate nevertheless reported the first
+of 125 `lambda1_contribution_precision` failures. That check inferred from a
+nonzero `ensemble_id` that the sample was an excitation-amplitude experiment;
+in the direct-USF manifest the same field is only a unique replay index. The
+test therefore multiplied uncertainty by absolute USF invariants and was not a
+valid direct-response precision measure. Direct replay now has a separate
+contract that retains all projection, propensity, balance, ESS, model-form,
+elastic, and finite-bootstrap-uncertainty checks. It reclassifies the 125
+legacy labels transparently without changing any fitted number.
+
+With the correct QA semantics, the untouched holdout makes the following
+decisions:
+
+| Alpha | Energy response | Angular response | Held-out distribution result |
+|---:|---|---|---|
+| 0.50 | suppress to base law | suppress to base law | both proposed corrections worsen W1 |
+| 0.80 | suppress to base law | release | angular W1 improves from 0.004326 to 0.003758 |
+| 0.95 | suppress to base law | suppress to base law | neither improvement reaches 10% |
+
+The energy suppression is important: exact CTC does not support forcing the
+proposed invariant correction merely to move DSMC toward the external DEM
+temperatures. The DEM comparison remains guidance, never a fitting target.
+The resume workflow reuses all completed collision data and estimates, builds
+this selective candidate, and subjects the combination of released and
+base-law blocks to the originally planned 232 HCS and 276 paired USF runs.

@@ -438,6 +438,16 @@ class HPCStageTests(unittest.TestCase):
         self.assertIn("PIPELINE_DRY_RUN", submitter)
         self.assertIn("afterok:$HCS_QA_JOB:$USF_QA_JOB", submitter)
 
+        resume = (ROOT / "hpc" / "resume_usf_nonlinear_after_response.sh").read_text()
+        self.assertIn("exactly 168 direct estimates", resume)
+        self.assertIn("exactly 168 finalized CTC replays", resume)
+        self.assertNotIn("usf_response_harvest_array.slurm", resume)
+        self.assertNotIn("usf_response_ctc_array.slurm", resume)
+        self.assertNotIn("usf_response_estimate_array.slurm", resume)
+        self.assertIn("--array=0-127%128", resume)
+        self.assertIn("--array=0-231%112", resume)
+        self.assertIn("--array=0-275%144", resume)
+
     def test_nonlinear_candidate_promotion_binds_all_evidence_to_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -453,8 +463,15 @@ class HPCStageTests(unittest.TestCase):
             }))
             direct = root / "direct.json"
             direct.write_text(json.dumps({
+                "candidate_build_ready": True,
+                "direct_precision_contract": "direct-pointwise-uncertainty-v1",
+                "n_direct_estimates": 168,
                 "energy_release_alphas": [0.5, 0.8, 0.95],
                 "angular_release_alphas": [0.5, 0.8, 0.95],
+                "response_group_decisions": {
+                    alpha: {"energy": "released", "angular": "released"}
+                    for alpha in ("0.50", "0.80", "0.95")
+                },
                 "coefficient_rows_sha256": coefficient_hash,
             }))
             hcs = root / "hcs.json"
@@ -485,6 +502,28 @@ class HPCStageTests(unittest.TestCase):
                 promoted["artifact_status"],
                 "deployment_ready_hcs_usf_internal_v1")
             self.assertFalse(promoted["dem_used_as_fit_target"])
+
+            # Selective release is promotable only when every suppressed block
+            # has an explicit base-law decision and full HCS/USF validation.
+            manifest.write_text(json.dumps({
+                "artifact_status": (
+                    "candidate_not_deployable_pending_hcs_usf_validation"),
+                "correction_digest": coefficient_hash,
+            }))
+            selective = json.loads(direct.read_text())
+            selective["energy_release_alphas"] = []
+            selective["angular_release_alphas"] = [0.8]
+            selective["response_group_decisions"] = {
+                "0.50": {"energy": "suppressed_to_validated_base_law",
+                         "angular": "suppressed_to_validated_base_law"},
+                "0.80": {"energy": "suppressed_to_validated_base_law",
+                         "angular": "released"},
+                "0.95": {"energy": "suppressed_to_validated_base_law",
+                         "angular": "suppressed_to_validated_base_law"},
+            }
+            direct.write_text(json.dumps(selective))
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(output.read_text())["pass"])
 
             # A report produced from different coefficient rows must fail
             # closed even when every scalar HCS/USF flag says pass.

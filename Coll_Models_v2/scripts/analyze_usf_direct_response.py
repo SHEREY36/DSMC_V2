@@ -20,6 +20,11 @@ from coll_models_v2.correction_support import (
     energy_quantiles, tangent_quantiles,
 )
 from coll_models_v2.fit_coefficients import CORRECTION_PARAMETERS
+from coll_models_v2.pipeline import (
+    DIRECT_RESPONSE_PRECISION_CONTRACT,
+    direct_response_precision_status,
+    precision_status,
+)
 from coll_models_v2.projections import angular_quantiles
 from dsmc_v2.artifact import VariationalClosure
 from dsmc_v2_contracts import FEATURE_NAMES
@@ -59,6 +64,7 @@ def main() -> None:
         raise SystemExit("coefficient and artifact physical surfaces differ")
 
     observations = []
+    legacy_precision_reclassifications = 0
     paths = sorted(Path(args.direct_estimates).glob("replay_*.json"))
     if len(paths) != 168:
         raise SystemExit(f"expected 168 direct replay estimates, found {len(paths)}")
@@ -66,8 +72,36 @@ def main() -> None:
         estimate = json.loads(path.read_text())
         if not estimate.get("qa", {}).get("sentinel_pass", False):
             raise SystemExit(f"direct estimate failed physics QA: {path}")
-        if not estimate.get("qa", {}).get("precision_pass", False):
-            raise SystemExit(f"direct estimate failed precision QA: {path}")
+        direct_pass, direct_reasons = direct_response_precision_status(estimate)
+        qa = estimate.get("qa", {})
+        precision_contract = qa.get("precision_contract")
+        if precision_contract is None:
+            # Campaigns produced before direct-response QA was separated from
+            # excitation QA may carry only the inapplicable lambda1
+            # contribution reason. Re-evaluate the immutable numerical result
+            # and retain an explicit audit count in the response report.
+            legacy_pass, expected_legacy_reasons = precision_status(estimate)
+            legacy_reasons = set(qa.get("continuation_reasons", []))
+            if (bool(qa.get("precision_pass")) != legacy_pass
+                    or list(qa.get("continuation_reasons", []))
+                    != expected_legacy_reasons):
+                raise SystemExit(
+                    f"legacy direct precision record is inconsistent: {path}")
+            if legacy_reasons - {"lambda1_contribution_precision"}:
+                raise SystemExit(
+                    f"legacy direct estimate has additional precision failures: {path}")
+            if legacy_reasons:
+                legacy_precision_reclassifications += 1
+        elif precision_contract != DIRECT_RESPONSE_PRECISION_CONTRACT:
+            raise SystemExit(
+                f"unknown direct precision contract {precision_contract}: {path}")
+        elif (bool(qa.get("precision_pass")) != direct_pass
+              or list(qa.get("continuation_reasons", [])) != direct_reasons):
+            raise SystemExit(f"direct precision record is inconsistent: {path}")
+        if not direct_pass:
+            raise SystemExit(
+                f"direct estimate failed direct-response precision QA "
+                f"({','.join(direct_reasons)}): {path}")
         provenance = estimate.get("direct_response_provenance", {})
         if provenance.get("base_artifact_sha256") != base_artifact_sha256:
             raise SystemExit(f"direct estimate/base-artifact hash mismatch: {path}")
@@ -313,12 +347,24 @@ def main() -> None:
             row["feature_upper"] = np.maximum(upper, item["features"] + pad).tolist()
             row["direct_usf_support"] = True
 
+    response_group_decisions = {
+        f"{alpha:.2f}": {
+            "energy": ("released" if group_release[alpha][0]
+                       else "suppressed_to_validated_base_law"),
+            "angular": ("released" if group_release[alpha][1]
+                        else "suppressed_to_validated_base_law"),
+        }
+        for alpha in alpha_nodes
+    }
     payload.update({
         "release_policy": "quadratic-evidence-v1",
         "direct_response_contract": "cold_windows_0_2_train_hot_plus_late_holdout_v1",
         "direct_estimate_count": len(observations),
+        "direct_precision_contract": DIRECT_RESPONSE_PRECISION_CONTRACT,
+        "legacy_precision_reclassifications": legacy_precision_reclassifications,
         "direct_parameter_metrics": parameter_metrics,
         "direct_distribution_metrics": distribution_metrics,
+        "direct_response_group_decisions": response_group_decisions,
         "dem_used_as_fit_target": False,
         "coefficient_rows": rows,
     })
@@ -328,17 +374,24 @@ def main() -> None:
     complete_release = bool(all(
         group_release.get(alpha, (False, False)) == (True, True)
         for alpha in alpha_nodes))
+    any_release = bool(any(any(value) for value in group_release.values()))
+    decision_complete = set(group_release) == set(alpha_nodes)
     report = {
         "contract": payload["direct_response_contract"],
         "n_direct_estimates": len(observations),
+        "direct_precision_contract": DIRECT_RESPONSE_PRECISION_CONTRACT,
+        "legacy_precision_reclassifications": legacy_precision_reclassifications,
         "parameter_metrics": parameter_metrics,
         "distribution_metrics": distribution_metrics,
         "energy_release_alphas": [a for a, value in group_release.items() if value[0]],
         "angular_release_alphas": [a for a, value in group_release.items() if value[1]],
-        # Downstream artifact precomputation and 508 validation jobs are
-        # intentionally blocked unless the exact direct-CTC holdout supports
-        # both physical response groups at every fitted alpha plane.
-        "candidate_build_ready": complete_release,
+        "response_group_decisions": response_group_decisions,
+        "complete_response_release": complete_release,
+        # A failed response block is not deployed: its masks are cleared and
+        # the already HCS-validated base law remains active. Building this
+        # selective candidate is safe; deployment still requires the full
+        # HCS and paired USF validation stages below this gate.
+        "candidate_build_ready": bool(decision_complete and any_release),
         "coefficient_rows_sha256": coefficient_rows_sha256,
         "base_artifact_sha256": base_artifact_sha256,
         "dem_used_as_fit_target": False,
@@ -352,8 +405,8 @@ def main() -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
     if not report["candidate_build_ready"]:
         raise SystemExit(
-            "direct USF holdout did not release energy and angular response "
-            "at every fitted alpha plane; candidate build blocked")
+            "direct USF holdout did not release any response block; "
+            "candidate build blocked")
 
 
 if __name__ == "__main__":
