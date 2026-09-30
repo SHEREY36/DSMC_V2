@@ -237,8 +237,9 @@ theta 0.2/1/2; 60,000 encounters and 20 bootstrap resamples per node) went
 through the production chain (CTC, fit, deep QA, precompute, pack).  All six
 nodes passed QA with the bridge form; the encounter-unit stability gate gives
 unique roots theta* = 0.844 (AR 2) and 0.920 (AR 3).  On the same USF pairs the
-gate's rotational residual fell from +0.085..+0.110 (fail) to +0.012..+0.037
-(pass) and the dissipation ratio from 0.964–0.986 to 0.991–1.005.  In USF at
+gate's rotational residual fell from +0.075..+0.094 (fail) to +0.003..+0.022
+(pass), mean of four seeds, and the dissipation ratio from 0.961–0.984 to
+0.987–1.001 (Section 9 has the seed analysis).  In USF at
 alpha = 0.65 (one trajectory, window [96, 160]) theta moved from -7.5 % / -7.2 %
 to -1.2 % / -1.3 % of DEM for AR 2 / 3, with T*, P*_xy and N1 within noise.
 Per-node cost: fit about 7 h at 200,000 encounters and 200 resamples; precompute
@@ -260,3 +261,57 @@ The v1 model is packaged as `DSMC_0D_v2/config/encounter_unit_model_v1.yaml`.
 A rendered derivation, the full algorithm with every closure variable, the
 exchange-gate explanation and the nematic-order outlook are in
 `reports/usf_event_unit_methodology/usf_event_unit.html`.
+
+## 9. The production measure and the near-elastic yardstick (2026-09-30)
+
+**What the measure is.**  The gate evaluates the four productions that fix a USF
+steady state -- D (T* via shear work = D), Lambda_rot
+(theta = root of Lambda_rot = 0), Lambda_xy and Lambda_N1 -- with the model and
+with exact CTC on the same replayed USF pairs.  It never runs inside a
+simulation; it is the acceptance test that selected each model change.  Theta
+depends on the energy kernel only through the energy-weighted conditional mean
+m(x) = E[(1 - eps)(1 - z') | x]; a shift delta in the mean of z' moves r_rot by
+-delta (1 - eps_E)/eps_E, which a Wasserstein distance of the law does not
+weight.
+
+**Residual to theta.**  Linear response of the root gives
+dtheta/theta = -kappa r_rot, kappa = D/(theta dLambda_rot/dtheta).  To leading
+order in the loss, with E[z'|z] = 1/2 + b(z - 1/2), p_exch = 1 - b and flux
+energies 2T_tr, 2T_rot: kappa = 2 eps_E (1 + theta)/(theta p_exch), i.e.
+4 eps_E/p_exch at theta = 1 (AR 2: 1.45, 0.94, 0.52, 0.13, 0.025 at
+alpha = 0.5, 0.65, 0.8, 0.95, 0.99).  Check at alpha = 0.65: previous and
+refined models differ by dr_rot = 0.072–0.073 on all four replays (same pairs
+and random numbers), predicting a theta rise of 6.9 % (AR 2) and 5.9 % (AR 3);
+the USF runs rose by 6.3 and 5.9 points.
+
+**Seeds.**  The earlier gate numbers used 30,000 samples and one seed.  The
+model side shares random numbers across replays, so a seed shifts all rows
+together by about +-0.01 in r_rot.  Four-seed means (40,000 samples), predicted
+theta error -kappa r_rot, against USF theta vs DEM:
+
+| replay | alpha 0.5 | 0.65 previous | 0.65 refined | 0.8 |
+|---|---:|---:|---:|---:|
+| AR 2, src 0.5 | -0.3 % | -9.3 % | -2.1 % | -2.3 % |
+| AR 2, src 0.8 | +0.5 % | -7.0 % | -0.3 % | +0.3 % |
+| AR 2 USF vs DEM | -2.9 % | -7.5 % | -1.2 % | -1.3 % |
+| AR 3, src 0.5 | -1.9 % | -7.7 % | -1.5 % | -0.7 % |
+| AR 3, src 0.8 | +0.1 % | -6.2 % | -0.3 % | -0.5 % |
+| AR 3 USF vs DEM | -2.7 % | -7.2 % | -1.3 % | -0.9 % |
+
+At alpha = 0.5 the gate predicts less than USF shows; the replay states there
+come from the legacy campaign (theta 0.95–1.11 against a true 1.14–1.17).
+
+**Near the elastic limit.**  D -> 0 as alpha -> 1 (eps_E ~ 0.022 at 0.95, 0.0045
+at 0.99), so r_rot and its error grow like 1/eps_E (local alpha = 0.99 replay:
+0.97 +- 1.94 with 3,000 pairs) while kappa falls like eps_E.  The gate now
+checks the predicted theta error |kappa r_rot| <= 0.02 (or 3 SE) at every alpha
+and still reports r_rot, eps_E, p_exch and kappa.  It also replays the
+alpha = 0.95 USF states (theta ~ 1.04) at alpha = 0.9, 0.95, 0.975, 0.99
+(`make_gate_replay_manifest.py --near-elastic-source`), since the alpha = 0.5
+and 0.8 states are dominated near alpha = 1 by relaxation toward equipartition.
+A routing error delta in the mean of z' still moves theta by ~4 delta/p_exch at
+every alpha.
+
+**Figures.**  `results/usf_dem_dsmc_comparison_20260928/figures/01_state_comparison.png`
+and `06_before_after_error.png` now carry the two alpha = 0.65 slice runs as
+stars.

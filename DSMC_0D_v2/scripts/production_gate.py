@@ -8,8 +8,17 @@ encounter clock, per-encounter loss, energy kernel and angular-memory law at
 steady state (moment balance, report Section 1):
 
   rot_residual  (Lambda_rot^model - Lambda_rot^CTC) / D^CTC   sets theta = T_tr/T_rot
+  theta_shift   -kappa * rot_residual, the predicted relative theta error
   loss_ratio    D^model / D^CTC                               sets T*
   xy_ratio, N1_ratio  traceless-stress production ratios      set P*_xy, N1
+
+theta is the root of Lambda_rot = 0, so a residual moves it by
+dtheta/theta = -D / (theta dLambda_rot/dtheta) * rot_residual = -kappa rot_residual.
+To leading order in the loss, kappa = 2 eps_E (1 + theta) / (theta p_exch), with
+eps_E the energy-weighted loss per encounter (from CTC) and p_exch = 1 - b the
+exchange fraction of the energy kernel.  D -> 0 as alpha -> 1, so rot_residual
+and its error grow like 1/eps_E there while kappa falls like eps_E; the rotational
+check is therefore made on theta_shift, which stays on the scale of the observable.
 
 Per flux sample the CTC production is (A_prop/N_att) sum_hits dX and the model
 production is sigma(x) E[dX | x]; the common n^2 <g>/2 cancels.  Standard errors
@@ -30,7 +39,7 @@ from dsmc_v2.encounter import EncounterClock, mean_projected_area
 from dsmc_v2.legacy_models import FrozenLossModel
 from dsmc_v2_contracts.io import AI, OI, _vec as vec, load_run
 
-TOLERANCE = {"rot_residual": 0.03, "loss_ratio": 0.03, "xy_ratio": 0.04}
+TOLERANCE = {"theta_shift": 0.02, "loss_ratio": 0.03, "xy_ratio": 0.04}
 ARGS = None
 _CACHE = {}
 
@@ -78,12 +87,13 @@ def evaluate(directory):
     er0 = .5 * inertia * (np.sum(vec(ov, OI, "omega1_pre") ** 2, 1) + np.sum(vec(ov, OI, "omega2_pre") ** 2, 1))
     er1 = .5 * inertia * (np.sum(vec(ov, OI, "omega1_post") ** 2, 1) + np.sum(vec(ov, OI, "omega2_post") ** 2, 1))
     scale = float(md["proposal_area"])
-    C = np.zeros((n_att, 5))
+    C = np.zeros((n_att, 6))
     C[pos, 0] = et0 + er0 - et1 - er1
     C[pos, 1] = er1 - er0
     C[pos, 2] = g1[:, 0] * g1[:, 1] - g0[:, 0] * g0[:, 1]
     C[pos, 3] = (g1[:, 0] ** 2 - g1[:, 1] ** 2) - (g0[:, 0] ** 2 - g0[:, 1] ** 2)
     C[pos, 4] = 1.0
+    C[pos, 5] = et0 + er0
     C *= scale
     # the production model on a random subset of the same flux sample
     rng = np.random.default_rng(ARGS.seed)
@@ -119,13 +129,18 @@ def evaluate(directory):
         return value, abs(value) * float(np.hypot(d[j][1] / d[j][0], c[j][1] / c[j][0]))
     rot = (d[1][0] - c[1][0]) / c[0][0]
     rot_se = float(np.hypot(d[1][1], c[1][1]) / abs(c[0][0]))
+    eps_energy = float(C[:, 0].sum() / C[:, 5].sum())
+    p_exch = float(state.get("p_exch", np.nan))
+    kappa = 2 * eps_energy * (1 + theta) / (theta * p_exch) if p_exch > 0 else float("nan")
     row = {"directory": Path(directory).name, "alpha": alpha, "AR": ar, "theta": theta,
            "source_alpha": md.get("replay_source_alpha"),
            "node_alpha": bool(np.any(np.isclose(cl.coordinates[:, 0], alpha, atol=1e-9))),
-           "rot_residual": rot, "rot_residual_se": rot_se}
+           "rot_residual": rot, "rot_residual_se": rot_se,
+           "eps_energy": eps_energy, "p_exch": p_exch, "kappa": kappa,
+           "theta_shift": -kappa * rot, "theta_shift_se": kappa * rot_se}
     for name, j in (("loss_ratio", 0), ("xy_ratio", 2), ("N1_ratio", 3), ("rate_ratio", 4)):
         row[name], row[name + "_se"] = ratio(j)
-    checks = {"rot_residual": abs(rot) <= max(TOLERANCE["rot_residual"], 3 * rot_se),
+    checks = {"theta_shift": abs(row["theta_shift"]) <= max(TOLERANCE["theta_shift"], 3 * row["theta_shift_se"]),
               "loss_ratio": abs(row["loss_ratio"] - 1) <= max(TOLERANCE["loss_ratio"], 3 * row["loss_ratio_se"]),
               "xy_ratio": abs(row["xy_ratio"] - 1) <= max(TOLERANCE["xy_ratio"], 3 * row["xy_ratio_se"])}
     row["pass"] = bool(all(checks.values()))
@@ -160,11 +175,15 @@ def main():
                "tolerance": TOLERANCE,
                "median_abs_rot_residual": {
                    "nodes": float(np.median([abs(r["rot_residual"]) for r in rows if r["node_alpha"]] or [np.nan])),
-                   "between_nodes": float(np.median([abs(r["rot_residual"]) for r in rows if not r["node_alpha"]] or [np.nan]))}}
+                   "between_nodes": float(np.median([abs(r["rot_residual"]) for r in rows if not r["node_alpha"]] or [np.nan]))},
+               "median_abs_theta_shift": {
+                   "nodes": float(np.median([abs(r["theta_shift"]) for r in rows if r["node_alpha"]] or [np.nan])),
+                   "between_nodes": float(np.median([abs(r["theta_shift"]) for r in rows if not r["node_alpha"]] or [np.nan]))}}
     out.with_suffix(".json").write_text(json.dumps(summary, indent=2))
     for r in rows:
         print(f"AR {r['AR']:.2f} alpha {r['alpha']:.3f} {'node' if r['node_alpha'] else 'interp'} "
-              f"rot {r['rot_residual']:+.4f}+-{r['rot_residual_se']:.4f} loss {r['loss_ratio']:.4f} "
+              f"rot {r['rot_residual']:+.4f}+-{r['rot_residual_se']:.4f} "
+              f"dtheta {100 * r['theta_shift']:+.2f}+-{100 * r['theta_shift_se']:.2f}% loss {r['loss_ratio']:.4f} "
               f"xy {r['xy_ratio']:.4f} N1 {r['N1_ratio']:.4f} {'PASS' if r['pass'] else 'FAIL ' + r['failed']}")
     print(json.dumps(summary, indent=2))
 

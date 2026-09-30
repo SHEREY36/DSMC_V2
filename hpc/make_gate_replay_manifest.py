@@ -4,7 +4,10 @@
 Sources are DSMC-USF post-NTC collision-flux reservoirs (harvest windows).  Each
 source is replayed at every requested alpha -- the fitted planes and points
 between them -- so the gate compares the model with exact CTC on identical
-pairs, both on the nodes and where the model interpolates.
+pairs, both on the nodes and where the model interpolates.  Near the elastic
+limit the alpha=0.95 states are replayed as well: their theta is close to the
+alpha >= 0.9 steady states, whereas the alpha=0.5 and 0.8 states sit far from
+them and are dominated there by relaxation toward equipartition.
 """
 import argparse
 import csv
@@ -23,19 +26,28 @@ def main():
     parser.add_argument("--source-alphas", default="0.5,0.8")
     parser.add_argument("--window", default="cold_replay_window_02")
     parser.add_argument("--alphas", default=",".join(map(str, NODES + BETWEEN)))
+    parser.add_argument("--near-elastic-source", default="0.95",
+                        help="source alpha replayed at --near-elastic-alphas ('' to skip)")
+    parser.add_argument("--near-elastic-alphas", default="0.9,0.95,0.975,0.99")
+    parser.add_argument("--seed-base", type=int, default=290930000)
     parser.add_argument("--nsamples", type=int, default=40000)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    def values(text):
+        return [float(v) for v in text.split(",") if v.strip()]
+
+    plan = [(source, values(args.alphas)) for source in values(args.source_alphas)]
+    plan += [(source, values(args.near_elastic_alphas)) for source in values(args.near_elastic_source)]
     rows = []
-    for ar in map(float, args.aspect_ratios.split(",")):
-        for source_alpha in map(float, args.source_alphas.split(",")):
+    for ar in values(args.aspect_ratios):
+        for source_alpha, alphas in plan:
             stem = Path(args.harvest) / f"AR_{ar:.3f}_alpha_{source_alpha:.3f}_{args.window}"
             source = json.loads(Path(str(stem) + ".json").read_text())
-            for alpha in map(float, args.alphas.split(",")):
+            for alpha in alphas:
                 rows.append({
                     "task_id": len(rows), "alpha": alpha, "theta": source["theta"],
                     "aspect_ratio": ar, "source_alpha": source_alpha,
-                    "seed": 290930000 + len(rows), "nsamples": args.nsamples,
+                    "seed": args.seed_base + len(rows), "nsamples": args.nsamples,
                     "source_json": str(stem) + ".json", "replay_file": str(stem) + ".bin",
                     "output_directory": (f"results/production_gate_{args.tag}/replay/"
                                          f"AR_{ar:.3f}_src_{source_alpha:.3f}_alpha_{alpha:.3f}")})
