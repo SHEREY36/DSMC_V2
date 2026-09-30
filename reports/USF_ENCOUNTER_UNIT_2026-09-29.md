@@ -156,3 +156,38 @@ ablation; 40 same-code legacy controls) on 208 strided single-core workers,
 longest rows first, plus 48 HCS runs at the DEM benchmark nodes, and a
 dependent analysis job writing `results/usf_encounter_<TAG>/usf_vs_dem.*` and
 `results/hcs_encounter_<TAG>/hcs_vs_dem.csv`.
+
+## 6. Negishi campaign result (usf_encounter_v1_20260930)
+
+All 440 USF and 48 HCS realizations completed.  The dependent analysis job
+failed only because Negishi's Python environment has no pandas; the analysis
+was run locally (`DSMC_0D_v2/scripts/analyze_usf_encounter.py`, and
+`DSMC_0D_v2/scripts/analyze_usf_science.py --rod-arm encounter_memory
+--encounter-table ... --previous-comparison ...`, which regenerated
+`results/usf_dem_dsmc_comparison_20260928`; the legacy version is kept as
+`results/usf_dem_dsmc_comparison_20260928_legacy_model`).
+
+Absolute relative difference from DEM over the 40 rod cases (AR 1.5–3,
+alpha 0.50–0.95, 4 seeds x cold/hot), legacy -> encounter unit + angular memory:
+
+| observable | median | max |
+|---|---|---|
+| T* | 8.1 -> 1.1 % | 26.9 -> 7.3 % |
+| theta | 9.2 -> 3.0 % | 17.7 -> 7.9 % |
+| P*_xy | 8.8 -> 1.5 % | 11.7 -> 2.9 % |
+| N1 | 22.4 -> 3.3 % | 30.3 -> 5.4 % |
+| kinetic viscosity | 13.2 -> 1.6 % | 22.9 -> 3.3 % |
+| collisions per strain (encounters x <k>) | 5.4 -> 1.6 % | 10.2 -> 3.9 % |
+
+HCS at the DEM benchmark nodes: alpha 0.8 AR 2/3 -1.4/-2.1 % (legacy
+-2.5/-2.9 %); alpha 0.95 +0.5/+0.8 %; alpha 1 within 0.5 %.
+
+Open: theta is 4–8 % low only at alpha 0.55–0.75, vanishing at the fitted
+alpha = 0.5 and 0.8 planes (DEM theta(alpha) has an interior maximum near
+0.6), which points to alpha interpolation; AR 1.5 T* is 4.6–7.3 % high at
+alpha <= 0.75, present at a fitted node and not yet explained.
+
+The model is packaged as `DSMC_0D_v2/config/encounter_unit_model_v1.yaml`.
+A rendered derivation, the full algorithm with every closure variable, the
+exchange-gate explanation and the nematic-order outlook are in
+`reports/usf_event_unit_methodology/usf_event_unit.html`.
