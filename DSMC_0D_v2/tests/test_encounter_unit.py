@@ -7,23 +7,34 @@ import pytest
 from dsmc_v2.angular_memory import AngularMemoryTable, PARAMETER_NAMES, sample_cosine
 from dsmc_v2.encounter import EncounterClock
 
-TABLE = "DSMC_0D_v2/models/encounter_cross_section_v1.json"
+TABLE = "DSMC_0D_v2/models/encounter_cross_section_v2.json"
+TABLE_V1 = "DSMC_0D_v2/models/encounter_cross_section_v1.json"
 
 
-def test_clock_ratio_hits_nodes_and_interpolates():
+def test_clock_reproduces_measured_nodes():
     clock = EncounterClock(TABLE)
     data = json.load(open(TABLE))
-    row = data["ratio"]["3.0000"]
-    for theta, ratio in zip(row["theta"], row["sigma_enc_over_sigma_c"]):
-        assert clock.ratio(theta, 3.0) == pytest.approx(ratio, rel=1e-12)
-    # sigma_c is a contact rate: the encounter rate is below it for rods at theta=1
-    assert 0.78 < clock.ratio(1.0, 3.0) < 0.84
-    assert 0.97 < clock.ratio(1.0, 1.1) < 0.99
-    mid = clock.ratio(1.0, 2.25)
-    assert min(clock.ratio(1.0, 2.0), clock.ratio(1.0, 2.5)) <= mid <= max(
-        clock.ratio(1.0, 2.0), clock.ratio(1.0, 2.5))
+    for key, row in data["cross_section"].items():
+        for theta, sigma in zip(row["theta"], row["sigma_enc_over_pi_d2"]):
+            assert clock.sigma(theta, float(key), 1.0) / np.pi == pytest.approx(sigma, rel=1e-5)
+    # geometry scales as d^2
+    assert clock.sigma(1.0, 2.0, 0.5) == pytest.approx(0.25 * clock.sigma(1.0, 2.0, 1.0))
+    # rotating rods sweep more area when rotation is relatively hot (low theta)
+    assert clock.sigma(0.2, 3.0, 1.0) > clock.sigma(1.0, 3.0, 1.0) > clock.sigma(2.0, 3.0, 1.0)
+    mid = clock.sigma(1.0, 2.25, 1.0)
+    assert clock.sigma(1.0, 2.0, 1.0) < mid < clock.sigma(1.0, 2.5, 1.0)
     with pytest.raises(ValueError):
-        clock.ratio(1.0, 3.5)
+        clock.sigma(1.0, 3.5, 1.0)
+
+
+def test_measured_table_agrees_with_campaign_table():
+    """v2 (geometry x dynamic factor) and v1 (polynomial x ratio) agree at nodes."""
+    new, old = EncounterClock(TABLE), EncounterClock(TABLE_V1)
+    data = json.load(open(TABLE))
+    for key, row in data["cross_section"].items():
+        for theta in row["theta"]:
+            assert new.sigma(theta, float(key), 1.0) == pytest.approx(
+                old.sigma(theta, float(key), 1.0), rel=5e-3)
 
 
 def _moments(a, b):

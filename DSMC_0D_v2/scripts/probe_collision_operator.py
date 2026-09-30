@@ -97,8 +97,8 @@ def probe(directory):
     row = dict(directory=Path(directory).name, alpha=alpha, AR=ar, theta=theta)
     sigma_c = float(md["collision_cross_section"])
     for name, clock, scale, memory in (("V0", 1.0, 1.0, False),
-                                       ("V1", o["clock"].ratio(theta, ar), fitted / bl, False),
-                                       ("V2", o["clock"].ratio(theta, ar), fitted / bl, True)):
+                                       ("V1", o["clock"].sigma(theta, ar, 1.0) / sigma_c, fitted / bl, False),
+                                       ("V2", o["clock"].sigma(theta, ar, 1.0) / sigma_c, fitted / bl, True)):
         w = sigma_c * clock * shape; eps = gamma * scale
         zf = np.array([cl.sample_energy(state, z[i], eps[i], rng, loss_mean=bl * scale) for i in range(len(z))])
         gp = np.empty_like(g)
@@ -121,7 +121,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", default="models/microscopic_closure_v2_angular_evidence/closure_v2.npz")
-    parser.add_argument("--encounter-table", default="DSMC_0D_v2/models/encounter_cross_section_v1.json")
+    parser.add_argument("--encounter-table", default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     parser.add_argument("--angular-memory", default="DSMC_0D_v2/models/angular_memory_v1.json")
     parser.add_argument("--model-root", default="DSMC_0D_v2/models")
     parser.add_argument("--samples", type=int, default=30000)

@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--config", default="DSMC_0D_v2/config/full_domain_baseline_candidate.yaml")
     parser.add_argument("--artifact", required=True)
     parser.add_argument("--encounter-table",
-                        default="DSMC_0D_v2/models/encounter_cross_section_v1.json")
+                        default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     parser.add_argument("--angular-memory", default="DSMC_0D_v2/models/angular_memory_v1.json")
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:

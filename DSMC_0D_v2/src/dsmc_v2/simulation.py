@@ -222,7 +222,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         # encounter rate and draw the loss on the encounter scale.
         encounter_clock = EncounterClock(config["microscopic_closure"].get(
             "encounter_cross_section",
-            "DSMC_0D_v2/models/encounter_cross_section_v1.json"))
+            "DSMC_0D_v2/models/encounter_cross_section_v2.json"))
         kernel.encounter_loss = True
     clock_ratio_sum, clock_ratio_steps = 0.0, 0
     angular_memory = None
@@ -491,9 +491,10 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                          else 1.0)
             clock_sigma = params.sigma_c
             if encounter_clock is not None:
-                clock_ratio = encounter_clock.ratio(theta, params.aspect_ratio)
-                clock_sigma = params.sigma_c * clock_ratio
-                clock_ratio_sum += clock_ratio
+                # Measured encounter cross-section at the cell's current theta.
+                clock_sigma = encounter_clock.sigma(
+                    theta, params.aspect_ratio, params.diameter)
+                clock_ratio_sum += clock_sigma / params.sigma_c
                 clock_ratio_steps += 1
             n_candidates = candidate_count(count, clock_sigma * inflation,
                                            vrmax, volume, dt)

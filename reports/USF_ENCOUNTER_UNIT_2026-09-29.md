@@ -187,6 +187,23 @@ alpha = 0.5 and 0.8 planes (DEM theta(alpha) has an interior maximum near
 0.6), which points to alpha interpolation; AR 1.5 T* is 4.6–7.3 % high at
 alpha <= 0.75, present at a fitted node and not yet explained.
 
+## 7. Measured collision cross-section replaces the v1 polynomial
+
+The v1 polynomial `sigma_c(AR)` (from Hong's work, a fit to measured
+`sigma(AR)/sigma(1)` ratios times `pi d^2`) was never measured in this project
+and lies 2–23 % above the encounter area our CTC data give.  The encounter
+model now uses `sigma_c(theta, AR) = A_bar(AR) D(theta, AR)`, with
+`A_bar = pi (d^2 + d L + L^2/8)` the exact isotropic mean projected excluded
+area and `D` the measured dynamic factor (1.00–1.34), interpolated in
+`(log theta, AR)`.  Table: `DSMC_0D_v2/models/encounter_cross_section_v2.json`,
+built by `Coll_Models_v2/scripts/build_encounter_table.py`, which counts each
+common-random-number attempt stream once (standard errors 0.1–0.3 %).  At
+theta = 1, in units of pi d^2: 1.107, 1.222, 1.408, 1.603, 2.323, 3.127, 4.010
+for AR 1.1, 1.2, 1.35, 1.5, 2, 2.5, 3.  It agrees with the ratio table used by
+the Negishi campaign to 0.40 % at every node, so that campaign stands.  The
+legacy contact unit and the alpha = 1 block keep the polynomial for
+reproducibility.
+
 The model is packaged as `DSMC_0D_v2/config/encounter_unit_model_v1.yaml`.
 A rendered derivation, the full algorithm with every closure variable, the
 exchange-gate explanation and the nematic-order outlook are in

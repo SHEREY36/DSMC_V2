@@ -62,7 +62,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", required=True)
     parser.add_argument("--benchmark", default="DSMC_0D_v2/reference/usf_dem_and_legacy_v1.csv")
-    parser.add_argument("--encounter-table", default="DSMC_0D_v2/models/encounter_cross_section_v1.json")
+    parser.add_argument("--encounter-table", default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     prefixes = sorted(p[:-5] for p in glob.glob(f"{args.results}/*/*.json"))

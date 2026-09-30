@@ -14,7 +14,7 @@ if [[ -e "$USF_MANIFEST" || -d "results/usf_encounter_${TAG}" ]]; then
   echo "tag $TAG already used; pick a fresh TAG (tasks skip completed rows if you resubmit the arrays by hand)" >&2
   exit 2
 fi
-for f in "$ARTIFACT" DSMC_0D_v2/models/encounter_cross_section_v1.json \
+for f in "$ARTIFACT" DSMC_0D_v2/models/encounter_cross_section_v2.json \
          DSMC_0D_v2/models/angular_memory_v1.json DSMC_0D_v2/reference/usf_dem_and_legacy_v1.csv; do
   [[ -f "$f" ]] || { echo "missing $f" >&2; exit 2; }
 done

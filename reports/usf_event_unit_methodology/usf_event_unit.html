@@ -112,6 +112,10 @@ window.MathJax = {
   <li>The algorithm, every closure</li>
   <li>The exchange gate, then and now</li>
   <li>Nematic order: what an upgrade takes</li>
+  <li>Why the invariant response is off</li>
+  <li>The physical stencil</li>
+  <li>The second-stage acceptance and \(\Xi\)</li>
+  <li>Cost</li>
 </ol>
 
 <h2><span class="num">1</span>What sets a USF steady state</h2>
@@ -356,25 +360,31 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 \label{eq:sigenc}
 \]
 <p>which is exactly v1's <code>csx = 4 BMAX² NHIT/NTRY</code>. The incoming velocities and spins are Maxwellian at the node's \((T_{tr},T_{rot})\), so each artifact node yields \(\sigma_{\enc}(\theta,\mathrm{AR})\). No force acts before first contact, so the value cannot depend on \(\alpha\), and the shards agree across \(\alpha\) to four figures.</p>
-<p>The polynomial is a fit to measured ratios \(\sigma(\mathrm{AR})/\sigma(1)\) (your <code>csx.png</code>), multiplied by the sphere area \(\pi d^2\). Its values do not match the equal-temperature encounter area:</p>
-<div class="table-wrap"><table>
-<caption><b>Table 6.</b> Cross-sections in units of \(\pi d^2\) at \(T_{tr}=T_{rot}\). The contact area is \(\sigma_{\enc}\langle k\rangle\), listed for \(\alpha=1\) and \(\alpha=0.5\).</caption>
-<thead><tr><th>AR</th><th>polynomial \(\sigma_c\)</th><th>\(\sigma_{\enc}\) (CTC)</th><th>contact area</th></tr></thead>
-<tbody>
-<tr><td>1.1</td><td>1.13</td><td>1.11</td><td>1.11 – 1.11</td></tr>
-<tr><td>1.5</td><td>1.74</td><td>1.60</td><td>1.68 – 1.82</td></tr>
-<tr><td>2.0</td><td>2.65</td><td>2.32</td><td>2.57 – 2.85</td></tr>
-<tr><td>2.5</td><td>3.71</td><td>3.13</td><td>3.57 – 4.02</td></tr>
-<tr><td>3.0</td><td>4.94</td><td>4.03</td><td>4.67 – 5.29</td></tr>
-</tbody></table></div>
-<p>Your own v1 file <code>New Simulations/N_eq_AR30/C120/csx.txt</code> reads 3.122 in \(d=0.5\) units, which is 3.98\(\pi d^2\) at AR 3. That is close to the current encounter area. Across all \(\theta\in[0.2,2]\) the AR 3 encounter area stays at or below 4.68\(\pi d^2\), so no equal- or unequal-temperature encounter measurement reaches the polynomial's 4.94. The points behind the polynomial came from some other measurement; at AR 1.5–3 they sit between the encounter and contact areas. The repository does not record which runs produced them.</p>
-<p>The encounter area does depend on \(\theta\), through the ratio of spin speed to approach speed. At AR 3 it is 16% larger at \(\theta=0.2\) and 5% smaller at \(\theta=2\) than at \(\theta=1\). Your observation that a start at \((T_{tr},T_{rot})=(2,1.8)\) barely changes it is consistent with this: that is \(\theta=1.11\), where the change is under 1%.</p>
-<p>The model keeps \(\sigma_c\) as an AR-only baseline and multiplies it by the measured ratio,</p>
+<p>The polynomial \(\sigma_c(\mathrm{AR})=\pi d^2(0.32\,\mathrm{AR}^2+0.694\,\mathrm{AR}-0.0213)\) comes from Andrew Hong's work: a fit to measured ratios \(\sigma(\mathrm{AR})/\sigma(1)\), multiplied by the sphere area. It was never measured in this project, and it sits well above the encounter area our CTC data give, by 23% at AR 3 (Table 6). Your own v1 file <code>New Simulations/N_eq_AR30/C120/csx.txt</code> gives 3.98\(\pi d^2\) at AR 3, in line with our measurement rather than with the polynomial.</p>
+<p>The encounter model therefore no longer uses the polynomial. The collision cross-section is taken directly from our CTC data, as a function of both temperature ratio and shape:</p>
 \[
-\sigma(\theta,\mathrm{AR})=\sigma_c(\mathrm{AR})\,r(\theta,\mathrm{AR})=\sigma_{\enc}(\theta,\mathrm{AR}) \quad\text{at every node.}
+\sigma_c(\theta,\mathrm{AR})=\bar A_\perp(\mathrm{AR})\;D(\theta,\mathrm{AR}),
+\qquad
+\bar A_\perp=\pi\Big(d^2+dL+\tfrac{L^2}{8}\Big).
+\label{eq:sigmac}
 \]
-<p>\(\theta\) is the cell's instantaneous \(T_{tr}/T_{rot}\), recomputed from all particles at every time step. It is a ratio of the two mean energies, not a U-statistic. U-statistics are used only for the 14 flow invariants, which feed the invariant response (switched off) and support diagnostics. Inside the cell, pair-to-pair differences in encounter area are carried by \(A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)\,g(\Xi)\). The factor \(g(\Xi)\) is normalised so its mean is one at the node's state, so the cell's mean event rate is \(\sigma_{\enc}(\theta)\). On the actual USF states the probe measured the ratio of this event rate to the true encounter rate as 0.995–1.003.</p>
-<p>The ratio \(r(\theta,\mathrm{AR})\) and \(\langle k\rangle(\alpha,\theta,\mathrm{AR})\) now live in a versioned model table, <code>DSMC_0D_v2/models/encounter_cross_section_v1.json</code>. The model configuration <code>DSMC_0D_v2/config/encounter_unit_model_v1.yaml</code> loads it together with the artifact and the angular-memory table. At the next artifact rebuild, both should be written into the NPZ as per-node arrays, so the model is one file.</p>
+<p>\(\bar A_\perp\) is the exact isotropic average of the static projected excluded area \(A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)\) of \eqref{eq:aperp} below, using \(\langle|\boldsymbol u\times\ghat|\rangle=\pi/4\) and \(\langle|\ghat\cdot(\boldsymbol u_i\times\boldsymbol u_j)|\rangle=\pi/8\). The dynamic factor \(D=\sigma_{\enc}/\bar A_\perp\) is measured. It says how much more area the rods sweep because they rotate while closing. At every node \(\sigma_c(\theta,\mathrm{AR})\) equals the measurement exactly. Between nodes \(D\) is interpolated linearly in \(\log\theta\) and in AR, and the exact geometry carries the growth with AR, so no fitted polynomial is involved.</p>
+<div class="table-wrap"><table>
+<caption><b>Table 6.</b> Measured collision cross-section. \(D\) is listed at \(\theta=0.2/1/2\); \(\sigma_c\) at \(\theta=1\) is in units of \(\pi d^2\) with its standard error.</caption>
+<thead><tr><th>AR</th><th>\(\bar A_\perp/\pi d^2\)</th><th>\(D\) at \(\theta=0.2/1/2\)</th><th>\(\sigma_c(1,\mathrm{AR})\), measured</th><th>Hong polynomial</th></tr></thead>
+<tbody>
+<tr><td>1.1</td><td>1.101</td><td>1.013 / 1.005 / 1.003</td><td>1.1068 &plusmn; 0.0009</td><td>1.129</td></tr>
+<tr><td>1.2</td><td>1.205</td><td>1.037 / 1.014 / 1.009</td><td>1.2222 &plusmn; 0.0007</td><td>1.272</td></tr>
+<tr><td>1.35</td><td>1.365</td><td>1.072 / 1.031 / 1.019</td><td>1.4075 &plusmn; 0.0009</td><td>1.499</td></tr>
+<tr><td>1.5</td><td>1.531</td><td>1.106 / 1.047 / 1.029</td><td>1.6025 &plusmn; 0.0012</td><td>1.740</td></tr>
+<tr><td>2</td><td>2.125</td><td>1.203 / 1.093 / 1.058</td><td>2.3225 &plusmn; 0.0038</td><td>2.647</td></tr>
+<tr><td>2.5</td><td>2.781</td><td>1.276 / 1.124 / 1.079</td><td>3.1266 &plusmn; 0.0027</td><td>3.714</td></tr>
+<tr><td>3</td><td>3.500</td><td>1.336 / 1.146 / 1.092</td><td>4.0101 &plusmn; 0.0072</td><td>4.941</td></tr>
+</tbody></table></div>
+<p>The four \(\alpha\) shards at a node share one random attempt stream, and one directory set is a copy of another, so the table builder counts each stream once and the errors above are honest. The ratio table the Negishi campaign used agrees with this measurement to 0.40% at every node, so the campaign results stand. The v1 polynomial is still used by the legacy contact unit and the exact \(\alpha=1\) block, so earlier runs stay reproducible.</p>
+<p>The cross-section depends on \(\theta\) through the ratio of spin speed to approach speed. At AR 3 it is 17% larger at \(\theta=0.2\) and 5% smaller at \(\theta=2\) than at \(\theta=1\). A start at \((T_{tr},T_{rot})=(2,1.8)\) is \(\theta=1.11\), where the change is under 1%, which matches what you saw.</p>
+<p>\(\theta\) is the cell's instantaneous \(T_{tr}/T_{rot}\), recomputed from all particles at every time step. It is a ratio of the two mean energies, not a U-statistic. U-statistics are used only for the 14 flow invariants, which feed the invariant response (switched off) and support diagnostics. Inside the cell, pair-to-pair differences are carried by the second-stage acceptance of Section 15. On the actual USF states the probe measured the resulting event rate against the true encounter rate as 0.995–1.003.</p>
+<p>Files: <code>DSMC_0D_v2/models/encounter_cross_section_v2.json</code>, built from the shards by <code>Coll_Models_v2/scripts/build_encounter_table.py</code>, and loaded by <code>DSMC_0D_v2/config/encounter_unit_model_v1.yaml</code> with the artifact and the angular-memory table. At the next artifact rebuild these per-node values belong inside the NPZ, so the model is one file.</p>
 
 <h2><span class="num">10</span>The algorithm, every closure</h2>
 <p>This is the complete homogeneous (0D) DSMC step for rods with the variational closure. Every closure variable appears, whether or not it is active today.</p>
@@ -395,7 +405,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 <div class="blk">Global tables</div>
 <ul>
   <li>BL loss \(\gamma_{\max}(\alpha,\mathrm{AR})\), \(P_{\rm 1hit}(\alpha,\mathrm{AR})\), \(B\sim\mathrm{Beta}(1.21,3.67)\) <span class="tag on">active</span></li>
-  <li>Clock \(\sigma_c(\mathrm{AR})\) <span class="tag on">active</span> and \(r(\theta,\mathrm{AR})\) <span class="tag new">new</span></li>
+  <li>Collision cross-section \(\sigma_c(\theta,\mathrm{AR})=\bar A_\perp(\mathrm{AR})\,D(\theta,\mathrm{AR})\), measured from CTC <span class="tag new">new</span>. The v1 polynomial \(\sigma_c(\mathrm{AR})\) is used only by the legacy contact unit and the \(\alpha=1\) block.</li>
   <li>\(\langle k\rangle(\alpha,\theta,\mathrm{AR})\) <span class="tag diag">diagnostic</span>: converts encounters to contacts for DEM comparison</li>
 </ul>
 
@@ -412,13 +422,13 @@ b=\eta_2+\zeta z'+\rho_2 z ,
   <li><b>Closure state</b>, every 0.05 collisions per particle:
     <ol type="a">
       <li>14 invariants \(\boldsymbol X\) as pair U-statistics <span class="tag diag">diagnostic</span> (they feed step d only when corrections are on)</li>
-      <li>Physical stencil \(\{(k,w_k)\}\) around \((\alpha,\theta,\mathrm{AR})\): multilinear weights on a complete cell</li>
+      <li>Physical stencil \(\{(k,w_k)\}\) around \((\alpha,\theta,\mathrm{AR})\) (Section 14)</li>
       <li>Interpolated \(\bar\varepsilon_{\enc}=\sum_kw_k\bar\varepsilon_{\enc,k}\) and \(g(\Xi)=\sum_kw_kg_k(\Xi)\). The energy and angular laws stay per node and are mixed at sampling time.</li>
       <li>If corrections are on and \(\boldsymbol X\) lies in the feature box: \(\boldsymbol\psi_k\leftarrow\boldsymbol\psi_k+M_k\odot\big[B_k\Delta\boldsymbol X+Q_k(\Delta\boldsymbol X\odot\Delta\boldsymbol X)\big]\) <span class="tag off">off</span></li>
     </ol></li>
-  <li><b>Clock.</b> \(\sigma=\sigma_c(\mathrm{AR})\,r(\theta,\mathrm{AR})\) <span class="tag new">new</span>. Candidates \(N_{\rm cand}=\big\lfloor N(N-1)\,\sigma F\,v_{\max}\Delta t/V+U\big\rfloor\), where \(F=A_{\sup}g_{\max}/\bar A_\perp\) inflates for the second-stage acceptance.</li>
+  <li><b>Clock.</b> \(\sigma=\sigma_c(\theta,\mathrm{AR})\) at the current \(\theta\) <span class="tag new">new</span>. Candidates \(N_{\rm cand}=\big\lfloor N(N-1)\,\sigma F\,v_{\max}\Delta t/V+U\big\rfloor\), where \(F=A_{\sup}g_{\max}/\bar A_\perp\) inflates for the second-stage acceptance.</li>
   <li><b>Speed screen.</b> For each candidate pair \((i,j)\): draw a unit vector \(\boldsymbol e\), set \(\bg=\boldsymbol c_i-\boldsymbol c_j\), and accept if \(|\bg\cdot\boldsymbol e|\ge U\,v_{\max}\), which gives a rate \(\propto g\).</li>
-  <li><b>Orientation and spin screen.</b> \(\Xi=(|\boldsymbol\omega_i|+|\boldsymbol\omega_j|)(L+D)/g\). Accept with probability \(A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)\,g(\Xi)/(A_{\sup}g_{\max})\).</li>
+  <li><b>Orientation and spin screen</b> (Section 15). \(\Xi=(|\boldsymbol\omega_i|+|\boldsymbol\omega_j|)(L+D)/g\). Accept with probability \(A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)\,g(\Xi)/(A_{\sup}g_{\max})\).</li>
   <li><b>One encounter.</b>
     <ol type="a">
       <li>\(E_{tr}=\tfrac m4g^2\), \(E_{\rm rot}=E_{{\rm rot},i}+E_{{\rm rot},j}\), \(E=E_{tr}+E_{\rm rot}\), \(z=E_{tr}/E\).</li>
@@ -436,7 +446,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 
 <div class="blk">Special cases</div>
 <ul>
-  <li><b>\(\alpha=1\):</b> an exact elastic block replaces step 9. With probability \(1/Z_r\), \(Z_r=5/3\), set \(z'\sim\mathrm{Beta}(2,2)\), split uniformly and reset spins; otherwise keep the partition. Always apply the hard-sphere deflection. There is no loss and the clock is \(\sigma_c\).</li>
+  <li><b>\(\alpha=1\):</b> an exact elastic block replaces step 9. With probability \(1/Z_r\), \(Z_r=5/3\), set \(z'\sim\mathrm{Beta}(2,2)\), split uniformly and reset spins; otherwise keep the partition. Always apply the hard-sphere deflection. There is no loss and the clock is the v1 polynomial \(\sigma_c(\mathrm{AR})\).</li>
   <li><b>AR = 1:</b> the exact smooth-sphere collision.</li>
 </ul>
 </div>
@@ -466,4 +476,54 @@ p(\phi'\mid\cdot)\propto\exp\!\big[\kappa_1\cos(\phi'-\phi_\omega)+\kappa_2\cos(
   <li><b>Validation:</b> USF \(S_2\) and the spin–vorticity correlation, with checks that stress and temperature do not move. HCS is unaffected because its states are isotropic.</li>
   <li><b>Caveat:</b> part of the DEM alignment may come from correlated re-collisions and multibody contacts, which a binary DSMC cannot represent.</li>
 </ul>
+
+<h2><span class="num">13</span>Why the invariant response is off</h2>
+<p>The USF improvement came from the event unit and the angular memory, not from the invariant response. The response was switched off in every arm of the Negishi campaign. The ablation arm isolates the event unit, with neither the response nor the angular memory:</p>
+<div class="table-wrap"><table>
+<caption><b>Table 7.</b> Median absolute difference from DEM over the 40 rod cases, by model arm.</caption>
+<thead><tr><th>arm</th><th>\(T^*\)</th><th>\(\theta\)</th><th>\(P^{k*}_{xy}\)</th><th>\(N_1^{k*}\)</th></tr></thead>
+<tbody>
+<tr><td>legacy (earlier study, with invariant response)</td><td class="bad">8.1%</td><td class="bad">9.2%</td><td class="bad">8.8%</td><td class="bad">22.4%</td></tr>
+<tr><td>encounter unit only</td><td>3.2%</td><td>2.5%</td><td>2.8%</td><td>7.7%</td></tr>
+<tr><td>encounter unit + angular memory</td><td class="good">1.1%</td><td class="good">3.0%</td><td class="good">1.5%</td><td class="good">3.3%</td></tr>
+</tbody></table></div>
+<p>In the earlier crossflow study, switching the response on changed \(T^*\), \(\theta\) and \(P^*_{xy}\) by less than 0.5%, and its energy block was suppressed at every node. It could not have done more. It corrects each node's parameters from cell-averaged moments, the 14 invariants. The errors were a wrong event rate and loss unit, which no cell moment can repair, and a dependence of scattering on each pair's own incoming split \(z\), which averages away in any cell moment. The angular memory conditions on the pair's \(z\) directly. The response stays in the code as an available pathway.</p>
+
+<h2><span class="num">14</span>The physical stencil</h2>
+<p>The artifact nodes lie on a partial grid: \(\alpha\in\{0.5,0.8,0.95,1\}\), \(\mathrm{AR}\in\{1.1,1.2,1.35,1.5,2,2.5,3\}\), and \(\theta\in\{0.0125,0.025,0.05,0.1,0.15,0.2,1,2\}\) for AR \(\le1.35\) or \(\{0.2,1,2\}\) for AR \(\ge1.5\). For a query \(q=(\alpha,\theta,\mathrm{AR})\), each axis is handled on its own. A value on a grid line takes that value with weight one. Otherwise, with bracketing grid values \(x_-\lt x\lt x_+\),</p>
+\[
+w^{(x)}_-=\frac{x_+-x}{x_+-x_-},\qquad w^{(x)}_+=\frac{x-x_-}{x_+-x_-}.
+\]
+<p>The stencil is the tensor product, up to eight vertices, with \(w_k=w^{(\alpha)}w^{(\theta)}w^{(\mathrm{AR})}\) and \(\sum_kw_k=1\). The weights are linear in \(\theta\) itself. If a vertex of that box does not exist, for example at \(\theta\lt0.2\) with AR above 1.35, the query falls back to barycentric weights in the Delaunay tetrahedron of measured nodes that contains it.</p>
+<p>The stencil is used three ways. Scalars such as \(\bar\varepsilon_{\enc}\) and \(g(\Xi)\) are weighted sums. The energy draw averages node quantiles at one shared \(U\), \(z'=\sum_kw_kQ_k(U;a_k)\), which is the Wasserstein interpolation of the node laws. The angle draw picks node \(k\) with probability \(w_k\), which is the mixture of the node laws. Both keep every draw physical. The linear weights in \(\alpha\) between the 0.5 and 0.8 planes are where the residual \(\theta\) error of Section 8 enters.</p>
+
+<h2><span class="num">15</span>The second-stage acceptance and \(\Xi\)</h2>
+<p>The NTC first stage selects pairs at a rate proportional to \(g\), blind to orientation and spin. A real pair's chance of meeting also depends on its axes and spins, and the second stage corrects for that by thinning. Each candidate is kept with probability \(\sigma(x)/\sigma_{\max}\), where \(\sigma(x)\) is that pair's own encounter area. The candidate count was inflated by \(\sigma_{\max}/\bar\sigma\), so the mean rate stays at \(\sigma_c(\theta,\mathrm{AR})\). This is standard acceptance–rejection, the same device NTC uses for the speed.</p>
+<p>For rods that do not rotate, the pair's area seen along \(\ghat\) is the exact projected excluded area</p>
+\[
+A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)=\pi d^2+2dL\big(|\boldsymbol u_i\times\ghat|+|\boldsymbol u_j\times\ghat|\big)+L^2\,\big|\ghat\cdot(\boldsymbol u_i\times\boldsymbol u_j)\big| ,
+\label{eq:aperp}
+\]
+<p>so a broadside pair presents more area than an end-on pair. Rods also turn while they close, which sweeps extra area. How much depends on how far they turn during the time they are within reach of each other:</p>
+\[
+\Xi=\frac{(|\boldsymbol\omega_i|+|\boldsymbol\omega_j|)\,(L+D)}{g}
+\;=\;\text{rotation rate}\times\text{time to cross the reach }L+D .
+\]
+<p>The enhancement \(g(\Xi)\) is not guessed. For every stored CTC proposal, the code computes the exact kinematic encounter probability: the pair moves force-free through 128 impact points covering the disc of radius \(L+D\), both rods rotate rigidly, and it checks whether the axes ever come within \(D\). The ratio of that exact propensity to \(A_\perp\) is binned in 24 quantile bins of \(\Xi\) per AR, and the bin medians define \(g(\Xi)\). The curve is normalised so its area-weighted mean over the node's own ensemble is one, because the absolute rate is carried by \(\sigma_c(\theta,\mathrm{AR})\). It is therefore a one-variable surrogate for an exact six-dimensional kinematic function. With it, the incoming energy split of selected pairs matches exact selection to four decimals at every node tested, and the USF event rate matches the true encounter rate to 0.995–1.003. The two factors do different jobs. Orientation through \(A_\perp\) sets which geometries meet but is almost uncorrelated with the energy split. Rotation is what biases the split, because fast spinners carry more rotational energy and meet more often. Ignoring the physical collision measure altogether breaks the elastic equipartition identity by 4% at AR 3.</p>
+<p>This has nothing to do with multiple hits. The second stage decides whether a first contact happens at all, that is, whether there is an encounter. Re-hits inside an encounter belong to its outcome: they are already in the CTC exchange, angle and loss laws, and they are counted by \(\langle k\rangle\).</p>
+
+<h2><span class="num">16</span>Cost</h2>
+<p>A time step costs a pass over the candidates (stage 1 and stage 2), constant work per accepted encounter, and a closure-state refresh every 0.05 collisions per particle. The refresh is one pass over the particles for the invariants plus a stencil lookup. Per encounter the work is fixed: up to eight quantile-table lookups for the energy and a few rejection trials for the angle. Total cost is therefore proportional to the number of events, \(O(N\tau)\), and memory is \(O(N)\) plus the artifact, about 0.65 GB resident.</p>
+<div class="table-wrap"><table>
+<caption><b>Table 8.</b> Measured cost. Workstation: AR 2, \(\alpha=0.8\), USF, N = 4,000, same events per model. Negishi: the 440-run campaign, N = 10,000, one core each.</caption>
+<thead><tr><th>model</th><th>workstation, µs per event</th><th>Negishi, µs per event</th></tr></thead>
+<tbody>
+<tr><td>v1 (Bernoulli gate, GMM exchange)</td><td>553</td><td>–</td></tr>
+<tr><td>variational kernels, contact clock</td><td>790</td><td>1,547</td></tr>
+<tr><td>encounter unit</td><td>–</td><td>1,659</td></tr>
+<tr><td>encounter unit + angular memory</td><td>847</td><td>1,700</td></tr>
+</tbody></table></div>
+<p>The current model costs about 1.5 times v1 per event. The encounter clock also fires 8–19% fewer events per unit physical time (AR 1.5–3), so per unit physical time it is about 1.3 times v1 at AR 2. Closure sampling is 14% of wall time. A 10,000-particle trajectory to \(\tau=160\) takes a median 24 minutes on one Negishi core.</p>
+<p>DEM for the same flow, AR 3 and \(\alpha=0.8\), with 1,252 particles on 4 cores, takes 1,396 s for its 120-strain production. That covers about 256,000 contacts, or roughly 22 core-milliseconds per contact, against about 1.7 for a DSMC event. Per particle-strain, DSMC costs about 0.0026 core-seconds against 0.037 for DEM. That is about 14 times cheaper, before counting DEM's transient stages. The DSMC cost also does not grow with contact stiffness or with dilution, while DEM resolves every contact with about 40 time steps and integrates every free flight.</p>
+<p>The per-event time is almost all Python overhead in the per-candidate loop; the arithmetic of one encounter takes microseconds. Moving the candidate and collision loops to compiled or vectorised code would give another one to two orders of magnitude.</p>
 </main>
