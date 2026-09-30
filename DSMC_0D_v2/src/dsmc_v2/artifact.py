@@ -108,7 +108,13 @@ class MicroscopicClosure:
 class VariationalClosure:
     """Runtime view of ``closure_v2.npz`` with strict no-extrapolation rules."""
 
-    def __init__(self, path: str | Path, corrections_enabled: bool = True):
+    def __init__(self, path: str | Path, corrections_enabled: bool = False):
+        if corrections_enabled:
+            raise ValueError(
+                "the invariant (flow-moment) response was retired on 2026-09-30: "
+                "the kernel is conditioned on each pair's own state, and the fitted "
+                "responses worsened the collisional productions on held-out USF "
+                "states; see reports/USF_ENCOUNTER_UNIT_2026-09-29.md")
         data = np.load(path, allow_pickle=False)
         if str(data["schema_version"]) not in ("2.3.0", "2.4.0") \
                 or str(data["artifact_type"]) != "bl_variational_closure":
@@ -245,73 +251,11 @@ class VariationalClosure:
         self._state_cache: dict[tuple, dict] = {}
         self._state_cache_hits = 0
         self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
-        self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
-        self.beta = np.asarray(data["beta"], dtype=float)
-        self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
-        self.correction_trust_amplitude = float(
-            data["correction_trust_amplitude"]
-            if "correction_trust_amplitude" in data.files else 0.5)
-        if not np.isfinite(self.correction_trust_amplitude) \
-                or self.correction_trust_amplitude <= 0.0:
-            raise ValueError("artifact correction trust amplitude must be positive")
-        self.beta_trust_amplitude = np.asarray(
-            data["beta_trust_amplitude"] if "beta_trust_amplitude" in data.files
-            else np.full(len(self.beta_coordinates), self.correction_trust_amplitude),
-            dtype=float)
-        if self.beta_trust_amplitude.shape != (len(self.beta_coordinates),) \
-                or np.any(~np.isfinite(self.beta_trust_amplitude)) \
-                or np.any(self.beta_trust_amplitude <= 0.0):
-            raise ValueError("beta trust amplitudes must be positive per-node values")
-        self.correction_parameter_names = tuple(
-            data["correction_parameter_names"].astype(str)
-            if "correction_parameter_names" in data.files else ("lambda1",))
-        # Read legacy scalar-response artifacts as a one-parameter tensor.
-        if self.beta.ndim == 2:
-            self.beta = self.beta[:, None, :]
-            self.beta_deployed = self.beta_deployed[:, None, :]
-        self.beta_quadratic = np.asarray(
-            data["beta_quadratic"] if "beta_quadratic" in data.files
-            else np.zeros_like(self.beta), dtype=float)
-        self.beta_quadratic_deployed = np.asarray(
-            data["beta_quadratic_deployed"]
-            if "beta_quadratic_deployed" in data.files
-            else self.beta_deployed, dtype=bool)
-        self.beta_feature_center = np.asarray(
-            data["beta_feature_center"] if "beta_feature_center" in data.files
-            else np.zeros((len(self.beta_coordinates), len(FEATURE_NAMES))), dtype=float)
-        self.beta_feature_lower = np.asarray(
-            data["beta_feature_lower"] if "beta_feature_lower" in data.files
-            else np.tile(np.asarray(data["feature_lower"], dtype=float),
-                         (len(self.beta_coordinates), 1)), dtype=float)
-        self.beta_feature_upper = np.asarray(
-            data["beta_feature_upper"] if "beta_feature_upper" in data.files
-            else np.tile(np.asarray(data["feature_upper"], dtype=float),
-                         (len(self.beta_coordinates), 1)), dtype=float)
-        if self.beta.shape != (len(self.beta_coordinates),
-                               len(self.correction_parameter_names),
-                               len(FEATURE_NAMES)) \
-                or self.beta_deployed.shape != self.beta.shape:
-            raise ValueError("natural-parameter response tensor has invalid shape")
-        if self.beta_quadratic.shape != self.beta.shape \
-                or self.beta_quadratic_deployed.shape != self.beta.shape \
-                or np.any(~np.isfinite(self.beta_quadratic)):
-            raise ValueError("quadratic response tensor has invalid shape")
-        if self.beta_feature_center.shape != (len(self.beta_coordinates),
-                                               len(FEATURE_NAMES)):
-            raise ValueError("beta_feature_center must be (coefficient node, feature)")
-        if self.beta_feature_lower.shape != self.beta_feature_center.shape \
-                or self.beta_feature_upper.shape != self.beta_feature_center.shape \
-                or np.any(self.beta_feature_lower > self.beta_feature_upper):
-            raise ValueError("local correction feature bounds are invalid")
-        if len(self.correction_parameter_names) > 1:
-            expected = ("lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2")
-            if self.correction_parameter_names != expected:
-                raise ValueError("unsupported natural-parameter correction ordering")
-            if self.energy_logit_sensitivities is None \
-                    or self.energy_sensitivity_parameter_names != ("lambda2", "lambda3"):
-                raise ValueError("multivariate corrections require energy shape sensitivities")
-        self.feature_lower = np.asarray(data["feature_lower"], dtype=float)
-        self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
+        # Cell-moment bounds are carried for diagnostics only.
+        self.feature_lower = (np.asarray(data["feature_lower"], dtype=float)
+                              if "feature_lower" in data.files else None)
+        self.feature_upper = (np.asarray(data["feature_upper"], dtype=float)
+                              if "feature_upper" in data.files else None)
         self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
         self.joint_parameters = np.asarray(data["joint_parameters"], dtype=float)
         if np.any(~np.isfinite(self.p_exch)):
@@ -322,11 +266,8 @@ class VariationalClosure:
         for axis in range(3):
             if not np.all(np.diff(np.unique(self.coordinates[:, axis])) > 0.0):
                 raise ValueError("artifact physical grid axes must be strictly monotone")
-        if corrections_enabled and (self.beta_deployed.size == 0 or not (
-                np.any(self.beta_deployed)
-                or np.any(self.beta_quadratic_deployed))):
-            raise ValueError("natural-parameter corrections requested but no beta is deployed")
-        self.corrections_enabled = bool(corrections_enabled)
+        self.corrections_enabled = False
+        # Kept at zero for callers that still read these counters.
         self.out_of_domain_queries = 0
         self.total_queries = 0
         self.out_of_domain_by_feature = np.zeros(len(FEATURE_NAMES), dtype=np.int64)
@@ -335,10 +276,6 @@ class VariationalClosure:
         self._coordinate_index = {
             tuple(float(value) for value in row): index
             for index, row in enumerate(self.coordinates)
-        }
-        self._beta_coordinate_index = {
-            tuple(float(value) for value in row): index
-            for index, row in enumerate(self.beta_coordinates)
         }
         self._coordinate_axes = tuple(
             np.unique(self.coordinates[:, axis]) for axis in range(3))
@@ -351,30 +288,19 @@ class VariationalClosure:
                 # lower-dimensional test/design.  Off-grid queries fail
                 # closed in _physical_vertex_weights below.
                 self._physical_triangulation = None
-        if len(self.beta_coordinates) >= 4:
-            self._interpolators["beta"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta)
-            self._interpolators["beta_quadratic"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta_quadratic)
-            self._interpolators["beta_feature_center"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta_feature_center)
-            self._interpolators["beta_feature_lower"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta_feature_lower)
-            self._interpolators["beta_feature_upper"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta_feature_upper)
-        if len(self.beta_coordinates):
-            self._interpolators["beta_mask"] = NearestNDInterpolator(
-                self.beta_coordinates, self.beta_deployed.astype(float))
-            self._interpolators["beta_quadratic_mask"] = NearestNDInterpolator(
-                self.beta_coordinates,
-                self.beta_quadratic_deployed.astype(float))
         if len(self.coordinates):
             self._interpolators["joint_mask"] = NearestNDInterpolator(
                 self.coordinates, self.joint_deployed.astype(float))
         joint_coordinates = self.coordinates[self.joint_deployed]
         if len(joint_coordinates) >= 4:
-            self._interpolators["joint_parameters"] = LinearNDInterpolator(
-                joint_coordinates, self.joint_parameters[self.joint_deployed])
+            try:
+                self._interpolators["joint_parameters"] = LinearNDInterpolator(
+                    joint_coordinates, self.joint_parameters[self.joint_deployed])
+            except QhullError:
+                # A grid confined to one alpha (or theta, or AR) plane is flat in
+                # 3-D; exact-plane queries use the node stencil and need no
+                # triangulation.
+                pass
 
     @staticmethod
     def _exact(points: np.ndarray, query: np.ndarray) -> np.ndarray:
@@ -484,135 +410,26 @@ class VariationalClosure:
     STATE_CACHE_LIMIT = 4096
 
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
-                     features: np.ndarray,
+                     features: np.ndarray | None = None,
                      domain_features: np.ndarray | None = None) -> dict:
-        features = np.asarray(features, dtype=float)
-        if features.shape != (len(FEATURE_NAMES),):
-            raise ValueError("variational closure requires fourteen cell features")
-        domain_features = (features if domain_features is None
-                           else np.asarray(domain_features, dtype=float))
-        if domain_features.shape != (len(FEATURE_NAMES),):
-            raise ValueError("variational closure requires fourteen domain features")
+        """Collision-law state at (alpha, theta, AR).
+
+        On a fitted node the node's own laws are used; elsewhere the stencil
+        of Section 14 mixes neighbouring node laws.  The law depends on the
+        cell only through (alpha, theta, AR): every pair-level dependence is
+        carried by the pair's own variables inside the kernels.  ``features``
+        is accepted for call compatibility and ignored.
+        """
         self.total_queries += 1
-        key = None
-        if not self.corrections_enabled:
-            # With corrections off the state depends only on (alpha, theta, AR).
-            # The features still gate the domain but do not enter the state.
-            key = (round(float(alpha), 9), round(float(theta), 3),
-                   round(float(aspect_ratio), 9))
-            hit = self._state_cache.get(key)
-            if hit is not None:
-                self._state_cache_hits += 1
-                return hit
-        ood = False
+        key = (round(float(alpha), 9), round(float(theta), 3),
+               round(float(aspect_ratio), 9))
+        hit = self._state_cache.get(key)
+        if hit is not None:
+            self._state_cache_hits += 1
+            return hit
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
         vertex_indices, vertex_weights = self._physical_vertex_weights(query)
-        p_exch = float(self._weighted(self.p_exch, vertex_indices, vertex_weights))
-        eparams = self._weighted(
-            self.energy_parameters, vertex_indices, vertex_weights).astype(float)
-        aparams = self._weighted(
-            self.angular_parameters, vertex_indices, vertex_weights).astype(float)
-        anchor = self._weighted(
-            self.energy_anchor, vertex_indices, vertex_weights).astype(float)
-        curve = self._weighted(
-            self.xi_enhancement, vertex_indices, vertex_weights).astype(float)
-        fitted_loss = float(self._weighted(
-            self.energy_mean_loss, vertex_indices, vertex_weights))
-        atable = self._weighted(
-            self.angular_tables, vertex_indices, vertex_weights).astype(float)
-        beta = np.zeros((len(self.correction_parameter_names), len(FEATURE_NAMES)))
-        beta_quadratic = np.zeros_like(beta)
-        parameter_correction = np.zeros(len(self.correction_parameter_names))
-        if self.corrections_enabled:
-            beta_vertex_indices = [self._beta_coordinate_index.get(tuple(
-                float(value) for value in self.coordinates[index]))
-                for index in vertex_indices]
-            if all(index is not None for index in beta_vertex_indices):
-                beta_vertex_indices = np.asarray(beta_vertex_indices, dtype=int)
-                beta = self._weighted(
-                    self.beta, beta_vertex_indices, vertex_weights).astype(float)
-                beta_quadratic = self._weighted(
-                    self.beta_quadratic, beta_vertex_indices,
-                    vertex_weights).astype(float)
-                feature_center = self._weighted(
-                    self.beta_feature_center, beta_vertex_indices,
-                    vertex_weights).astype(float)
-                feature_lower = self._weighted(
-                    self.beta_feature_lower, beta_vertex_indices,
-                    vertex_weights).astype(float)
-                feature_upper = self._weighted(
-                    self.beta_feature_upper, beta_vertex_indices,
-                    vertex_weights).astype(float)
-            else:
-                # Backward compatibility for historical partial correction
-                # surfaces. Complete candidates use the same tensor/Delaunay
-                # physical stencil as every base-law field above.
-                beta = self._interpolate(
-                    self.beta_coordinates, self.beta, query,
-                    "natural-parameter coefficients",
-                    self._interpolators.get("beta")).astype(float)
-                beta_quadratic = self._interpolate(
-                    self.beta_coordinates, self.beta_quadratic, query,
-                    "quadratic natural-parameter coefficients",
-                    self._interpolators.get("beta_quadratic")).astype(float)
-                feature_center = self._interpolate(
-                    self.beta_coordinates, self.beta_feature_center, query,
-                    "correction feature centre",
-                    self._interpolators.get("beta_feature_center")).astype(float)
-                feature_lower = self._interpolate(
-                    self.beta_coordinates, self.beta_feature_lower, query,
-                    "correction feature lower bound",
-                    self._interpolators.get("beta_feature_lower")).astype(float)
-                feature_upper = self._interpolate(
-                    self.beta_coordinates, self.beta_feature_upper, query,
-                    "correction feature upper bound",
-                    self._interpolators.get("beta_feature_upper")).astype(float)
-            raw_outside = ((features < feature_lower)
-                           | (features > feature_upper))
-            domain_outside = ((domain_features < feature_lower)
-                              | (domain_features > feature_upper))
-            self.out_of_domain_by_feature += domain_outside
-            self.sampling_excursion_by_feature += raw_outside & ~domain_outside
-            ood = bool(np.any(domain_outside))
-            self.out_of_domain_queries += int(ood)
-            exact_beta = self._exact(self.beta_coordinates, query)
-            if len(exact_beta):
-                deployed = self.beta_deployed[exact_beta[0]]
-                quadratic_deployed = self.beta_quadratic_deployed[exact_beta[0]]
-            else:
-                deployed = np.asarray(
-                    self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
-                quadratic_deployed = np.asarray(
-                    self._interpolators["beta_quadratic_mask"](
-                        query[None, :]))[0] >= 0.5
-            # The response surface is evidence for a local correction, not a
-            # license to extrapolate it.  Outside its measured feature box,
-            # retain the calibrated base collision law and suppress every
-            # response increment for this state update.  The simulation
-            # records these fallbacks separately before and during its
-            # retained statistical window.
-            if ood:
-                beta.fill(0.0)
-                beta_quadratic.fill(0.0)
-            else:
-                beta *= deployed
-                beta_quadratic *= quadratic_deployed
-                feature_delta = features - feature_center
-                parameter_correction = (beta @ feature_delta
-                                        + beta_quadratic @ (feature_delta * feature_delta))
-            correction = dict(zip(self.correction_parameter_names,
-                                  parameter_correction.tolist()))
-            for index, name in enumerate(("lambda1", "lambda2", "lambda3", "lambda4")):
-                if name in correction:
-                    eparams[index] += correction[name]
-            for index, name in enumerate(("eta1", "eta2")):
-                if name in correction:
-                    aparams[index] += correction[name]
-        else:
-            correction = {name: 0.0 for name in self.correction_parameter_names}
-            feature_center = np.zeros(len(FEATURE_NAMES))
-            feature_lower = self.feature_lower
-            feature_upper = self.feature_upper
+        weighted = lambda values: self._weighted(values, vertex_indices, vertex_weights)
         exact = (vertex_indices[:1]
                  if len(vertex_indices) == 1
                  and np.all(np.isclose(self.coordinates[vertex_indices[0]], query,
@@ -628,33 +445,22 @@ class VariationalClosure:
                     self._interpolators["joint_parameters"](query[None, :]))[0]
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
-        if joint and self.corrections_enabled:
-            # eta1 and eta2 multiply the same sufficient statistics in the
-            # conditional joint law. Their increments therefore add directly;
-            # the measured z*cosine coupling is deliberately left unchanged.
-            joint_parameters[0] += correction.get("eta1", 0.0)
-            joint_parameters[1] += correction.get("eta2", 0.0)
-        state = {"p_exch": p_exch, "energy_parameters": eparams,
-                "energy_vertex_indices": vertex_indices,
-                "energy_vertex_weights": vertex_weights,
-                "parameter_correction": correction,
-                "energy_correction": correction.get("lambda1", 0.0),
-                "fitted_mean_loss": fitted_loss,
-                "energy_anchor": anchor, "xi_enhancement": curve,
-                "angular_parameters": aparams,
-                "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
-                "correction_fallback": bool(self.corrections_enabled and ood),
-                "beta_feature_center": feature_center,
-                "beta_feature_lower": feature_lower,
-                "beta_feature_upper": feature_upper,
-                "energy_corrected": any(abs(correction.get(name, 0.0)) > 0.0
-                                        for name in ("lambda1", "lambda2",
-                                                     "lambda3", "lambda4")),
-                "joint_deployed": joint, "joint_parameters": joint_parameters}
-        if key is not None:
-            if len(self._state_cache) >= self.STATE_CACHE_LIMIT:
-                self._state_cache.clear()
-            self._state_cache[key] = state
+        state = {"p_exch": float(weighted(self.p_exch)),
+                 "energy_parameters": weighted(self.energy_parameters).astype(float),
+                 "energy_vertex_indices": vertex_indices,
+                 "energy_vertex_weights": vertex_weights,
+                 "parameter_correction": {}, "energy_correction": 0.0,
+                 "fitted_mean_loss": float(weighted(self.energy_mean_loss)),
+                 "energy_anchor": weighted(self.energy_anchor).astype(float),
+                 "xi_enhancement": weighted(self.xi_enhancement).astype(float),
+                 "angular_parameters": weighted(self.angular_parameters).astype(float),
+                 "angular_quantiles": weighted(self.angular_tables).astype(float),
+                 "out_of_domain": False, "correction_fallback": False,
+                 "energy_corrected": False,
+                 "joint_deployed": joint, "joint_parameters": joint_parameters}
+        if len(self._state_cache) >= self.STATE_CACHE_LIMIT:
+            self._state_cache.clear()
+        self._state_cache[key] = state
         return state
 
     def _energy_quantile_row(self, state: dict, z_in: float, loss: float,
@@ -670,11 +476,6 @@ class VariationalClosure:
         """
         indices = np.asarray(state["energy_vertex_indices"], dtype=int)
         weights = np.asarray(state["energy_vertex_weights"], dtype=float)
-        correction = state.get("parameter_correction", {})
-        delta1 = float(correction.get("lambda1", state.get("energy_correction", 0.0)))
-        delta2 = float(correction.get("lambda2", 0.0))
-        delta3 = float(correction.get("lambda3", 0.0))
-        delta4 = float(correction.get("lambda4", 0.0))
         result = np.zeros_like(self.probability, dtype=float)
         clamped = False
         for index, physical_weight in zip(indices, weights):
@@ -693,14 +494,7 @@ class VariationalClosure:
                 memory = float(coefficients @ np.array([x, x * x, x * x * x]))
             else:
                 memory = float(coefficients[0] * float(z_in))
-            if abs(delta3) > 0.0:
-                if self.energy_kernel_forms[index] == "conditional_logit_cubic_v3":
-                    # lambda3 is the first bounded-logit memory coefficient,
-                    # whose sufficient statistic is x rather than raw z_in.
-                    memory += delta3 * x
-                else:
-                    memory += delta3 * float(z_in)
-            a = float(lambda1 + delta1 + memory + (lambda4 + delta4) * covariate)
+            a = float(lambda1 + memory + lambda4 * covariate)
             grid = self.energy_a_grid[index]
             if a < grid[0] or a > grid[-1]:
                 clamped = True
@@ -710,25 +504,7 @@ class VariationalClosure:
             span = grid[upper] - grid[lower]
             blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
             table = self.energy_tables[index]
-            row = (1.0 - blend) * table[lower] + blend * table[upper]
-            if self.energy_logit_sensitivities is not None \
-                    and (abs(delta2) > 0.0 or abs(delta3) > 0.0):
-                sensitivity_table = self.energy_logit_sensitivities[index]
-                sensitivity = ((1.0 - blend) * sensitivity_table[lower]
-                               + blend * sensitivity_table[upper])
-                q = np.clip(row, 1.0e-8, 1.0 - 1.0e-8)
-                logit = np.log(q / (1.0 - q))
-                logit += delta2 * sensitivity[0] + delta3 * sensitivity[1]
-                row = 1.0 / (1.0 + np.exp(-np.clip(logit, -50.0, 50.0)))
-                row[0], row[-1] = 0.0, 1.0
-                monotone = np.maximum.accumulate(row)
-                repair = float(np.max(monotone - row))
-                if repair > 1.0e-12:
-                    self.energy_monotonic_repairs += 1
-                    self.maximum_energy_monotonic_repair = max(
-                        self.maximum_energy_monotonic_repair, repair)
-                    row = monotone
-            result += physical_weight * row
+            result += physical_weight * ((1.0 - blend) * table[lower] + blend * table[upper])
         self.energy_axis_clamps += int(clamped)
         return result
 
@@ -776,23 +552,6 @@ class VariationalClosure:
                     break
             else:
                 raise RuntimeError("coupled angular rejection sampler failed")
-        elif any(abs(state.get("parameter_correction", {}).get(name, 0.0)) > 0.0
-                 for name in ("eta1", "eta2")):
-            linear, quadratic = state["angular_parameters"]
-            candidates = [-1.0, 1.0]
-            if quadratic < 0.0:
-                vertex = -linear / (3.0 * quadratic)
-                if -1.0 < vertex < 1.0:
-                    candidates.append(vertex)
-            maximum = max(linear * c + quadratic * 0.5 * (3.0 * c * c - 1.0)
-                          for c in candidates)
-            for _ in range(10000):
-                cosine = 2.0 * rng.random() - 1.0
-                exponent = linear * cosine + quadratic * 0.5 * (3.0 * cosine**2 - 1.0)
-                if rng.random() <= np.exp(exponent - maximum):
-                    break
-            else:
-                raise RuntimeError("corrected angular rejection sampler failed")
         else:
             cosine = float(np.interp(rng.random(), self.probability, table))
         trial = np.array([1.0, 0.0, 0.0]) if abs(ghat[0]) < 0.9 else np.array([0.0, 1.0, 0.0])

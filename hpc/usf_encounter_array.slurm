@@ -28,6 +28,8 @@ INDEX=${SLURM_ARRAY_TASK_ID:?}
 while (( INDEX < ROWS )); do
   PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src:$ROOT/DSMC_0D_v2/src" \
     hpc/python.sh DSMC_0D_v2/scripts/run_usf_encounter_task.py \
-      --manifest "$MANIFEST" --task "$INDEX" --artifact "$ARTIFACT"
+      --manifest "$MANIFEST" --task "$INDEX" --artifact "$ARTIFACT" \
+      --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}" \
+      --angular-memory "${ANGULAR_MEMORY:-DSMC_0D_v2/models/angular_memory_v1.json}"
   INDEX=$(( INDEX + STRIDE ))
 done

@@ -109,7 +109,7 @@ def _closure_from_config(config: dict):
             raise ValueError("variational_v2 energy and angle must be enabled together")
         return routing, angular, VariationalClosure(
             closure_config["artifact"],
-            bool(closure_config.get("invariant_corrections", True)))
+            bool(closure_config.get("invariant_corrections", False)))
     return routing, angular, MicroscopicClosure(
         closure_config["routing_artifact"], closure_config["vss_artifact"],
         closure_config["rotational_direction_artifact"])
@@ -451,10 +451,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                        or closure_state_updates == 0
                        or collisions >= closure_state_next_collision)):
                 closure_started = wallclock.perf_counter()
-                features, domain_features = cell_features_with_domain(
-                    state.velocity, state.omega, state.axis,
-                    params.mass, params.inertia, sphere=False)
                 if audit_enabled:
+                    # Flow moments are diagnostics only: the closure state
+                    # depends on (alpha, theta, AR), and each pair's own
+                    # state enters the kernels directly.
+                    features, domain_features = cell_features_with_domain(
+                        state.velocity, state.omega, state.axis,
+                        params.mass, params.inertia, sphere=False)
                     feature_count += 1
                     feature_sum += features
                     feature_min = np.minimum(feature_min, features)
@@ -466,15 +469,9 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                         domain_feature_max, domain_features)
                 closure_alpha = 1.0 if time < kernel.equilibration_time else alpha
                 closure_state = closure.kernel_state(
-                    closure_alpha, theta, params.aspect_ratio,
-                    features, domain_features)
-                correction_fallback = bool(
-                    closure_state.get("correction_fallback", False))
-                correction_fallback_queries += int(correction_fallback)
+                    closure_alpha, theta, params.aspect_ratio)
                 if collisions / float(count) >= evaluation_start_tau:
                     evaluation_closure_queries += 1
-                    evaluation_correction_fallback_queries += int(
-                        correction_fallback)
                 kernel.set_cell_variational(closure_state)
                 if angular_memory is not None:
                     kernel.angular_memory_stencil = angular_memory.stencil(closure_state)
@@ -690,6 +687,7 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
         "event_unit": event_unit,
+        "invariant_response": "retired",
         "angular_memory": None if angular_memory is None else angular_memory.path,
         "encounter_clock_mean_ratio": (clock_ratio_sum / clock_ratio_steps
                                        if clock_ratio_steps else None),

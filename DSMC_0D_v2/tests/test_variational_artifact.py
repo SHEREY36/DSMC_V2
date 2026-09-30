@@ -55,69 +55,6 @@ class VariationalArtifactTests(unittest.TestCase):
                               if joint else np.full((len(coordinates), 3), np.nan)),
         )
 
-    def test_correction_is_relative_to_the_fitted_baseline_feature_state(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            data = dict(np.load(path, allow_pickle=False))
-            center = np.zeros_like(data["beta"])
-            center[:, 0] = 0.04
-            data["beta_feature_center"] = center
-            np.savez_compressed(path, **data)
-            closure = VariationalClosure(path)
-            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.10
-            state = closure.kernel_state(0.9, 0.75, 1.75, features)
-            self.assertAlmostEqual(state["energy_correction"], 0.2 * (0.10 - 0.04))
-
-    def test_multivariate_corrections_reach_energy_and_angular_parameters(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path, joint=True)
-            data = dict(np.load(path, allow_pickle=False))
-            count = len(data["surface_coordinates"])
-            beta = np.zeros((count, 6, len(FEATURE_NAMES)))
-            beta[:, :, 0] = np.array([0.2, 0.3, 0.4, 0.5, 0.6, -0.2])
-            data["beta"] = beta
-            data["beta_se"] = np.zeros_like(beta)
-            data["beta_deployed"] = np.ones_like(beta, dtype=bool)
-            data["beta_feature_center"] = np.zeros((count, len(FEATURE_NAMES)))
-            data["correction_parameter_names"] = np.array(
-                ["lambda1", "lambda2", "lambda3", "lambda4", "eta1", "eta2"])
-            a_count = data["energy_a_grid"].shape[1]
-            data["energy_logit_sensitivities"] = np.zeros(
-                (count, a_count, 2, len(data["quantile_probability"])))
-            data["energy_sensitivity_parameter_names"] = np.array(
-                ["lambda2", "lambda3"])
-            np.savez_compressed(path, **data)
-            closure = VariationalClosure(path)
-            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
-            state = closure.kernel_state(0.9, 0.75, 1.75, features)
-            np.testing.assert_allclose(
-                state["energy_parameters"], [0.02, 0.03, 5.04, 0.05])
-            np.testing.assert_allclose(state["angular_parameters"], [0.06, -0.02])
-            np.testing.assert_allclose(state["joint_parameters"], [0.16, -0.12, 0.3])
-
-    def test_quadratic_response_uses_its_own_mask(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            data = dict(np.load(path, allow_pickle=False))
-            count = len(data["surface_coordinates"])
-            beta = np.zeros((count, 1, len(FEATURE_NAMES)))
-            quadratic = np.zeros_like(beta)
-            quadratic[:, 0, 0] = 0.7
-            data["beta"] = beta
-            data["beta_deployed"] = np.zeros_like(beta, dtype=bool)
-            data["beta_quadratic"] = quadratic
-            data["beta_quadratic_deployed"] = quadratic != 0.0
-            data["beta_feature_center"] = np.zeros(
-                (count, len(FEATURE_NAMES)))
-            np.savez_compressed(path, **data)
-            closure = VariationalClosure(path)
-            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.2
-            state = closure.kernel_state(0.8, 0.1, 1.5, features)
-            self.assertAlmostEqual(state["energy_correction"], 0.7 * 0.2**2)
-
     def test_load_interpolate_and_sample(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "closure_v2.npz"
@@ -128,7 +65,10 @@ class VariationalArtifactTests(unittest.TestCase):
             self.assertEqual(closure.energy_interpolation,
                              "node_first_quantile_interpolation_v1")
             self.assertAlmostEqual(state["p_exch"], 0.4)
-            self.assertAlmostEqual(state["energy_parameters"][0], 0.02)
+            # The retired flow-moment response must not move the base law.
+            self.assertAlmostEqual(state["energy_parameters"][0], 0.0)
+            bare = closure.kernel_state(0.9, 0.75, 1.75)
+            np.testing.assert_allclose(bare["energy_parameters"], state["energy_parameters"])
             rng = np.random.default_rng(123)
             values = np.array([closure.sample_energy(state, 0.5, 0.0, rng)
                                for _ in range(100000)])
@@ -142,6 +82,21 @@ class VariationalArtifactTests(unittest.TestCase):
             high = np.mean([closure.sample_energy(state, 0.9, 0.0, rng)
                             for _ in range(20000)])
             self.assertGreater(high - low, 0.05)
+
+    def test_invariant_response_is_retired(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "closure_v2.npz"
+            self._write(path)
+            with self.assertRaisesRegex(ValueError, "retired"):
+                VariationalClosure(path, corrections_enabled=True)
+            # An artifact with no response fields at all loads.
+            data = dict(np.load(path, allow_pickle=False))
+            for key in [k for k in data if k.startswith("beta") or k.startswith("correction")]:
+                data.pop(key)
+            np.savez_compressed(path, **data)
+            closure = VariationalClosure(path)
+            state = closure.kernel_state(0.8, 0.1, 1.5)
+            self.assertFalse(state["energy_corrected"])
 
     def test_packed_adaptive_energy_tables_match_rectangular_reader(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -185,25 +140,6 @@ class VariationalArtifactTests(unittest.TestCase):
             indices = state["energy_vertex_indices"]
             np.testing.assert_allclose(closure.coordinates[indices, 0], 0.8)
             self.assertAlmostEqual(float(np.sum(state["energy_vertex_weights"])), 1.0)
-
-    def test_correction_interpolation_uses_the_same_physical_stencil(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            data = dict(np.load(path, allow_pickle=False))
-            coordinates = data["surface_coordinates"]
-            beta = np.zeros((len(coordinates), 1, len(FEATURE_NAMES)))
-            beta[:, 0, 0] = np.where(
-                np.isclose(coordinates[:, 0], 0.8), 0.2, 9.0)
-            data["beta"] = beta
-            data["beta_deployed"] = beta != 0.0
-            data["beta_feature_center"] = np.zeros(
-                (len(coordinates), len(FEATURE_NAMES)))
-            np.savez_compressed(path, **data)
-            closure = VariationalClosure(path)
-            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.1
-            state = closure.kernel_state(0.8, 0.75, 1.75, features)
-            self.assertAlmostEqual(state["energy_correction"], 0.02)
 
     def test_energy_sampler_evaluates_nodes_before_mixing(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -293,64 +229,6 @@ class VariationalArtifactTests(unittest.TestCase):
             np.savez_compressed(path, **data)
             with self.assertRaisesRegex(ValueError, "xi_enhancement must be"):
                 VariationalClosure(path)
-
-    def test_refuses_enabled_but_undeployed_corrections(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            data = dict(np.load(path, allow_pickle=False))
-            data["beta_deployed"] = np.zeros_like(data["beta_deployed"])
-            np.savez_compressed(path, **data)
-            with self.assertRaisesRegex(ValueError, "no beta is deployed"):
-                VariationalClosure(path, corrections_enabled=True)
-            VariationalClosure(path, corrections_enabled=False)
-
-    def test_feature_domain_falls_back_to_uncorrected_base_law(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            closure = VariationalClosure(path)
-            features = np.zeros(len(FEATURE_NAMES)); features[0] = 0.7
-            state = closure.kernel_state(0.8, 0.5, 1.5, features)
-            self.assertTrue(state["out_of_domain"])
-            self.assertTrue(state["correction_fallback"])
-            self.assertEqual(state["energy_correction"], 0.0)
-            self.assertFalse(np.any(state["beta"]))
-            self.assertEqual(closure.out_of_domain_fraction, 1.0)
-
-    def test_one_sided_sampling_excursion_is_not_physical_extrapolation(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            data = dict(np.load(path, allow_pickle=False))
-            index = FEATURE_NAMES.index(ONE_SIDED_FEATURE_NAMES[0])
-            data["feature_lower"][index] = 0.0
-            data["beta"][:, index] = 1.0
-            data["beta_deployed"][:, index] = True
-            np.savez_compressed(path, **data)
-            closure = VariationalClosure(path)
-            raw = np.zeros(len(FEATURE_NAMES)); raw[index] = -0.01
-            domain = raw.copy(); domain[index] = 0.001
-            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
-            self.assertFalse(state["out_of_domain"])
-            self.assertFalse(state["correction_fallback"])
-            self.assertEqual(closure.out_of_domain_fraction, 0.0)
-            self.assertEqual(closure.sampling_excursion_by_feature[index], 1)
-            # Support classification must not alter the learned correction.
-            self.assertAlmostEqual(state["energy_correction"], raw[index])
-
-    def test_domain_statistic_still_fails_on_true_upper_extrapolation(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "closure_v2.npz"
-            self._write(path)
-            closure = VariationalClosure(path)
-            raw = np.zeros(len(FEATURE_NAMES))
-            domain = raw.copy(); domain[FEATURE_NAMES.index("PiPi")] = 0.7
-            state = closure.kernel_state(0.8, 0.5, 1.5, raw, domain)
-            self.assertTrue(state["out_of_domain"])
-            self.assertTrue(state["correction_fallback"])
-            self.assertEqual(state["energy_correction"], 0.0)
-            self.assertEqual(closure.out_of_domain_fraction, 1.0)
 
     def test_feature_domain_is_inactive_when_corrections_are_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:

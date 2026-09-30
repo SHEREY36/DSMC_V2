@@ -8,6 +8,26 @@ Schema 2.2 replaces the experimental schema-2.1 GMM/routing/VSS composition
 with an opt-in variational energy-partition and angular kernel. The complete
 legacy path remains available for controlled A/B comparisons.
 
+## Current model (2026-09-30)
+
+The production model is the encounter-unit closure
+(`DSMC_0D_v2/config/encounter_unit_model_v1.yaml`; the alpha-refined
+`encounter_unit_model_v2.yaml` is built by `hpc/submit_alpha_refinement.sh`):
+
+- one DSMC event is one CTC encounter: the clock is the measured encounter
+  cross-section sigma_c(theta, AR), and the loss is drawn on the per-encounter
+  scale the kernels were fitted on (this supersedes the v1 polynomial clock and
+  the per-contact BL mean listed below);
+- the angular law conditions on the incoming energy partition;
+- the invariant (flow-moment) response is retired: the runtime does not apply
+  it and `invariant_corrections: true` is an error; the sections below that
+  describe it are kept as a record of the earlier design;
+- `DSMC_0D_v2/scripts/production_gate.py` is the acceptance test: collisional
+  productions against exact CTC on identical USF pairs.
+
+Derivation and evidence: `reports/USF_ENCOUNTER_UNIT_2026-09-29.md` and the
+rendered `reports/usf_event_unit_methodology/usf_event_unit.html`.
+
 ## Frozen physical assumptions
 
 The following are deliberate model choices and are not refitted:

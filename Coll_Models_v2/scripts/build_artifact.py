@@ -26,6 +26,9 @@ def main():
                         help="validated shared correction coefficient surface")
     parser.add_argument("--coefficient-release-policy", default="strict",
                         choices=("strict", "quadratic-evidence-v1"))
+    parser.add_argument("--event-unit", default="contact_legacy",
+                        choices=("contact_legacy", "encounter"),
+                        help="energy destroyed per DSMC event in the HCS stability gate")
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
     args = parser.parse_args()
@@ -49,7 +52,8 @@ def main():
         runs, args.output, bl, args.bootstrap, args.node_estimates,
         precomputed_directory=args.precomputed_directory,
         coefficient_rows_path=args.coefficient_rows,
-        coefficient_release_policy=args.coefficient_release_policy)
+        coefficient_release_policy=args.coefficient_release_policy,
+        event_unit=args.event_unit)
     print(f"Wrote {result['artifact_type']} with {result['n_nodes']} node(s) to {args.output}")
 
 

@@ -18,6 +18,7 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src:$ROOT/DSMC_0D_v2/src"
 hpc/python.sh DSMC_0D_v2/scripts/analyze_usf_encounter.py \
   --results "results/usf_encounter_${TAG}" \
+  --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}" \
   --output "results/usf_encounter_${TAG}/usf_vs_dem.csv"
 hpc/python.sh DSMC_0D_v2/scripts/analyze_hcs_encounter.py \
   --manifest "manifests/hcs_encounter_${TAG}.csv" \

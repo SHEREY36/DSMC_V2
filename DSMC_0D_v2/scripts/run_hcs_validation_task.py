@@ -54,6 +54,8 @@ def main() -> None:
         help="DSMC event = CTC contact (legacy clock and BL loss) or encounter")
     parser.add_argument("--angular-memory", default=None,
                         help="angular-memory table (incoming-partition memory)")
+    parser.add_argument("--encounter-table",
+                        default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     args = parser.parse_args()
 
     row = row_at(Path(args.manifest), args.task)
@@ -92,6 +94,7 @@ def main() -> None:
         "invariant_corrections": bool(args.enable_invariant_corrections),
         "state_update_cpp": float(row.get("state_update_cpp", 0.0) or 0.0),
         "event_unit": args.event_unit,
+        "encounter_cross_section": args.encounter_table,
     })
     if args.angular_memory:
         config["microscopic_closure"]["angular_memory"] = args.angular_memory

@@ -204,7 +204,59 @@ the Negishi campaign to 0.40 % at every node, so that campaign stands.  The
 legacy contact unit and the alpha = 1 block keep the polynomial for
 reproducibility.
 
-The model is packaged as `DSMC_0D_v2/config/encounter_unit_model_v1.yaml`.
+## 8. Invariant response retired; alpha refinement; production gate (2026-09-30)
+
+**Invariant response retired.**  The kernel conditions on each pair's own
+state, and DSMC collides the actual non-equilibrium particles, so a cell-moment
+response can only act through pair variables the kernel does not see.  Tested
+on the productions that fix the USF steady state (105 held-out USF replay
+windows, common random numbers), both fitted energy responses made the
+rotational residual worse (median |r| 0.027 -> 0.038 nonlinear, 0.028 linear;
+alpha 0.5 AR 2: 0.001 -> 0.086).  The runtime no longer applies any response,
+`invariant_corrections: true` is an error, the flow invariants are computed only
+for collision audits, and new artifacts carry no response rows.
+
+**Alpha refinement.**  CTC replays of USF pairs at alpha = 0.65 gave a rotational
+residual of +0.07..+0.10 on all four sources, against ~0 at the fitted 0.5 and
+0.8 planes: the theta deficit at alpha 0.55–0.75 is interpolation of the energy
+law between planes.  The grid gains planes at alpha = 0.55, 0.60, 0.65, 0.70,
+0.75, 0.85, 0.90 (252 nodes, 396 in total).  A node's own tables are used on
+the node; between nodes (for example alpha = 0.99) the laws are mixed on the
+stencil (Wasserstein quantile average for energy, mixture for angle).
+
+**Production gate.**  `DSMC_0D_v2/scripts/production_gate.py` compares the
+model with exact CTC on identical USF pairs through the rotational residual,
+the dissipation ratio and the stress-production ratios, with batch standard
+errors; a replay passes when each metric is within tolerance (0.03, 0.03, 0.04)
+or within three standard errors.  On the current artifact it passes every
+alpha = 0.5 and 0.8 replay and fails every alpha = 0.65 replay (+0.085..+0.110,
+5–7 standard errors).
+
+**Local end-to-end test.**  A slice of the alpha = 0.65 plane (AR 2 and 3,
+theta 0.2/1/2; 60,000 encounters and 20 bootstrap resamples per node) went
+through the production chain (CTC, fit, deep QA, precompute, pack).  All six
+nodes passed QA with the bridge form; the encounter-unit stability gate gives
+unique roots theta* = 0.844 (AR 2) and 0.920 (AR 3).  On the same USF pairs the
+gate's rotational residual fell from +0.085..+0.110 (fail) to +0.012..+0.037
+(pass) and the dissipation ratio from 0.964–0.986 to 0.991–1.005.  In USF at
+alpha = 0.65 (one trajectory, window [96, 160]) theta moved from -7.5 % / -7.2 %
+to -1.2 % / -1.3 % of DEM for AR 2 / 3, with T*, P*_xy and N1 within noise.
+Per-node cost: fit about 7 h at 200,000 encounters and 200 resamples; precompute
+about 30 CPU-minutes.
+
+**Artifact builder.**  The HCS stability gate in the packer used the per-contact
+BL mean as the energy destroyed per event; `--event-unit encounter` now uses the
+per-encounter CTC mean, as the runtime does.
+
+**Pipeline.**  `TAG=alpha_v1_20261001 bash hpc/submit_alpha_refinement.sh`:
+CTC of the new planes and gate replays -> fits of the new nodes (bridge form,
+bounded-logit repair on QA failure; the 144 existing fits are reused) -> deep
+QA -> precompute -> pack (encounter event unit) -> model tables (sigma, <k>,
+angular memory) in the same model folder -> production gate -> USF (320) and
+HCS (24) validation -> analysis (pandas-free).  Model config:
+`DSMC_0D_v2/config/encounter_unit_model_v2.yaml`.
+
+The v1 model is packaged as `DSMC_0D_v2/config/encounter_unit_model_v1.yaml`.
 A rendered derivation, the full algorithm with every closure variable, the
 exchange-gate explanation and the nematic-order outlook are in
 `reports/usf_event_unit_methodology/usf_event_unit.html`.

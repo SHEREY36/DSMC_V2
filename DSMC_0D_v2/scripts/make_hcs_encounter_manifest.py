@@ -21,9 +21,10 @@ def main():
     parser.add_argument("--particles", type=int, default=10000)
     parser.add_argument("--tau-end", type=float, default=80.0)
     parser.add_argument("--replicates", type=int, default=2)
+    parser.add_argument("--arms", default="encounter_memory,contact_legacy")
     args = parser.parse_args()
     rows = []
-    for arm in ("encounter_memory", "contact_legacy"):
+    for arm in args.arms.split(","):
         for alpha, ar, target in GATE:
             for theta0 in (0.5, 2.0):
                 for rep in range(args.replicates):

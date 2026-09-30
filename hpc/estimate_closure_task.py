@@ -84,6 +84,10 @@ def main() -> None:
     parser.add_argument("--propensity-workers", type=int, default=1,
                         help="threads used only for deterministic geometric "
                              "propensity blocks")
+    parser.add_argument("--fallback-kernel-form", default=None,
+                        help="refit with this energy-kernel form when the row's "
+                             "form fails its precision QA (the repair used for "
+                             "far-from-equilibrium near-sphere nodes)")
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -121,21 +125,32 @@ def main() -> None:
     anchor = equilibrium_anchor([anchor_run], propensity_offsets=None)
     print(f"anchor for this aspect ratio: c1={anchor[0]:.5f} c2={anchor[1]:.5f}",
           flush=True)
-    try:
-        kernel_form = row.get("kernel_form", "").strip() or "sinkhorn_bridge_v2"
-        result = estimate_node([run], n_bootstrap=args.bootstrap,
-                               anchor=anchor,
-                               bootstrap_seed=20260902 + args.index,
-                               propensity_offsets=args.propensity_offsets or None,
-                               propensity_workers=args.propensity_workers,
-                               kernel_form=kernel_form)
-    except SCIENTIFIC_FIT_EXCEPTIONS as exc:
-        result = _failed_fit_result(row, run, exc)
-        passed = False
-        reasons = result["qa"]["continuation_reasons"]
-    else:
-        passed, reasons = precision_status(result)
-        result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
+    def fit(form: str):
+        try:
+            fitted = estimate_node([run], n_bootstrap=args.bootstrap,
+                                   anchor=anchor,
+                                   bootstrap_seed=20260902 + args.index,
+                                   propensity_offsets=args.propensity_offsets or None,
+                                   propensity_workers=args.propensity_workers,
+                                   kernel_form=form)
+        except SCIENTIFIC_FIT_EXCEPTIONS as exc:
+            fitted = _failed_fit_result(row, run, exc)
+            return fitted, False, fitted["qa"]["continuation_reasons"]
+        ok, why = precision_status(fitted)
+        fitted["qa"].update(precision_pass=ok, continuation_reasons=why)
+        return fitted, ok, why
+
+    kernel_form = row.get("kernel_form", "").strip() or "sinkhorn_bridge_v2"
+    result, passed, reasons = fit(kernel_form)
+    fallback = args.fallback_kernel_form
+    if not passed and fallback and fallback != kernel_form:
+        print(f"{kernel_form} failed QA ({', '.join(reasons)}); refitting with {fallback}",
+              flush=True)
+        retry, retry_passed, retry_reasons = fit(fallback)
+        if retry_passed:
+            retry["kernel_form_repair"] = {"primary": kernel_form,
+                                           "primary_reasons": list(reasons)}
+            result, passed, reasons, kernel_form = retry, True, retry_reasons, fallback
     result["estimator_provenance"] = {
         "git_sha": _git_sha(),
         "bootstrap": int(args.bootstrap),

@@ -57,6 +57,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 4)))
+    parser.add_argument("--base-table", default=None,
+                        help="start from this table's nodes; refitted nodes replace them")
     parser.add_argument("shard_globs", nargs="+")
     args = parser.parse_args()
     nodes = {}
@@ -72,6 +74,12 @@ def main():
                    round(float(md["aspect_ratio"]), 6))
             nodes.setdefault(key, []).append(directory)
     report = []
+    if args.base_table:
+        refit = {(round(k[0], 4), round(k[1], 5), round(k[2], 4)) for k in nodes}
+        for node in json.load(open(args.base_table))["nodes"]:
+            key = (round(node["alpha"], 4), round(node["theta"], 5), round(node["AR"], 4))
+            if key not in refit:
+                report.append(node)
     with ProcessPoolExecutor(args.workers) as pool:
         for key, theta, grad, count, support in pool.map(fit_node, sorted(nodes.items())):
             if not (np.all(np.isfinite(theta)) and grad < 1.0e-8):

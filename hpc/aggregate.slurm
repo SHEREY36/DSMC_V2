@@ -41,7 +41,7 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
 "$ROOT/hpc/python.sh" "$ROOT/Coll_Models_v2/scripts/build_artifact.py" \
   --manifest "$ROOT/$MANIFEST" "${ESTIMATE_ARGS[@]}" \
   --output "$ROOT/$OUTPUT" --precomputed-directory "$ROOT/$PRECOMPUTED" \
-  --bootstrap 200 \
+  --bootstrap 200 --event-unit "${ARTIFACT_EVENT_UNIT:-contact_legacy}" \
   --gamma-max-table "$ROOT/Coll_Models_v2/models/legacy_bl/gamma_max_table.json" \
   --one-hit-table "$ROOT/Coll_Models_v2/models/legacy_bl/one_hit_table.json" \
   "${COEFFICIENT_ARGS[@]}"

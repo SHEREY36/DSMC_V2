@@ -25,7 +25,8 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--ablation-replicates", type=int, default=1)
+    parser.add_argument("--ablation-replicates", type=int, default=1,
+                        help="replicates that also run the ablation and legacy arms; 0 = model only")
     args = parser.parse_args()
     with open(args.source, newline="") as handle:
         source = [row for row in csv.DictReader(handle)

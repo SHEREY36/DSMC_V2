@@ -112,10 +112,12 @@ window.MathJax = {
   <li>The algorithm, every closure</li>
   <li>The exchange gate, then and now</li>
   <li>Nematic order: what an upgrade takes</li>
-  <li>Why the invariant response is off</li>
+  <li>Why the invariant response is retired</li>
   <li>The physical stencil</li>
   <li>The second-stage acceptance and \(\Xi\)</li>
   <li>Cost</li>
+  <li>Is the invariant response needed?</li>
+  <li>The \(\alpha\)-refined model and the production gate</li>
 </ol>
 
 <h2><span class="num">1</span>What sets a USF steady state</h2>
@@ -347,7 +349,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 
 <h2><span class="num">8</span>What remains</h2>
 <ol class="steps">
-  <li><b>\(\theta\) between the fitted \(\alpha\) planes.</b> The residual \(\theta\) error is 4–8% at \(\alpha=0.55\)–\(0.75\), under 3% at \(\alpha=0.5\), and 2% or less at \(\alpha\ge0.8\). The artifact is fitted at \(\alpha\in\{0.5,0.8,0.95,1\}\) and interpolated linearly between planes, while DEM \(\theta(\alpha)\) has an interior maximum near 0.6. An error that vanishes on the fitted planes and peaks mid-interval is the signature of interpolation. The proposed fix is CTC nodes at \(\alpha=0.6\) and \(0.7\) for the 36 \((\theta,\mathrm{AR})\) coordinates, a refit, and a rebuild. One \(\alpha=0.65\) probe should confirm the diagnosis before that campaign.</li>
+  <li><b>\(\theta\) between the fitted \(\alpha\) planes.</b> The residual \(\theta\) error is 4–8% at \(\alpha=0.55\)–\(0.75\), under 3% at \(\alpha=0.5\), and 2% or less at \(\alpha\ge0.8\). The artifact is fitted at \(\alpha\in\{0.5,0.8,0.95,1\}\) and interpolated linearly between planes, while DEM \(\theta(\alpha)\) has an interior maximum near 0.6. An error that vanishes on the fitted planes and peaks mid-interval is the signature of interpolation. Section 17 confirms the diagnosis with exact CTC at \(\alpha=0.65\), and Section 18 fixes it with planes every 0.05 in \(\alpha\).</li>
   <li><b>AR 1.5 temperature.</b> \(T^*\) is 4.6–7.3% high at \(\alpha\le0.75\). It was already 5% high in the legacy model at \(\alpha=0.5\), which is a fitted node, so interpolation does not explain it. Several DEM windows at AR 1.5 and low \(\alpha\) carry clustering flags. This case is open.</li>
   <li><b>Nematic order.</b> DSMC \(S_2\approx0\) against DEM 0.006–0.025, because the spin direction is reset each event. The effect on the compared observables is small, but the closure does not yet describe it.</li>
   <li><b>Density.</b> DEM at \(\phi=0.01\) has \(\chi\approx1.025\) and a 1.3–1.7% collisional shear share that the dilute DSMC does not have. Residuals of that size are not closure error.</li>
@@ -383,7 +385,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 </tbody></table></div>
 <p>The four \(\alpha\) shards at a node share one random attempt stream, and one directory set is a copy of another, so the table builder counts each stream once and the errors above are honest. The ratio table the Negishi campaign used agrees with this measurement to 0.40% at every node, so the campaign results stand. The v1 polynomial is still used by the legacy contact unit and the exact \(\alpha=1\) block, so earlier runs stay reproducible.</p>
 <p>The cross-section depends on \(\theta\) through the ratio of spin speed to approach speed. At AR 3 it is 17% larger at \(\theta=0.2\) and 5% smaller at \(\theta=2\) than at \(\theta=1\). A start at \((T_{tr},T_{rot})=(2,1.8)\) is \(\theta=1.11\), where the change is under 1%, which matches what you saw.</p>
-<p>\(\theta\) is the cell's instantaneous \(T_{tr}/T_{rot}\), recomputed from all particles at every time step. It is a ratio of the two mean energies, not a U-statistic. U-statistics are used only for the 14 flow invariants, which feed the invariant response (switched off) and support diagnostics. Inside the cell, pair-to-pair differences are carried by the second-stage acceptance of Section 15. On the actual USF states the probe measured the resulting event rate against the true encounter rate as 0.995–1.003.</p>
+<p>\(\theta\) is the cell's instantaneous \(T_{tr}/T_{rot}\), recomputed from all particles at every time step. It is a ratio of the two mean energies, not a U-statistic. The 14 flow invariants are computed only when a collision audit asks for them, as diagnostics. Inside the cell, pair-to-pair differences are carried by the second-stage acceptance of Section 15. On the actual USF states the probe measured the resulting event rate against the true encounter rate as 0.995–1.003.</p>
 <p>Files: <code>DSMC_0D_v2/models/encounter_cross_section_v2.json</code>, built from the shards by <code>Coll_Models_v2/scripts/build_encounter_table.py</code>, and loaded by <code>DSMC_0D_v2/config/encounter_unit_model_v1.yaml</code> with the artifact and the angular-memory table. At the next artifact rebuild these per-node values belong inside the NPZ, so the model is one file.</p>
 
 <h2><span class="num">10</span>The algorithm, every closure</h2>
@@ -393,13 +395,12 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 <div class="algo">
 <div class="head">Algorithm 1. Variational DSMC for inelastic spherocylinders</div>
 
-<div class="blk">Model tables, per artifact node \(k=(\alpha_k,\theta_k,\mathrm{AR}_k)\), 144 nodes</div>
+<div class="blk">Model tables, per artifact node \(k=(\alpha_k,\theta_k,\mathrm{AR}_k)\): \(\alpha\in\{0.50,0.55,\dots,0.95,1\}\), 396 nodes</div>
 <ul>
   <li>Energy kernel: \(\lambda_{1,k},\lambda_{2,k},\lambda_{4,k}\), memory \(m_k(z)=\lambda_{3,k}z\) or, at 9 nodes, \(\lambda_3x+\lambda_5x^2+\lambda_6x^3\) with \(x=\tanh[(\operatorname{logit}z-\mu_z)/2s_z]\), the Sinkhorn potential \(h_k\), and the quantile table \(Q_k(u;a)\) <span class="tag on">active</span></li>
   <li>Mean per-encounter loss \(\bar\varepsilon_{\enc,k}\) <span class="tag on">active</span>, used for scaling <span class="tag new">new</span></li>
   <li>Spin enhancement \(g_k(\Xi)\) <span class="tag on">active</span></li>
-  <li>Angular laws: independent \((\eta_1,\eta_2)_k\), joint \((\eta^J_1,\eta^J_2,\xi_{zc})_k\) at 76 nodes <span class="tag off">replaced</span>; memory law \((\eta_1,\xi,\rho_1,\eta_2,\zeta,\rho_2)_k\) with \((a,b)\) support <span class="tag new">new</span></li>
-  <li>Invariant response \(X_{0,k},B_k,Q_k\), masks \(M_k\), feature box <span class="tag off">off</span></li>
+  <li>Angular law with incoming-partition memory \((\eta_1,\xi,\rho_1,\eta_2,\zeta,\rho_2)_k\) and its \((a,b)\) support <span class="tag new">new</span>. The older independent and joint angular laws are still stored in the artifact <span class="tag off">unused</span>.</li>
   <li>\(p_{{\rm exch},k}=1-b_k\) <span class="tag diag">diagnostic</span></li>
 </ul>
 <div class="blk">Global tables</div>
@@ -421,10 +422,9 @@ b=\eta_2+\zeta z'+\rho_2 z ,
   <li><b>Cell state.</b> \(T_{tr}=\tfrac{m}{3N}\sum_i|\boldsymbol c_i-\bar{\boldsymbol c}|^2\), \(T_{rot}=\tfrac1N\sum_iE_{{\rm rot},i}\), \(\theta=T_{tr}/T_{rot}\).</li>
   <li><b>Closure state</b>, every 0.05 collisions per particle:
     <ol type="a">
-      <li>14 invariants \(\boldsymbol X\) as pair U-statistics <span class="tag diag">diagnostic</span> (they feed step d only when corrections are on)</li>
-      <li>Physical stencil \(\{(k,w_k)\}\) around \((\alpha,\theta,\mathrm{AR})\) (Section 14)</li>
+      <li>14 flow invariants \(\boldsymbol X\), only when a collision audit is requested <span class="tag diag">diagnostic</span></li>
+      <li>Physical stencil \(\{(k,w_k)\}\) around \((\alpha,\theta,\mathrm{AR})\) (Section 14). On a node it is that node alone, with weight one, so the node's own tables are used as fitted.</li>
       <li>Interpolated \(\bar\varepsilon_{\enc}=\sum_kw_k\bar\varepsilon_{\enc,k}\) and \(g(\Xi)=\sum_kw_kg_k(\Xi)\). The energy and angular laws stay per node and are mixed at sampling time.</li>
-      <li>If corrections are on and \(\boldsymbol X\) lies in the feature box: \(\boldsymbol\psi_k\leftarrow\boldsymbol\psi_k+M_k\odot\big[B_k\Delta\boldsymbol X+Q_k(\Delta\boldsymbol X\odot\Delta\boldsymbol X)\big]\) <span class="tag off">off</span></li>
     </ol></li>
   <li><b>Clock.</b> \(\sigma=\sigma_c(\theta,\mathrm{AR})\) at the current \(\theta\) <span class="tag new">new</span>. Candidates \(N_{\rm cand}=\big\lfloor N(N-1)\,\sigma F\,v_{\max}\Delta t/V+U\big\rfloor\), where \(F=A_{\sup}g_{\max}/\bar A_\perp\) inflates for the second-stage acceptance.</li>
   <li><b>Speed screen.</b> For each candidate pair \((i,j)\): draw a unit vector \(\boldsymbol e\), set \(\bg=\boldsymbol c_i-\boldsymbol c_j\), and accept if \(|\bg\cdot\boldsymbol e|\ge U\,v_{\max}\), which gives a rate \(\propto g\).</li>
@@ -477,7 +477,7 @@ p(\phi'\mid\cdot)\propto\exp\!\big[\kappa_1\cos(\phi'-\phi_\omega)+\kappa_2\cos(
   <li><b>Caveat:</b> part of the DEM alignment may come from correlated re-collisions and multibody contacts, which a binary DSMC cannot represent.</li>
 </ul>
 
-<h2><span class="num">13</span>Why the invariant response is off</h2>
+<h2><span class="num">13</span>Why the invariant response is retired</h2>
 <p>The USF improvement came from the event unit and the angular memory, not from the invariant response. The response was switched off in every arm of the Negishi campaign. The ablation arm isolates the event unit, with neither the response nor the angular memory:</p>
 <div class="table-wrap"><table>
 <caption><b>Table 7.</b> Median absolute difference from DEM over the 40 rod cases, by model arm.</caption>
@@ -487,15 +487,15 @@ p(\phi'\mid\cdot)\propto\exp\!\big[\kappa_1\cos(\phi'-\phi_\omega)+\kappa_2\cos(
 <tr><td>encounter unit only</td><td>3.2%</td><td>2.5%</td><td>2.8%</td><td>7.7%</td></tr>
 <tr><td>encounter unit + angular memory</td><td class="good">1.1%</td><td class="good">3.0%</td><td class="good">1.5%</td><td class="good">3.3%</td></tr>
 </tbody></table></div>
-<p>In the earlier crossflow study, switching the response on changed \(T^*\), \(\theta\) and \(P^*_{xy}\) by less than 0.5%, and its energy block was suppressed at every node. It could not have done more. It corrects each node's parameters from cell-averaged moments, the 14 invariants. The errors were a wrong event rate and loss unit, which no cell moment can repair, and a dependence of scattering on each pair's own incoming split \(z\), which averages away in any cell moment. The angular memory conditions on the pair's \(z\) directly. The response stays in the code as an available pathway.</p>
+<p>In the earlier crossflow study, switching the response on changed \(T^*\), \(\theta\) and \(P^*_{xy}\) by less than 0.5%, and its energy block was suppressed at every node. It could not have done more. It corrects each node's parameters from cell-averaged moments, the 14 invariants. The errors were a wrong event rate and loss unit, which no cell moment can repair, and a dependence of scattering on each pair's own incoming split \(z\), which averages away in any cell moment. The angular memory conditions on the pair's \(z\) directly. Section 17 tests the response on the productions themselves and finds it harmful, so it has been removed from the model: the runtime no longer applies it, and asking for it is an error.</p>
 
 <h2><span class="num">14</span>The physical stencil</h2>
-<p>The artifact nodes lie on a partial grid: \(\alpha\in\{0.5,0.8,0.95,1\}\), \(\mathrm{AR}\in\{1.1,1.2,1.35,1.5,2,2.5,3\}\), and \(\theta\in\{0.0125,0.025,0.05,0.1,0.15,0.2,1,2\}\) for AR \(\le1.35\) or \(\{0.2,1,2\}\) for AR \(\ge1.5\). For a query \(q=(\alpha,\theta,\mathrm{AR})\), each axis is handled on its own. A value on a grid line takes that value with weight one. Otherwise, with bracketing grid values \(x_-\lt x\lt x_+\),</p>
+<p>The artifact nodes lie on a partial grid: \(\alpha\in\{0.50,0.55,\dots,0.95,1\}\) (it was \(\{0.5,0.8,0.95,1\}\) before the refinement of Section 18), \(\mathrm{AR}\in\{1.1,1.2,1.35,1.5,2,2.5,3\}\), and \(\theta\in\{0.0125,0.025,0.05,0.1,0.15,0.2,1,2\}\) for AR \(\le1.35\) or \(\{0.2,1,2\}\) for AR \(\ge1.5\). For a query \(q=(\alpha,\theta,\mathrm{AR})\), each axis is handled on its own. A value on a grid line takes that value with weight one. Otherwise, with bracketing grid values \(x_-\lt x\lt x_+\),</p>
 \[
 w^{(x)}_-=\frac{x_+-x}{x_+-x_-},\qquad w^{(x)}_+=\frac{x-x_-}{x_+-x_-}.
 \]
 <p>The stencil is the tensor product, up to eight vertices, with \(w_k=w^{(\alpha)}w^{(\theta)}w^{(\mathrm{AR})}\) and \(\sum_kw_k=1\). The weights are linear in \(\theta\) itself. If a vertex of that box does not exist, for example at \(\theta\lt0.2\) with AR above 1.35, the query falls back to barycentric weights in the Delaunay tetrahedron of measured nodes that contains it.</p>
-<p>The stencil is used three ways. Scalars such as \(\bar\varepsilon_{\enc}\) and \(g(\Xi)\) are weighted sums. The energy draw averages node quantiles at one shared \(U\), \(z'=\sum_kw_kQ_k(U;a_k)\), which is the Wasserstein interpolation of the node laws. The angle draw picks node \(k\) with probability \(w_k\), which is the mixture of the node laws. Both keep every draw physical. The linear weights in \(\alpha\) between the 0.5 and 0.8 planes are where the residual \(\theta\) error of Section 8 enters.</p>
+<p>The stencil is used three ways. Scalars such as \(\bar\varepsilon_{\enc}\) and \(g(\Xi)\) are weighted sums. The energy draw averages node quantiles at one shared \(U\), \(z'=\sum_kw_kQ_k(U;a_k)\), which is the Wasserstein interpolation of the node laws. The angle draw picks node \(k\) with probability \(w_k\), which is the mixture of the node laws. Both keep every draw physical. With planes only at \(\alpha=0.5\) and 0.8, the linear weights between them were where the residual \(\theta\) error of Section 8 entered; Section 18 removes it with planes every 0.05.</p>
 
 <h2><span class="num">15</span>The second-stage acceptance and \(\Xi\)</h2>
 <p>The NTC first stage selects pairs at a rate proportional to \(g\), blind to orientation and spin. A real pair's chance of meeting also depends on its axes and spins, and the second stage corrects for that by thinning. Each candidate is kept with probability \(\sigma(x)/\sigma_{\max}\), where \(\sigma(x)\) is that pair's own encounter area. The candidate count was inflated by \(\sigma_{\max}/\bar\sigma\), so the mean rate stays at \(\sigma_c(\theta,\mathrm{AR})\). This is standard acceptance–rejection, the same device NTC uses for the speed.</p>
@@ -513,7 +513,7 @@ A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)=\pi d^2+2dL\big(|\boldsymbol u_i\
 <p>This has nothing to do with multiple hits. The second stage decides whether a first contact happens at all, that is, whether there is an encounter. Re-hits inside an encounter belong to its outcome: they are already in the CTC exchange, angle and loss laws, and they are counted by \(\langle k\rangle\).</p>
 
 <h2><span class="num">16</span>Cost</h2>
-<p>A time step costs a pass over the candidates (stage 1 and stage 2), constant work per accepted encounter, and a closure-state refresh every 0.05 collisions per particle. The refresh is one pass over the particles for the invariants plus a stencil lookup. Per encounter the work is fixed: up to eight quantile-table lookups for the energy and a few rejection trials for the angle. Total cost is therefore proportional to the number of events, \(O(N\tau)\), and memory is \(O(N)\) plus the artifact, about 0.65 GB resident.</p>
+<p>A time step costs a pass over the candidates (stage 1 and stage 2), constant work per accepted encounter, and a closure-state refresh every 0.05 collisions per particle. The refresh is a stencil lookup; the flow invariants are computed only for audits. Per encounter the work is fixed: up to eight quantile-table lookups for the energy and a few rejection trials for the angle. Total cost is therefore proportional to the number of events, \(O(N\tau)\), and memory is \(O(N)\) plus the artifact, about 0.65 GB resident.</p>
 <div class="table-wrap"><table>
 <caption><b>Table 8.</b> Measured cost. Workstation: AR 2, \(\alpha=0.8\), USF, N = 4,000, same events per model. Negishi: the 440-run campaign, N = 10,000, one core each.</caption>
 <thead><tr><th>model</th><th>workstation, µs per event</th><th>Negishi, µs per event</th></tr></thead>
@@ -526,4 +526,88 @@ A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)=\pi d^2+2dL\big(|\boldsymbol u_i\
 <p>The current model costs about 1.5 times v1 per event. The encounter clock also fires 8–19% fewer events per unit physical time (AR 1.5–3), so per unit physical time it is about 1.3 times v1 at AR 2. Closure sampling is 14% of wall time. A 10,000-particle trajectory to \(\tau=160\) takes a median 24 minutes on one Negishi core.</p>
 <p>DEM for the same flow, AR 3 and \(\alpha=0.8\), with 1,252 particles on 4 cores, takes 1,396 s for its 120-strain production. That covers about 256,000 contacts, or roughly 22 core-milliseconds per contact, against about 1.7 for a DSMC event. Per particle-strain, DSMC costs about 0.0026 core-seconds against 0.037 for DEM. That is about 14 times cheaper, before counting DEM's transient stages. The DSMC cost also does not grow with contact stiffness or with dilution, while DEM resolves every contact with about 40 time steps and integrates every free flight.</p>
 <p>The per-event time is almost all Python overhead in the per-candidate loop; the arithmetic of one encounter takes microseconds. Moving the candidate and collision loops to compiled or vectorised code would give another one to two orders of magnitude.</p>
+
+<h2><span class="num">17</span>Is the invariant response needed?</h2>
+<p>By construction the invariant response is a legitimate term. The question is whether it is a large one. Let \(x\) be the full state of a colliding pair and \(s\) the few variables the kernel is conditioned on: \(s=(z,\varepsilon)\) for the energy law and \(s=(z,z')\) for the angle. The CTC outcome law \(K(y\mid x)\) is universal. The reduced kernel DSMC uses averages it over the pair variables it does not see,</p>
+\[
+K_s(y\mid s;f)=\int K(y\mid x)\;f_c(x\mid s)\,dx ,
+\label{eq:reduced}
+\]
+<p>where \(f_c(x\mid s)\) is the collision-flux distribution of pairs with those retained values. The nodes were fitted with a Maxwellian \(f_0\). In a flow, \(f\) changes, \(f_c(x\mid s)\) changes, and so does the reduced kernel:</p>
+\[
+\delta K_s(y\mid s)=\int K(y\mid x)\;\delta f_c(x\mid s)\,dx
+\;\;\Longrightarrow\;\;
+\boldsymbol\psi(\boldsymbol X)=\boldsymbol\psi_0+B\,\Delta\boldsymbol X+Q\,(\Delta\boldsymbol X\odot\Delta\boldsymbol X)+\dots
+\]
+<p>Expanding \(\delta f_c\) in the cell's rotation-invariant moments \(\boldsymbol X\) gives exactly the response form. Two facts decide its size. The response is nonzero only through variables the kernel does not already condition on, because any dependence carried by \(s\) itself is exact for every \(f\). And the non-equilibrium state reaches the collision anyway: DSMC collides the actual particles, so the anisotropic velocities, the actual \(\ghat\), \(z\) and spins of each pair enter directly. Adding \(z\) to the angular law moved the largest hidden dependence into \(s\), which is the pair-level version of the same correction.</p>
+
+<h3>Test on the production measure</h3>
+<p>The fitted responses were rejected earlier on a Wasserstein distance of the conditional law, which is not what sets \(\theta\). The right measure is the rotational production of \eqref{eq:steady}. On the 105 held-out USF replay windows, the repaired operator was evaluated with and without each fitted energy response, using common random numbers:</p>
+<div class="table-wrap"><table>
+<caption><b>Table 9.</b> Rotational residual (DSMC − CTC)/CTC loss on held-out USF states at \(\alpha=0.5\). Zero is exact.</caption>
+<thead><tr><th>AR</th><th>repaired operator</th><th>+ nonlinear USF response</th><th>+ linear excitation response</th></tr></thead>
+<tbody>
+<tr><td>1.5</td><td>−0.012</td><td class="bad">−0.047</td><td class="bad">+0.088</td></tr>
+<tr><td>2.0</td><td class="good">+0.001</td><td class="bad">+0.086</td><td class="bad">+0.056</td></tr>
+<tr><td>2.5</td><td class="good">+0.012</td><td class="bad">+0.104</td><td class="bad">+0.061</td></tr>
+<tr><td>3.0</td><td class="good">−0.001</td><td class="bad">−0.023</td><td class="bad">+0.030</td></tr>
+</tbody></table></div>
+<p>Over all windows the median absolute residual is 0.027 without a response, 0.038 with the nonlinear one and 0.028 with the linear one. Translational production and stress also get worse. As shipped, the energy responses are masked off at every node. With the masks lifted, the fitted feature box would still switch them off on 48 of the 105 states, mainly through \(a_{2,tr}\) and \(\Pi\!:\!\Pi\) at \(\alpha=0.5\). The numbers above lift both. The fitted coefficients are also ill-conditioned: \(|B|\) reaches \(10^3\)–\(10^5\) in natural-parameter units, because \(\lambda_1,\lambda_2,\lambda_3\) trade off against each other. At the fitted \(\alpha\) planes, the repaired operator already reproduces the productions of these strongly non-equilibrium states to about 1% for AR 1.5–3, so a response has little left to correct there.</p>
+
+<h3>Test between the \(\alpha\) planes</h3>
+<p>The \(\theta\) error of the USF runs is largest between the fitted planes. Four USF incoming-pair sets were replayed through exact CTC at \(\alpha=0.5\), 0.65 and 0.8, and compared with the operator at the same \(\alpha\):</p>
+<div class="table-wrap"><table>
+<caption><b>Table 10.</b> Rotational residual on identical USF pairs. \(\alpha=0.5\) and 0.8 are fitted planes; 0.65 is interpolated.</caption>
+<thead><tr><th>USF source</th><th>\(\alpha=0.5\)</th><th>\(\alpha=0.65\)</th><th>\(\alpha=0.8\)</th></tr></thead>
+<tbody>
+<tr><td>AR 2, state from \(\alpha=0.5\)</td><td class="good">−0.003</td><td class="bad">+0.094</td><td>+0.034</td></tr>
+<tr><td>AR 2, state from \(\alpha=0.8\)</td><td class="good">+0.002</td><td class="bad">+0.074</td><td class="good">+0.007</td></tr>
+<tr><td>AR 3, state from \(\alpha=0.5\)</td><td class="good">+0.007</td><td class="bad">+0.098</td><td class="good">+0.009</td></tr>
+<tr><td>AR 3, state from \(\alpha=0.8\)</td><td class="good">−0.017</td><td class="bad">+0.086</td><td class="good">−0.005</td></tr>
+</tbody></table></div>
+<p>At 0.65 the interpolated energy law routes too much energy into rotation (mean \(z'\) about 0.006 low), and the interpolated mean loss is 2–3% low. The legacy data map a residual of 0.16 to a 16% \(\theta\) deficit, so +0.09 predicts about 8%, which is what the USF runs show at \(\alpha\approx0.6\)–0.65. Stress production at 0.65 is within 0.4–2%. The remaining \(\theta\) error is therefore interpolation of the energy law in \(\alpha\), not missing non-equilibrium physics. A response in \(\boldsymbol X\) at fixed \(\alpha\) cannot remove it. More \(\alpha\) planes can: halving the 0.5–0.8 interval should cut a quadratic interpolation error about fourfold.</p>
+
+<h2><span class="num">18</span>The \(\alpha\)-refined model and the production gate</h2>
+<p>The model now has fitted planes at \(\alpha=0.50,0.55,\dots,0.95\) and 1: seven new planes, 252 new nodes, 396 in all. On a node the node's own tables are used exactly as fitted. Between nodes, as at \(\alpha=0.99\) or \(0.575\), the laws of the neighbouring nodes are mixed on the stencil of Section 14: a Wasserstein average of quantiles for the energy law and a mixture for the angular law. Every new node is fitted from its own CTC encounters. It uses the same attempt stream as the \(\alpha=0.5\) node at its \((\theta,\mathrm{AR})\), so differences between planes carry no sampling noise from the incoming pairs.</p>
+
+<h3>The production gate</h3>
+<p>The measure that exposed both the event-unit error and the interpolation error is now the model's acceptance test. USF incoming pairs are replayed through exact CTC at restitution \(\alpha\), both on the planes and between them. On those identical pairs the gate evaluates</p>
+\[
+r_{\rm rot}=\frac{\Lambda^{\rm model}_{\rm rot}-\Lambda^{\rm CTC}_{\rm rot}}{D^{\rm CTC}},\qquad
+\frac{D^{\rm model}}{D^{\rm CTC}},\qquad
+\frac{\Lambda^{\rm model}_{xy}}{\Lambda^{\rm CTC}_{xy}},\qquad
+\frac{\Lambda^{\rm model}_{N_1}}{\Lambda^{\rm CTC}_{N_1}} ,
+\label{eq:gate}
+\]
+<p>with standard errors from contiguous batch means on both sides. By \eqref{eq:steady}, \(r_{\rm rot}\) sets \(\theta\), the dissipation ratio sets \(T^*\), and the stress ratios set \(P^*_{xy}\) and \(N_1\). A replay passes when \(|r_{\rm rot}|\), \(|D^{\rm model}/D^{\rm CTC}-1|\) and \(|\Lambda_{xy}\text{ ratio}-1|\) are each within 0.03, 0.03 and 0.04, or within three standard errors.</p>
+
+<h3>Local test of the path</h3>
+<p>A slice of the new plane was built end to end through the production chain: CTC, fit, deep QA, precompute and pack. It covers \(\alpha=0.65\) at AR 2 and 3 for \(\theta\in\{0.2,1,2\}\), with reduced statistics (60,000 encounters and 20 bootstrap resamples per node, against 200,000 and 200 in production). All six nodes passed QA with the bridge form. The packed model's HCS stability gate, now using the per-encounter loss, gives unique stable roots \(\theta^*=0.844\) at AR 2 and 0.920 at AR 3.</p>
+<div class="table-wrap"><table>
+<caption><b>Table 11.</b> Production gate at \(\alpha=0.65\) on identical USF pairs: the previous model (interpolated between the 0.5 and 0.8 planes) against the \(\alpha\)-refined slice.</caption>
+<thead><tr><th>USF source</th><th>\(r_{\rm rot}\), previous</th><th>\(r_{\rm rot}\), refined</th><th>dissipation ratio, previous → refined</th></tr></thead>
+<tbody>
+<tr><td>AR 2, state from \(\alpha=0.5\)</td><td class="bad">+0.110 (fail)</td><td class="good">+0.037 ± 0.016 (pass)</td><td>0.964 → 0.991</td></tr>
+<tr><td>AR 2, state from \(\alpha=0.8\)</td><td class="bad">+0.087 (fail)</td><td class="good">+0.014 ± 0.017 (pass)</td><td>0.977 → 1.005</td></tr>
+<tr><td>AR 3, state from \(\alpha=0.5\)</td><td class="bad">+0.108 (fail)</td><td class="good">+0.036 ± 0.017 (pass)</td><td>0.986 → 1.001</td></tr>
+<tr><td>AR 3, state from \(\alpha=0.8\)</td><td class="bad">+0.085 (fail)</td><td class="good">+0.012 ± 0.016 (pass)</td><td>0.984 → 1.001</td></tr>
+</tbody></table></div>
+<p>The same slice model was then run in USF at \(\alpha=0.65\) with the production task runner (\(N=10{,}000\), the campaign's seed, shear rate and window \(\tau\in[96,160]\)):</p>
+<div class="table-wrap"><table>
+<caption><b>Table 12.</b> USF at \(\alpha=0.65\) against DEM: the previous model (four-seed campaign mean) and the \(\alpha\)-refined slice (one trajectory).</caption>
+<thead><tr><th>AR</th><th>\(\theta\)</th><th>\(T^*\)</th><th>\(P^{k*}_{xy}\)</th><th>\(N_1^{k*}\)</th></tr></thead>
+<tbody>
+<tr><td>2</td><td><span class="bad">−7.5%</span> → <b class="good">−1.2%</b></td><td>+1.3% → +1.1%</td><td>−1.4% → −1.7%</td><td>−3.6% → −3.0%</td></tr>
+<tr><td>3</td><td><span class="bad">−7.2%</span> → <b class="good">−1.3%</b></td><td>−3.0% → −0.3%</td><td>−0.5% → −0.6%</td><td>−2.1% → −3.7%</td></tr>
+</tbody></table></div>
+<p>The \(\theta\) deficit between the old planes is gone, as the gate predicted. The other observables stay within single-trajectory noise, as expected, since the gate showed stress production was already right there. Near the elastic limit (\(\alpha\ge0.95\)) the dissipation that normalises \(r_{\rm rot}\) tends to zero, so that metric passes only on its standard error and carries little information. The dissipation and stress checks remain informative there.</p>
+
+<h3>The build on Negishi</h3>
+<ol class="steps">
+  <li>CTC for the 252 new nodes, and in parallel 128 gate replays: 8 USF sources, AR 1.5–3 from \(\alpha=0.5\) and 0.8, each replayed at the 10 planes and at 0.575, 0.675, 0.775, 0.875, 0.975, 0.99.</li>
+  <li>Fits of the new nodes. The bridge form is used first, and the bounded-logit form replaces it only if a node fails its precision QA. The 144 existing fits are reused.</li>
+  <li>Deep QA of all 396 estimates, precompute of all nodes, and the pack with the encounter-unit stability gate.</li>
+  <li>The model tables in the same folder: \(\sigma_c(\theta,\mathrm{AR})\), \(\langle k\rangle(\alpha,\theta,\mathrm{AR})\) and the angular-memory law at every node.</li>
+  <li>The production gate, then USF validation over AR 1.5–3 and \(\alpha=0.50\)–0.95 (320 runs) and HCS at the DEM benchmark nodes, with a pandas-free analysis.</li>
+</ol>
 </main>

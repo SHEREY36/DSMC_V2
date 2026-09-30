@@ -853,7 +853,16 @@ def _energy_weighted_partition(theta: float) -> float:
     return float(theta / (1.0 + theta))
 
 
-def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
+def _stability_rows(baseline: list[dict], bl=None, sampler=None,
+                    event_unit: str = "contact_legacy") -> list[dict]:
+    """HCS drift roots of the exported law, one row per (alpha, AR).
+
+    ``event_unit`` fixes the energy destroyed per DSMC event: the frozen BL
+    per-contact mean (``contact_legacy``) or the CTC per-encounter mean the
+    energy kernel was fitted with (``encounter``, the current runtime).
+    """
+    if event_unit not in ("contact_legacy", "encounter"):
+        raise ValueError("event_unit must be contact_legacy or encounter")
     grouped = defaultdict(list)
     for node in baseline:
         grouped[(node["alpha"], node["aspect_ratio"])].append(node)
@@ -967,10 +976,16 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
                 mean_map += physical_weight * np.interp(a, a_axis, conditional_mean)
             return float(mass @ mean_map), float(mass @ grid)
 
+        def budget_loss(value):
+            if alpha >= 1.0:
+                return 0.0
+            return float(fitted_loss(value)) if event_unit == "encounter" else mean_loss
+
         def drift(value):
             post_partition, incoming = post_collision_partition(value)
-            delta_tr = (1.0 - mean_loss) * post_partition - incoming
-            delta_rot = ((1.0 - mean_loss) * (1.0 - post_partition)
+            loss = budget_loss(value)
+            delta_tr = (1.0 - loss) * post_partition - incoming
+            delta_rot = ((1.0 - loss) * (1.0 - post_partition)
                          - (1.0 - incoming))
             return float((2.0 / 3.0) * delta_tr - value * delta_rot)
 
@@ -997,7 +1012,7 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
                 # First-order propagation through the post-collision partition,
                 # whose bootstrap standard error stands in for the joint
                 # uncertainty of the natural parameters.
-                response = (1.0 - mean_loss) * (2.0 / 3.0 + root)
+                response = (1.0 - budget_loss(root)) * (2.0 / 3.0 + root)
                 drift_se = float(response * mu_se(root))
                 root_standard_error = float(drift_se / abs(derivative))
                 uncertainty_margin = float(
@@ -1009,14 +1024,17 @@ def _stability_rows(baseline: list[dict], bl=None, sampler=None) -> list[dict]:
                      "drift_derivative": derivative,
                      "root_standard_error": root_standard_error,
                      "uncertainty_margin_to_hull": uncertainty_margin,
-                     "mean_scalar_loss": mean_loss,
+                     "mean_scalar_loss": (mean_loss if event_unit == "contact_legacy"
+                                          or len(roots) != 1 else budget_loss(roots[0])),
+                     "event_unit": event_unit,
                      "routing_loss_at_root": (None if len(roots) != 1 else
                                               float(fitted_loss(roots[0]))),
                      "drift_model": (
-                         "node_first_quantile_interpolation_with_CTC_routing_loss_"
-                         "plus_frozen_BL_budget_loss" if sampler is not None else
-                         "analytic_bridge_with_CTC_routing_loss_"
-                         "plus_frozen_BL_budget_loss"),
+                         ("node_first_quantile_interpolation" if sampler is not None
+                          else "analytic_bridge")
+                         + ("_with_CTC_routing_loss_plus_frozen_BL_budget_loss"
+                            if event_unit == "contact_legacy"
+                            else "_with_CTC_per_encounter_loss")),
                      "includes_surface_derivatives": True})
     return rows
 
@@ -1025,7 +1043,8 @@ def build_artifact(run_directories, output_directory, bl=None,
                    n_bootstrap: int = 200, node_estimates=None,
                    propensity_offsets: int = 128,
                    precomputed_directory=None, coefficient_rows_path=None,
-                   coefficient_release_policy: str = "strict") -> dict:
+                   coefficient_release_policy: str = "strict",
+                   event_unit: str = "contact_legacy") -> dict:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     paths = [Path(path) for path in run_directories]
@@ -1215,7 +1234,7 @@ def build_artifact(run_directories, output_directory, bl=None,
             for index, row in enumerate(baseline)
         },
     }
-    stability = _stability_rows(baseline, bl, sampler=sampler)
+    stability = _stability_rows(baseline, bl, sampler=sampler, event_unit=event_unit)
     if not stability or not all(row["unique_stable"] for row in stability):
         # Fail closed. A kernel with no root, or more than one, has no steady
         # temperature ratio to deploy, and exporting it anyway is how a

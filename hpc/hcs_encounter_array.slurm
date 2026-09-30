@@ -22,7 +22,9 @@ ARM=$(awk -F, -v row=$((INDEX + 2)) 'NR == row {print $3}' "$MANIFEST")
 MODEL=()
 case "$ARM" in
   contact_legacy) MODEL=(--event-unit contact_legacy) ;;
-  encounter_memory) MODEL=(--event-unit encounter --angular-memory DSMC_0D_v2/models/angular_memory_v1.json) ;;
+  encounter_memory) MODEL=(--event-unit encounter
+                           --angular-memory "${ANGULAR_MEMORY:-DSMC_0D_v2/models/angular_memory_v1.json}"
+                           --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}") ;;
   *) echo "unknown arm '$ARM' in row $INDEX" >&2; exit 2 ;;
 esac
 PREFIX=$(awk -F, -v row=$((INDEX + 2)) 'NR == row {print $NF}' "$MANIFEST")
