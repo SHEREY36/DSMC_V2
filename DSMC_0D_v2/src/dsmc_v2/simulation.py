@@ -18,6 +18,8 @@ from dsmc_v2_contracts import (
 )
 
 from .artifact import MicroscopicClosure, VariationalClosure
+from .encounter import EncounterClock
+from .angular_memory import AngularMemoryTable
 from .kernel import SpherocylinderKernel
 from .legacy_models import FrozenLossModel, LegacyModels
 from .non_gaussian import NonGaussianDiagnostics
@@ -209,6 +211,25 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             closure, routing, angular, direction_rng, vss_rng,
             float(config["time"].get("equilibration_time", 0.0)),
             bool(config.get("simulation", {}).get("use_isotropic_eps", True)))
+
+    event_unit = str(config.get("microscopic_closure", {}).get(
+        "event_unit", "contact_legacy"))
+    if event_unit not in ("contact_legacy", "encounter"):
+        raise ValueError("microscopic_closure.event_unit must be contact_legacy or encounter")
+    encounter_clock = None
+    if event_unit == "encounter" and routing == "variational_v2":
+        # One DSMC event is one CTC encounter: clock at the kinematic
+        # encounter rate and draw the loss on the encounter scale.
+        encounter_clock = EncounterClock(config["microscopic_closure"].get(
+            "encounter_cross_section",
+            "DSMC_0D_v2/models/encounter_cross_section_v1.json"))
+        kernel.encounter_loss = True
+    clock_ratio_sum, clock_ratio_steps = 0.0, 0
+    angular_memory = None
+    angular_memory_path = config.get("microscopic_closure", {}).get("angular_memory")
+    if angular_memory_path and routing == "variational_v2":
+        angular_memory = AngularMemoryTable(angular_memory_path)
+        angular_memory.bind(closure.coordinates)
 
     dt = float(config["time"]["dt"])
     orientation_integrator = str(config.get("simulation", {}).get(
@@ -455,6 +476,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                     evaluation_correction_fallback_queries += int(
                         correction_fallback)
                 kernel.set_cell_variational(closure_state)
+                if angular_memory is not None:
+                    kernel.angular_memory_stencil = angular_memory.stencil(closure_state)
                 closure_state_seconds += wallclock.perf_counter() - closure_started
                 closure_state_updates += 1
                 closure_state_next_collision = collisions + closure_state_interval
@@ -466,7 +489,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
             inflation = (kernel.candidate_inflation
                          if (kernel is not None and routing == "variational_v2")
                          else 1.0)
-            n_candidates = candidate_count(count, params.sigma_c * inflation,
+            clock_sigma = params.sigma_c
+            if encounter_clock is not None:
+                clock_ratio = encounter_clock.ratio(theta, params.aspect_ratio)
+                clock_sigma = params.sigma_c * clock_ratio
+                clock_ratio_sum += clock_ratio
+                clock_ratio_steps += 1
+            n_candidates = candidate_count(count, clock_sigma * inflation,
                                            vrmax, volume, dt)
             peak_ntc_candidates = max(peak_ntc_candidates, n_candidates)
             if n_candidates > max_ntc_candidates:
@@ -659,6 +688,14 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     diagnostics = {
         "particles": count, "collisions": collisions,
         "cpp": collisions / float(count), "sigma_c": params.sigma_c,
+        "event_unit": event_unit,
+        "angular_memory": None if angular_memory is None else angular_memory.path,
+        "encounter_clock_mean_ratio": (clock_ratio_sum / clock_ratio_steps
+                                       if clock_ratio_steps else None),
+        "encounter_loss_mean_scale": (
+            kernel.encounter_loss_scale_sum / kernel.encounter_loss_scale_count
+            if kernel is not None and getattr(kernel, "encounter_loss_scale_count", 0)
+            else None),
         "termination_reason": termination_reason,
         "requested_tau_end": tau_end,
         "requested_t_end": None if not np.isfinite(end_time) else end_time,

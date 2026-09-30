@@ -7,6 +7,7 @@ import time as wallclock
 import numpy as np
 
 from .angular import sample_direction
+from .angular_memory import direction_from_cosine, sample_cosine
 
 
 def prepare_theta(theta: float) -> float:
@@ -81,6 +82,15 @@ class SpherocylinderKernel:
             * self.loss["one_hit_probability"]))
         self.cell_routing = None
         self.cell_variational = None
+        # Encounter event unit: draw the loss on the per-encounter CTC scale
+        # the energy and angular kernels were fitted on, instead of the
+        # per-contact BL mean.  Off by default so legacy runs are unchanged.
+        self.encounter_loss = False
+        # Optional angular law with incoming-partition memory; the stencil is
+        # refreshed with the cell state.  None keeps the artifact angular law.
+        self.angular_memory_stencil = None
+        self.encounter_loss_scale_sum = 0.0
+        self.encounter_loss_scale_count = 0
         self.negative_energy_repairs = 0
         self.closure_seconds = 0.0
         self.elastic_rotational_collision_number = ELASTIC_ROTATIONAL_COLLISION_NUMBER
@@ -259,9 +269,24 @@ class SpherocylinderKernel:
             gamma = 0.0 if in_equilibration or self.alpha >= 1.0 else (
                 np.random.beta(self.beta_a, self.beta_b) * self.loss["gamma_max"]
                 * self.loss["one_hit_probability"])
+            loss_mean = self.mean_loss_fraction
+            if self.encounter_loss and gamma > 0.0:
+                # BL is a per-contact law; one DSMC event is one CTC encounter.
+                # Rescale the Beta draw to the encounter mean the kernels were
+                # fitted with.  The routing covariate is then the drawn loss
+                # itself, so energy removal and routing see the same number.
+                scale = (float(self.cell_variational["fitted_mean_loss"])
+                         / max(self.mean_loss_fraction, 1.0e-30))
+                gamma *= scale
+                loss_mean *= scale
+                self.encounter_loss_scale_sum += scale
+                self.encounter_loss_scale_count += 1
+                if not gamma < 1.0:
+                    raise RuntimeError(
+                        f"encounter loss draw {gamma:.6g} is not below one")
             eps_tr_f = self.closure.sample_energy(
                 self.cell_variational, eps_tr_i, gamma, self.vss_rng,
-                loss_mean=self.mean_loss_fraction)
+                loss_mean=loss_mean)
             eps_r1_f = self.vss_rng.random()
             available = total_i * (1.0 - gamma)
             etr_f, erot_f = eps_tr_f * available, (1.0 - eps_tr_f) * available
@@ -272,8 +297,13 @@ class SpherocylinderKernel:
             state.rotational_energy[p2] = (1.0 - eps_r1_f) * erot_f
             ghat = vrel / max(relative_speed, 1.0e-30)
             magnitude = 2.0 * np.sqrt(etr_f / self.params.mass)
-            direction = self.closure.sample_direction(
-                ghat, self.cell_variational, eps_tr_f, self.vss_rng)
+            if self.angular_memory_stencil is not None:
+                cosine = sample_cosine(self.angular_memory_stencil, eps_tr_i,
+                                       eps_tr_f, self.vss_rng)
+                direction = direction_from_cosine(ghat, cosine, self.vss_rng)
+            else:
+                direction = self.closure.sample_direction(
+                    ghat, self.cell_variational, eps_tr_f, self.vss_rng)
             gpost = magnitude * direction
             state.velocity[p1] = vcom + 0.5 * gpost
             state.velocity[p2] = vcom - 0.5 * gpost

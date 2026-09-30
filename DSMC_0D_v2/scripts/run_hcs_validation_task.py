@@ -48,6 +48,12 @@ def main() -> None:
         help=("uniformly rescale both velocity modes during HCS evolution; "
               "this changes physical time but preserves collision-count "
               "dynamics and prevents numerical freezing"))
+    parser.add_argument(
+        "--event-unit", default="contact_legacy",
+        choices=("contact_legacy", "encounter"),
+        help="DSMC event = CTC contact (legacy clock and BL loss) or encounter")
+    parser.add_argument("--angular-memory", default=None,
+                        help="angular-memory table (incoming-partition memory)")
     args = parser.parse_args()
 
     row = row_at(Path(args.manifest), args.task)
@@ -85,7 +91,10 @@ def main() -> None:
         "artifact": args.artifact,
         "invariant_corrections": bool(args.enable_invariant_corrections),
         "state_update_cpp": float(row.get("state_update_cpp", 0.0) or 0.0),
+        "event_unit": args.event_unit,
     })
+    if args.angular_memory:
+        config["microscopic_closure"]["angular_memory"] = args.angular_memory
     config.setdefault("diagnostics", {})["collision_audit"] = True
 
     prefix = Path(row["output_prefix"])
