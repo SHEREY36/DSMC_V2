@@ -264,6 +264,10 @@ exchange-gate explanation and the nematic-order outlook are in
 
 ## 9. The production measure and the near-elastic yardstick (2026-09-30)
 
+Status: experimental diagnostic under evaluation.  It is not part of the model,
+nothing is fitted to it, and it is adopted only if the same construction also
+explains errors outside USF (HCS first).
+
 **What the measure is.**  The gate evaluates the four productions that fix a USF
 steady state -- D (T* via shear work = D), Lambda_rot
 (theta = root of Lambda_rot = 0), Lambda_xy and Lambda_N1 -- with the model and

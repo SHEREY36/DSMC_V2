@@ -403,7 +403,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
 <p>Files: <code>DSMC_0D_v2/models/encounter_cross_section_v2.json</code>, built from the shards by <code>Coll_Models_v2/scripts/build_encounter_table.py</code>, and loaded by <code>DSMC_0D_v2/config/encounter_unit_model_v1.yaml</code> with the artifact and the angular-memory table. At the next artifact rebuild these per-node values belong inside the NPZ, so the model is one file.</p>
 
 <h2><span class="num">10</span>The algorithm, every closure</h2>
-<p>This is the complete homogeneous (0D) DSMC method for rods with the variational closure. It starts with the offline build, whose last step is the production gate of Section 16, then the time step. Every closure variable appears, whether or not it is active today.</p>
+<p>This is the complete homogeneous (0D) DSMC method for rods with the variational closure. It starts with the offline build, then the time step. Step D of the build, the production gate, is a diagnostic under test and not part of the model (Section 16). Every closure variable appears, whether or not it is active today.</p>
 <p><span class="tag on">active</span> runs in the current model. <span class="tag new">new</span> is added by the event-unit repair. <span class="tag off">off</span> is present in code but switched off. <span class="tag diag">diagnostic</span> is computed and reported but never changes a trajectory.</p>
 
 <div class="algo">
@@ -414,7 +414,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
   <li><b>CTC.</b> At every node \(k=(\alpha_k,\theta_k,\mathrm{AR}_k)\), about 200,000 encounters of Maxwellian pairs at \((T_{tr},T_{rot})\) through the exact collision solver, recording each attempt as hit or miss and each encounter's \(z,\varepsilon,z',\ghat'\) and contact count.</li>
   <li><b>Fit.</b> The energy kernel by the conditional I-projection, the angular law by the energy-tilted I-projection \eqref{eq:fit}, \(\bar\varepsilon_{\enc,k}\), \(g_k(\Xi)\), and \(\sigma_c(\theta,\mathrm{AR})\) and \(\langle k\rangle\) from the hit counts. Every node passes a deep precision QA.</li>
   <li><b>Pack</b> the tables into one model folder. The HCS drift roots of every \((\alpha,\mathrm{AR})\) must be unique and stable.</li>
-  <li><b>Production gate</b> (Section 16). Replay USF incoming pairs through exact CTC at node and between-node \(\alpha\). On the same pairs, evaluate \(D\), \(\Lambda_{\rm rot}\), \(\Lambda_{xy}\) and \(\Lambda_{N_1}\) with the model and with CTC. Accept the model when every replay has \(|\kappa\,r_{\rm rot}|\le0.02\), \(|D^{\rm model}/D^{\rm CTC}-1|\le0.03\) and \(|\Lambda^{\rm model}_{xy}/\Lambda^{\rm CTC}_{xy}-1|\le0.04\), or lies within three standard errors, where \(r_{\rm rot}=(\Lambda^{\rm model}_{\rm rot}-\Lambda^{\rm CTC}_{\rm rot})/D^{\rm CTC}\) and \(\kappa=2\bar\varepsilon_E(1+\theta)/(\theta p_{\rm exch})\).</li>
+  <li><b>Production gate</b> <span class="tag diag">under test</span> (Section 16). Not part of the model: nothing is fitted to it, and step E does not wait on it. Replay USF incoming pairs through exact CTC at node and between-node \(\alpha\). On the same pairs, evaluate \(D\), \(\Lambda_{\rm rot}\), \(\Lambda_{xy}\) and \(\Lambda_{N_1}\) with the model and with CTC. A replay passes when it has \(|\kappa\,r_{\rm rot}|\le0.02\), \(|D^{\rm model}/D^{\rm CTC}-1|\le0.03\) and \(|\Lambda^{\rm model}_{xy}/\Lambda^{\rm CTC}_{xy}-1|\le0.04\), or lies within three standard errors, where \(r_{\rm rot}=(\Lambda^{\rm model}_{\rm rot}-\Lambda^{\rm CTC}_{\rm rot})/D^{\rm CTC}\) and \(\kappa=2\bar\varepsilon_E(1+\theta)/(\theta p_{\rm exch})\).</li>
   <li><b>Validate</b> against DEM in USF and the HCS benchmark. DEM is never used in steps A–D.</li>
 </ol>
 
@@ -462,7 +462,7 @@ b=\eta_2+\zeta z'+\rho_2 z ,
       <li><b>Spins:</b> \(\boldsymbol\omega_i=\sqrt{2E'_{{\rm rot},i}/I}\;\hat{\boldsymbol s}_i\), with \(\hat{\boldsymbol s}_i\) uniform in the plane \(\perp\boldsymbol u_i\), and the same for \(j\). The direction is reset and the axes are unchanged.</li>
       <li>Count the event: \(\tau\leftarrow\tau+2/N\), in encounters.</li>
     </ol>
-    <p class="aside">Summed over encounters per unit time, the changes this step makes to \(E\), \(E_{\rm rot}\), \(g_xg_y\) and \(g_x^2-g_y^2\) are the productions \(D\), \(\Lambda_{\rm rot}\), \(\Lambda_{xy}\) and \(\Lambda_{N_1}\). They fix \(T^*\), \(\theta\), \(P^*_{xy}\) and \(N_1\) (Section 1), and step D checks exactly these sums against CTC before the model is used.</p></li>
+    <p class="aside">Summed over encounters per unit time, the changes this step makes to \(E\), \(E_{\rm rot}\), \(g_xg_y\) and \(g_x^2-g_y^2\) are the productions \(D\), \(\Lambda_{\rm rot}\), \(\Lambda_{xy}\) and \(\Lambda_{N_1}\). They fix \(T^*\), \(\theta\), \(P^*_{xy}\) and \(N_1\) (Section 1), and the diagnostic of step D compares exactly these sums with CTC.</p></li>
   <li><b>Majorant.</b> Update \(v_{\max}\); in HCS, optionally rescale \(\boldsymbol c,\boldsymbol\omega\) uniformly (similarity scaling).</li>
   <li><b>Free rotation, second half,</b> as in step 2. Then \(t\leftarrow t+\Delta t\).</li>
 </ol>
@@ -539,7 +539,7 @@ A_\perp(\boldsymbol u_i,\boldsymbol u_j,\ghat)=\pi d^2+2dL\big(|\boldsymbol u_i\
 <p>The per-event time is almost all Python overhead in the per-candidate loop; the arithmetic of one encounter takes microseconds. Moving the candidate and collision loops to compiled or vectorised code would give another one to two orders of magnitude.</p>
 
 <h2><span class="num">16</span>The production measure</h2>
-<p>Every correction in this chapter was found, and checked before any USF run, with one measure: the collisional productions of Section 1, evaluated by the model and by exact CTC on the same colliding pairs. This section says what the measure is, why it is the right one for USF, how it converts into a \(\theta\) error, and what it has decided. The measure never runs inside a simulation. It is the acceptance test of a model, and it changes predictions only through the model changes it selects.</p>
+<p>Every correction in this chapter was first seen with one measure: the collisional productions of Section 1, evaluated by the model and by exact CTC on the same colliding pairs. This section says what the measure is, why it fits USF, how it converts into a \(\theta\) error, what it has shown, and what would make it part of the framework. It is a diagnostic under test. It never runs inside a simulation, nothing in the model is fitted to it, and it changes no prediction by itself.</p>
 
 <h3>16.1 What is measured</h3>
 <p>Incoming pairs are taken from a USF simulation after the relative-speed screen, so they sample the collision flux \(\propto g\,f_1f_2\) of a sheared gas. Each pair is replayed through the exact CTC solver at restitution \(\alpha\), and the model is evaluated on the same pairs with the estimators \eqref{eq:probe}. Four productions are compared:</p>
@@ -636,6 +636,15 @@ m(x)=\E_K\big[(1-\varepsilon)(1-z')\mid x\big].
 <p>Two changes make the gate informative near \(\alpha=1\). It now checks the predicted \(\theta\) error, \(|\kappa\,r_{\rm rot}|\le0.02\) or within three standard errors, at every \(\alpha\), and still reports \(r_{\rm rot}\). It also replays the \(\alpha=0.95\) USF states at \(\alpha=0.9\), 0.95, 0.975 and 0.99. Their \(\theta\approx1.04\) is close to the steady states there. The \(\alpha=0.5\) and 0.8 states have \(\theta=0.95\)–1.11, and replayed near \(\alpha=1\) their rotational production is mostly relaxation toward equipartition, which the steady state there never sees.</p>
 <p>The Negishi build answers the rest. \(\alpha=0.95\) is a fitted plane in both models and part of the USF validation against DEM; in the campaign its \(\theta\) error was 0.6% or less. \(\alpha=0.975\) and 0.99 have no DEM data, so the gate is their only test.</p>
 
+<h3>16.7 Scope and status</h3>
+<p>The measure is a diagnostic under test. The model is built from CTC alone, no table is fitted to the measure, and the USF and HCS validation runs do not wait on it. It will be adopted only if it is explainable and works the same way outside USF.</p>
+<p>The construction itself is not specific to USF. In any homogeneous flow the observables obey moment balances whose collisional terms are productions \eqref{eq:production}, and each steady or attracting value is the root of one balance. The measure compares that production, model against CTC, on pairs drawn from the flow's own collision flux, and converts a residual into an error through the derivative of the balance, as in \eqref{eq:kappa}. Only two things change from flow to flow: which moment the balance names, and where the pairs come from.</p>
+<ul class="plain">
+  <li><b>USF:</b> \(\theta\) is the root of \(\Lambda_{\rm rot}=0\), on pairs from a sheared gas.</li>
+  <li><b>HCS:</b> \(\theta\) is the root of the drift \(\langle\mathcal D\rangle=0\) of \eqref{eq:drift}, which combines translational and rotational production, on pairs from a cooling gas.</li>
+</ul>
+<p>The closed form \eqref{eq:kappaest} is a leading-order estimate for USF. The general conversion is the derivative of the balance, which the model can evaluate on the same pairs. The test that decides adoption is HCS: predict the HCS \(\theta\) errors of Table 6 from the drift production on HCS pairs, with the construction unchanged. If that works, the measure explains errors in both flows. If not, it stays a USF diagnostic and is not adopted.</p>
+
 <h2><span class="num">17</span>The \(\alpha\)-refined model</h2>
 <p>The model now has fitted planes at \(\alpha=0.50,0.55,\dots,0.95\) and 1: seven new planes, 252 new nodes, 396 in all. On a node the node's own tables are used exactly as fitted. Between nodes, as at \(\alpha=0.99\) or \(0.575\), the laws of the neighbouring nodes are mixed on the stencil of Section 13: a Wasserstein average of quantiles for the energy law and a mixture for the angular law. Every new node is fitted from its own CTC encounters. It uses the same attempt stream as the \(\alpha=0.5\) node at its \((\theta,\mathrm{AR})\), so differences between planes carry no sampling noise from the incoming pairs.</p>
 
@@ -657,6 +666,6 @@ m(x)=\E_K\big[(1-\varepsilon)(1-z')\mid x\big].
   <li>Fits of the new nodes. The bridge form is used first, and the bounded-logit form replaces it only if a node fails its precision QA. The 144 existing fits are reused.</li>
   <li>Deep QA of all 396 estimates, precompute of all nodes, and the pack with the encounter-unit stability gate.</li>
   <li>The model tables in the same folder: \(\sigma_c(\theta,\mathrm{AR})\), \(\langle k\rangle(\alpha,\theta,\mathrm{AR})\) and the angular-memory law at every node.</li>
-  <li>The production gate of Section 16, then USF validation over AR 1.5–3 and \(\alpha=0.50\)–0.95 (320 runs) and HCS at the DEM benchmark nodes.</li>
+  <li>The production-gate diagnostic of Section 16 and, independently of it, USF validation over AR 1.5–3 and \(\alpha=0.50\)–0.95 (320 runs) and HCS at the DEM benchmark nodes.</li>
 </ol>
 </main>

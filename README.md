@@ -22,8 +22,10 @@ The production model is the encounter-unit closure
 - the invariant (flow-moment) response is retired: the runtime does not apply
   it and `invariant_corrections: true` is an error; the sections below that
   describe it are kept as a record of the earlier design;
-- `DSMC_0D_v2/scripts/production_gate.py` is the acceptance test: collisional
-  productions against exact CTC on identical USF pairs.
+- `DSMC_0D_v2/scripts/production_gate.py` is an experimental diagnostic, not
+  part of the model or its acceptance: it compares collisional productions with
+  exact CTC on identical replayed pairs. Nothing is fitted to it, and the USF and
+  HCS validation jobs do not wait on it.
 
 Derivation and evidence: `reports/USF_ENCOUNTER_UNIT_2026-09-29.md` and the
 rendered `reports/usf_event_unit_methodology/usf_event_unit.html`.
