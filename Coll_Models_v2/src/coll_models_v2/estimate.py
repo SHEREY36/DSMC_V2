@@ -171,6 +171,17 @@ def _run_events(run, propensity=None, offsets: int = DEFAULT_OFFSETS,
     z_in = et_in / total_in
     z_el = values[:, OI["et_elastic"]] / total_in
     z_out = values[:, OI["et_inelastic"]] / total_out
+    # delta_total is the solver's integrated loss tally; it can differ from the
+    # energy actually removed by up to ~0.2 % of E.  When an encounter leaves
+    # almost no spin that pushes the partition past 1 (one encounter in 200,000
+    # at 8 of 396 nodes).  Such events take the partition of the recorded
+    # post-collision state, which matches the spins to 1e-12; all others are
+    # unchanged.
+    outside = (z_out <= 0.0) | (z_out >= 1.0)
+    if np.any(outside):
+        et_out = values[outside, OI["et_inelastic"]]
+        z_out[outside] = et_out / (et_out + values[outside, OI["er1_inelastic"]]
+                                   + values[outside, OI["er2_inelastic"]])
     gpre = _vec(values, OI, "ghat_pre")
     gpost = _vec(values, OI, "ghat_post")
     cosine = np.clip(np.einsum("ni,ni->n", gpre, gpost), -1.0, 1.0)

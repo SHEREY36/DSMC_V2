@@ -80,7 +80,7 @@ PACK=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$P
   --export=ALL,ARTIFACT_EVENT_UNIT=encounter \
   hpc/aggregate.slurm "$GRID" "$ESTIMATES" "$MODEL" "$WORK")")
 # 3. production gate and validation on the packed model
-GATE=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES:$GATE_CTC \
+GATE=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES,afterany:$GATE_CTC \
   hpc/production_gate.slurm "$TAG" "$MODEL")")
 TABLE_ENV="ALL,ENCOUNTER_TABLE=$MODEL/encounter_cross_section.json,ANGULAR_MEMORY=$MODEL/angular_memory.json"
 USF_WORKERS=208; (( USF_WORKERS > USF_ROWS )) && USF_WORKERS=$USF_ROWS

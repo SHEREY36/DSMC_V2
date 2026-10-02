@@ -81,7 +81,10 @@ def main() -> None:
     prefixes = sorted(p[:-5] for p in glob.glob(f"{args.results}/*/*.json")
                       if not p.endswith((".summary.json",)))
     runs = [r for r in map(steady, prefixes) if r is not None]
+    if not runs:
+        raise SystemExit(f"no finished USF runs under {args.results}; nothing to analyze")
     output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
     write_csv(output.with_suffix(".runs.csv"), runs)
     table = json.loads(Path(args.encounter_table).read_text())
     # cold and hot trajectories of one seed are averaged first

@@ -24,6 +24,9 @@ def main():
         late = t[:, 1] >= args.window_start_tau
         groups[(row["arm"], float(row["alpha"]), float(row["aspect_ratio"]))].append(
             (float(np.mean(t[late, 2] / t[late, 3])), float(row["target_theta"])))
+    if not groups:
+        raise SystemExit(f"no finished HCS runs listed in {args.manifest}; nothing to analyze")
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for (arm, alpha, ar), vals in sorted(groups.items()):
         theta = np.array([v[0] for v in vals]); target = vals[0][1]
