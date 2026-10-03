@@ -1,0 +1,1286 @@
+{
+ "schema": "encounter-cross-section-v2",
+ "definition": "sigma_enc = (2 b_max)^2 N_hit / N_att from HS_CTC_v2 shards (d = 1), pooled over alpha; dynamic_factor = sigma_enc / (pi (d^2 + d L + L^2/8)). Measured from this project's CTC data; replaces the v1 AR polynomial for the encounter event unit.",
+ "interpolation": "dynamic_factor linear in log(theta) (flat outside), then linear in AR",
+ "sources": [
+  "ctc_ar_ge2",
+  "ctc_closure",
+  "ctc_closure_200k"
+ ],
+ "cross_section": {
+  "1.1000": {
+   "theta": [
+    0.0125,
+    0.025,
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    1.141439,
+    1.136382,
+    1.129715,
+    1.123603,
+    1.119267,
+    1.116044,
+    1.106822,
+    1.1041
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.000668,
+    0.000669,
+    0.00067,
+    0.000671,
+    0.000671,
+    0.001327,
+    0.000946,
+    0.00133
+   ],
+   "dynamic_factor": [
+    1.036494,
+    1.031902,
+    1.025848,
+    1.020298,
+    1.01636,
+    1.013434,
+    1.00506,
+    1.002588
+   ],
+   "encounters": [
+    800000,
+    800000,
+    800000,
+    800000,
+    800000,
+    205000,
+    405000,
+    205000
+   ]
+  },
+  "1.2000": {
+   "theta": [
+    0.0125,
+    0.025,
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    1.299636,
+    1.288898,
+    1.276929,
+    1.263129,
+    1.255168,
+    1.248988,
+    1.222173,
+    1.215303
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.000803,
+    0.000803,
+    0.000804,
+    0.000805,
+    0.000805,
+    0.000805,
+    0.000719,
+    0.000804
+   ],
+   "dynamic_factor": [
+    1.078536,
+    1.069625,
+    1.059692,
+    1.048239,
+    1.041633,
+    1.036505,
+    1.014251,
+    1.00855
+   ],
+   "encounters": [
+    800000,
+    800000,
+    800000,
+    800000,
+    800000,
+    800000,
+    1000000,
+    800000
+   ]
+  },
+  "1.3500": {
+   "theta": [
+    0.0125,
+    0.025,
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    1.554947,
+    1.537106,
+    1.515453,
+    1.490079,
+    1.473225,
+    1.463605,
+    1.407507,
+    1.390915
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.001018,
+    0.001018,
+    0.001016,
+    0.001014,
+    0.001012,
+    0.001011,
+    0.000896,
+    0.000999
+   ],
+   "dynamic_factor": [
+    1.138894,
+    1.125827,
+    1.109968,
+    1.091383,
+    1.079039,
+    1.071992,
+    1.030905,
+    1.018752
+   ],
+   "encounters": [
+    800000,
+    800000,
+    800000,
+    800000,
+    800000,
+    800000,
+    1000000,
+    800000
+   ]
+  },
+  "1.5000": {
+   "theta": [
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    1.693537,
+    1.60248,
+    1.575827
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.001228,
+    0.001204,
+    0.001196
+   ],
+   "dynamic_factor": [
+    1.105983,
+    1.046518,
+    1.029112
+   ],
+   "encounters": [
+    800000,
+    800000,
+    800000
+   ]
+  },
+  "2.0000": {
+   "theta": [
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    2.555694,
+    2.322544,
+    2.247683
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.004023,
+    0.003814,
+    0.003739
+   ],
+   "dynamic_factor": [
+    1.202679,
+    1.092962,
+    1.057733
+   ],
+   "encounters": [
+    205000,
+    205000,
+    205000
+   ]
+  },
+  "2.5000": {
+   "theta": [
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    3.54944,
+    3.126564,
+    3.001364
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.002977,
+    0.002741,
+    0.002664
+   ],
+   "dynamic_factor": [
+    1.276203,
+    1.124158,
+    1.079142
+   ],
+   "encounters": [
+    800000,
+    800000,
+    800000
+   ]
+  },
+  "3.0000": {
+   "theta": [
+    0.2,
+    1.0,
+    2.0
+   ],
+   "sigma_enc_over_pi_d2": [
+    4.677373,
+    4.010142,
+    3.821452
+   ],
+   "sigma_enc_standard_error_over_pi_d2": [
+    0.008001,
+    0.007179,
+    0.006924
+   ],
+   "dynamic_factor": [
+    1.336392,
+    1.145755,
+    1.091843
+   ],
+   "encounters": [
+    205000,
+    205000,
+    205000
+   ]
+  }
+ },
+ "contacts_per_encounter": [
+  {
+   "alpha": 0.5,
+   "theta": 0.0125,
+   "AR": 1.1,
+   "k_mean": 1.130015,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.0125,
+   "AR": 1.2,
+   "k_mean": 1.1437,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.0125,
+   "AR": 1.35,
+   "k_mean": 1.130655,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.025,
+   "AR": 1.1,
+   "k_mean": 1.115865,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.025,
+   "AR": 1.2,
+   "k_mean": 1.128425,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.025,
+   "AR": 1.35,
+   "k_mean": 1.122455,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.05,
+   "AR": 1.1,
+   "k_mean": 1.09657,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.05,
+   "AR": 1.2,
+   "k_mean": 1.124375,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.05,
+   "AR": 1.35,
+   "k_mean": 1.127685,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.1,
+   "AR": 1.1,
+   "k_mean": 1.067925,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.1,
+   "AR": 1.2,
+   "k_mean": 1.10957,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.1,
+   "AR": 1.35,
+   "k_mean": 1.13156,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.15,
+   "AR": 1.1,
+   "k_mean": 1.04987,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.15,
+   "AR": 1.2,
+   "k_mean": 1.10185,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.15,
+   "AR": 1.35,
+   "k_mean": 1.132105,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 1.1,
+   "k_mean": 1.04058,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 1.2,
+   "k_mean": 1.0881,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 1.35,
+   "k_mean": 1.12959,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 1.5,
+   "k_mean": 1.1423,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 2.0,
+   "k_mean": 1.183117,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 2.5,
+   "k_mean": 1.24625,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 0.2,
+   "AR": 3.0,
+   "k_mean": 1.228737,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 1.1,
+   "k_mean": 1.006376,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 1.2,
+   "k_mean": 1.02768,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 1.35,
+   "k_mean": 1.07399,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 1.5,
+   "k_mean": 1.137285,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 2.0,
+   "k_mean": 1.22758,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 2.5,
+   "k_mean": 1.28698,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 1.0,
+   "AR": 3.0,
+   "k_mean": 1.313444,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 1.1,
+   "k_mean": 1.002859,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 1.2,
+   "k_mean": 1.01323,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 1.35,
+   "k_mean": 1.04526,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 1.5,
+   "k_mean": 1.091935,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 2.0,
+   "k_mean": 1.230166,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 2.5,
+   "k_mean": 1.30355,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.5,
+   "theta": 2.0,
+   "AR": 3.0,
+   "k_mean": 1.336405,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.0125,
+   "AR": 1.1,
+   "k_mean": 1.065295,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.0125,
+   "AR": 1.2,
+   "k_mean": 1.050755,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.0125,
+   "AR": 1.35,
+   "k_mean": 1.03993,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.025,
+   "AR": 1.1,
+   "k_mean": 1.064645,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.025,
+   "AR": 1.2,
+   "k_mean": 1.06134,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.025,
+   "AR": 1.35,
+   "k_mean": 1.053455,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.05,
+   "AR": 1.1,
+   "k_mean": 1.05504,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.05,
+   "AR": 1.2,
+   "k_mean": 1.06721,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.05,
+   "AR": 1.35,
+   "k_mean": 1.06666,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.1,
+   "AR": 1.1,
+   "k_mean": 1.037895,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.1,
+   "AR": 1.2,
+   "k_mean": 1.063725,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.1,
+   "AR": 1.35,
+   "k_mean": 1.07369,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.15,
+   "AR": 1.1,
+   "k_mean": 1.02739,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.15,
+   "AR": 1.2,
+   "k_mean": 1.05685,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.15,
+   "AR": 1.35,
+   "k_mean": 1.075385,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 1.1,
+   "k_mean": 1.022268,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 1.2,
+   "k_mean": 1.05009,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 1.35,
+   "k_mean": 1.073085,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 1.5,
+   "k_mean": 1.085065,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 2.0,
+   "k_mean": 1.104229,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 2.5,
+   "k_mean": 1.11829,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 0.2,
+   "AR": 3.0,
+   "k_mean": 1.125493,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 1.1,
+   "k_mean": 1.003249,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 1.2,
+   "k_mean": 1.01515,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 1.35,
+   "k_mean": 1.040455,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 1.5,
+   "k_mean": 1.06735,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 2.0,
+   "k_mean": 1.133976,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 2.5,
+   "k_mean": 1.173105,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 1.0,
+   "AR": 3.0,
+   "k_mean": 1.195229,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 1.1,
+   "k_mean": 1.001259,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 1.2,
+   "k_mean": 1.0071,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 1.35,
+   "k_mean": 1.02397,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 1.5,
+   "k_mean": 1.04814,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 2.0,
+   "k_mean": 1.134434,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 2.5,
+   "k_mean": 1.18955,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.8,
+   "theta": 2.0,
+   "AR": 3.0,
+   "k_mean": 1.213317,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.0125,
+   "AR": 1.1,
+   "k_mean": 1.053435,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.0125,
+   "AR": 1.2,
+   "k_mean": 1.0433,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.0125,
+   "AR": 1.35,
+   "k_mean": 1.033585,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.025,
+   "AR": 1.1,
+   "k_mean": 1.052605,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.025,
+   "AR": 1.2,
+   "k_mean": 1.05061,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.025,
+   "AR": 1.35,
+   "k_mean": 1.04388,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.05,
+   "AR": 1.1,
+   "k_mean": 1.043195,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.05,
+   "AR": 1.2,
+   "k_mean": 1.05541,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.05,
+   "AR": 1.35,
+   "k_mean": 1.05427,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.1,
+   "AR": 1.1,
+   "k_mean": 1.028645,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.1,
+   "AR": 1.2,
+   "k_mean": 1.050395,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.1,
+   "AR": 1.35,
+   "k_mean": 1.0604,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.15,
+   "AR": 1.1,
+   "k_mean": 1.02204,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.15,
+   "AR": 1.2,
+   "k_mean": 1.044465,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.15,
+   "AR": 1.35,
+   "k_mean": 1.06124,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 1.1,
+   "k_mean": 1.016883,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 1.2,
+   "k_mean": 1.039965,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 1.35,
+   "k_mean": 1.05961,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 1.5,
+   "k_mean": 1.06895,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 2.0,
+   "k_mean": 1.086761,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 2.5,
+   "k_mean": 1.099595,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 0.2,
+   "AR": 3.0,
+   "k_mean": 1.106615,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 1.1,
+   "k_mean": 1.002337,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 1.2,
+   "k_mean": 1.01118,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 1.35,
+   "k_mean": 1.03027,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 1.5,
+   "k_mean": 1.05377,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 2.0,
+   "k_mean": 1.112698,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 2.5,
+   "k_mean": 1.148275,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 1.0,
+   "AR": 3.0,
+   "k_mean": 1.173049,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 1.1,
+   "k_mean": 1.000893,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 1.2,
+   "k_mean": 1.005075,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 1.35,
+   "k_mean": 1.01743,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 1.5,
+   "k_mean": 1.03795,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 2.0,
+   "k_mean": 1.112161,
+   "encounters": 205000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 2.5,
+   "k_mean": 1.162115,
+   "encounters": 200000
+  },
+  {
+   "alpha": 0.95,
+   "theta": 2.0,
+   "AR": 3.0,
+   "k_mean": 1.187741,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.0125,
+   "AR": 1.1,
+   "k_mean": 1.04989,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.0125,
+   "AR": 1.2,
+   "k_mean": 1.040095,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.0125,
+   "AR": 1.35,
+   "k_mean": 1.03174,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.025,
+   "AR": 1.1,
+   "k_mean": 1.048425,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.025,
+   "AR": 1.2,
+   "k_mean": 1.047815,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.025,
+   "AR": 1.35,
+   "k_mean": 1.04128,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.05,
+   "AR": 1.1,
+   "k_mean": 1.03996,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.05,
+   "AR": 1.2,
+   "k_mean": 1.05174,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.05,
+   "AR": 1.35,
+   "k_mean": 1.050575,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.1,
+   "AR": 1.1,
+   "k_mean": 1.02623,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.1,
+   "AR": 1.2,
+   "k_mean": 1.04804,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.1,
+   "AR": 1.35,
+   "k_mean": 1.055545,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.15,
+   "AR": 1.1,
+   "k_mean": 1.02003,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.15,
+   "AR": 1.2,
+   "k_mean": 1.041445,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.15,
+   "AR": 1.35,
+   "k_mean": 1.056805,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 1.1,
+   "k_mean": 1.015493,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 1.2,
+   "k_mean": 1.037925,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 1.35,
+   "k_mean": 1.055085,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 1.5,
+   "k_mean": 1.065805,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 2.0,
+   "k_mean": 1.081912,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 2.5,
+   "k_mean": 1.095605,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 0.2,
+   "AR": 3.0,
+   "k_mean": 1.101541,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 1.1,
+   "k_mean": 1.00218,
+   "encounters": 405000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 1.2,
+   "k_mean": 1.009872,
+   "encounters": 400000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 1.35,
+   "k_mean": 1.028598,
+   "encounters": 400000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 1.5,
+   "k_mean": 1.04878,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 2.0,
+   "k_mean": 1.106517,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 2.5,
+   "k_mean": 1.141485,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 1.0,
+   "AR": 3.0,
+   "k_mean": 1.15941,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 1.1,
+   "k_mean": 1.000776,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 1.2,
+   "k_mean": 1.004425,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 1.35,
+   "k_mean": 1.01654,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 1.5,
+   "k_mean": 1.034685,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 2.0,
+   "k_mean": 1.105693,
+   "encounters": 205000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 2.5,
+   "k_mean": 1.15431,
+   "encounters": 200000
+  },
+  {
+   "alpha": 1.0,
+   "theta": 2.0,
+   "AR": 3.0,
+   "k_mean": 1.180298,
+   "encounters": 205000
+  }
+ ]
+}

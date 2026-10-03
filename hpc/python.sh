@@ -10,10 +10,21 @@ else
     export PYTHONPATH="$PROJECT_PYTHONPATH"
 fi
 
-CANDIDATES=()
 if [[ -n "${DSMC_V2_PYTHON:-}" ]]; then
-    CANDIDATES+=("$DSMC_V2_PYTHON")
+    if [[ ! -x "$DSMC_V2_PYTHON" ]]; then
+        printf 'ERROR: DSMC_V2_PYTHON is not executable: %s\n' "$DSMC_V2_PYTHON" >&2
+        exit 2
+    fi
+    if ! "$DSMC_V2_PYTHON" -c \
+        'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+        printf 'ERROR: DSMC_V2_PYTHON must provide Python 3.10 or newer: %s\n' \
+            "$DSMC_V2_PYTHON" >&2
+        exit 2
+    fi
+    exec "$DSMC_V2_PYTHON" "$@"
 fi
+
+CANDIDATES=()
 CANDIDATES+=("$ROOT/.conda-v2/bin/python")
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
     CANDIDATES+=("$VIRTUAL_ENV/bin/python")

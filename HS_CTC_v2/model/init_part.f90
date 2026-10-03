@@ -1,5 +1,5 @@
 
-	SUBROUTINE INIT_PART
+	SUBROUTINE INIT_PART(event_id, attempt_number)
 
 ! Global variables
 !------------------------------------------------------------------//
@@ -8,9 +8,11 @@
 	use run_param
 	use output
 	use rng_mod
+	use replay_mod, only: GET_REPLAY_RECORD
 !$ use omp_lib
 
 	implicit none
+	INTEGER, INTENT(IN) :: event_id, attempt_number
 	INTEGER :: I
 	DOUBLE PRECISION :: RR
 	DOUBLE PRECISION :: PHI, THETA
@@ -20,6 +22,7 @@
 	double precision, dimension(3) :: v1com, v2com, vcom
 	double precision, dimension(3) :: RVEL, RPOS
 
+	IF (.NOT.REPLAY_MODE) THEN
 	! Sample Position
 	POS(1,:) = (/0.D0, 0.D0, 0.D0/)
 	POS(2,1) = BMAX
@@ -92,6 +95,9 @@
 		UX(I,:)  = MATMUL(ROT, UX(I,:))
 		UY(I,:)  = MATMUL(ROT, UY(I,:))
 	END DO
+	ELSE
+		CALL INIT_PART_REPLAY(event_id, attempt_number)
+	END IF
 	
 	! Initialize forces
 	F(:,:) = 0.D0
@@ -131,7 +137,7 @@
         Et_00 = MASS*(DOT_PRODUCT(V1COM,V1COM) + DOT_PRODUCT(V2COM,V2COM))
 	
 	
-	dt = TCOLL/50.D0
+	dt = TCOLL/DT_DIVISOR
 	! For calls to outputs
 	VREL0 = VEL(2,:) - VEL(1,:)
 	WREL0 = OMEGA(2,:) - OMEGA(1,:)
@@ -140,3 +146,70 @@
 	CONTACT = .FALSE.; NPHIT = 0
 	RETURN
 	end subroutine INIT_PART
+
+	SUBROUTINE INIT_PART_REPLAY(event_id, attempt_number)
+
+	use particles
+	use constants
+	use run_param
+	use replay_mod, only: GET_REPLAY_RECORD, REPLAY_WIDTH
+	use rng_mod
+
+	implicit none
+	INTEGER, INTENT(IN) :: event_id, attempt_number
+	INTEGER :: I
+	DOUBLE PRECISION :: RECORD(REPLAY_WIDTH), WLAB(2,3)
+	DOUBLE PRECISION :: GHAT(3), REF(3), B1(3), B2(3), Q1(3), Q2(3)
+	DOUBLE PRECISION :: GNORM, BNORM, PHI, BY, BZ
+
+	CALL GET_REPLAY_RECORD(event_id, attempt_number, RECORD)
+	VEL(1,:) = RECORD(1:3); VEL(2,:) = RECORD(4:6)
+	WLAB(1,:) = RECORD(7:9); WLAB(2,:) = RECORD(10:12)
+	U(1,:) = RECORD(13:15); U(2,:) = RECORD(16:18)
+
+	DO I = 1,2
+		U(I,:) = U(I,:)/SQRT(DOT_PRODUCT(U(I,:),U(I,:)))
+		IF (ABS(U(I,1)) < 0.8D0) THEN
+			REF = (/1.D0, 0.D0, 0.D0/)
+		ELSE
+			REF = (/0.D0, 1.D0, 0.D0/)
+		END IF
+		UX(I,:) = REF - DOT_PRODUCT(REF,U(I,:))*U(I,:)
+		UX(I,:) = UX(I,:)/SQRT(DOT_PRODUCT(UX(I,:),UX(I,:)))
+		UY(I,:) = CROSSPRDCT(UX(I,:),U(I,:))
+		UY(I,:) = UY(I,:)/SQRT(DOT_PRODUCT(UY(I,:),UY(I,:)))
+		! The replay file stores laboratory-frame tangent angular velocity;
+		! the integrator stores components in the particle body basis.
+		WLAB(I,:) = WLAB(I,:) - DOT_PRODUCT(WLAB(I,:),U(I,:))*U(I,:)
+		OMEGA(I,1) = DOT_PRODUCT(WLAB(I,:),U(I,:))
+		OMEGA(I,2) = DOT_PRODUCT(WLAB(I,:),UX(I,:))
+		OMEGA(I,3) = DOT_PRODUCT(WLAB(I,:),UY(I,:))
+	END DO
+
+	GHAT = VEL(1,:) - VEL(2,:)
+	GNORM = SQRT(DOT_PRODUCT(GHAT,GHAT))
+	IF (GNORM <= SMALL_NUM) THEN
+		write(*,*) 'Replay record contains zero relative velocity'
+		stop 4
+	END IF
+	GHAT = GHAT/GNORM
+	IF (ABS(GHAT(1)) < 0.8D0) THEN
+		REF = (/1.D0, 0.D0, 0.D0/)
+	ELSE
+		REF = (/0.D0, 1.D0, 0.D0/)
+	END IF
+	B1 = REF - DOT_PRODUCT(REF,GHAT)*GHAT
+	BNORM = SQRT(DOT_PRODUCT(B1,B1)); B1 = B1/BNORM
+	B2 = CROSSPRDCT(B1,GHAT)
+	B2 = B2/SQRT(DOT_PRODUCT(B2,B2))
+	PHI = 2.D0*PI*RNG_UNIFORM()
+	Q1 = COS(PHI)*B1 + SIN(PHI)*B2
+	Q2 = -SIN(PHI)*B1 + COS(PHI)*B2
+	BY = BMAX*(2.D0*RNG_UNIFORM() - 1.D0)
+	BZ = BMAX*(2.D0*RNG_UNIFORM() - 1.D0)
+	POS(1,:) = 0.D0
+	! VEL(2)-VEL(1) points opposite GHAT, so +BMAX*GHAT is incoming.
+	POS(2,:) = BMAX*GHAT + BY*Q1 + BZ*Q2
+
+	RETURN
+	end subroutine INIT_PART_REPLAY

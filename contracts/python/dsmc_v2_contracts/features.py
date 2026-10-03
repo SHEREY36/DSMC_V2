@@ -16,6 +16,7 @@ FEATURE_NAMES = (
     "PiPi", "QQ", "RtRt", "PiQ", "PiRt", "QRt",
     "qtr2", "qrot2", "qtr_qrot", "W2",
 )
+ONE_SIDED_FEATURE_NAMES = ("PiPi", "QQ", "RtRt", "qtr2", "qrot2", "W2")
 DIAGNOSTIC_NAMES = ("Acw2", "vx2")
 ALL_INVARIANT_NAMES = FEATURE_NAMES + DIAGNOSTIC_NAMES
 LEGACY_FEATURE_NAMES = (
@@ -103,8 +104,8 @@ def pair_score_kernel(
 
     Averaging these kernels over independent proposal pairs gives the same
     population invariants as :func:`cell_features`. They are used for
-    proposal-balance diagnostics; coefficient identification uses directly
-    generated excitation ensembles rather than score reweighting.
+    proposal-balance diagnostics and for checking importance-reweighted or
+    directly generated excitation ensembles against the same feature basis.
     """
     arrays = [np.atleast_2d(np.asarray(value, dtype=float)) for value in
               (c1, c2, omega1, omega2, u1, u2)]
@@ -155,6 +156,26 @@ def _u_dot(a: np.ndarray, b: np.ndarray) -> float:
                   - np.einsum("ni,ni->", a, b)) / (n * (n - 1)))
 
 
+def _u_v_square_contraction(a: np.ndarray) -> tuple[float, float]:
+    """Return unbiased U and nonnegative V contractions with one reduction."""
+    n = len(a)
+    total = np.sum(a, axis=0).ravel()
+    total_square = float(total @ total)
+    self_square = float(np.einsum("nij,nij->", a, a))
+    return ((total_square - self_square) / (n * (n - 1)),
+            total_square / (n * n))
+
+
+def _u_v_square_dot(a: np.ndarray) -> tuple[float, float]:
+    """Return unbiased U and nonnegative V dot products with one reduction."""
+    n = len(a)
+    total = np.sum(a, axis=0)
+    total_square = float(total @ total)
+    self_square = float(np.einsum("ni,ni->", a, a))
+    return ((total_square - self_square) / (n * (n - 1)),
+            total_square / (n * n))
+
+
 def _normalised_state(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,
                       mass: float, moi_perpendicular: float) -> tuple[np.ndarray, ...]:
     velocity = np.asarray(velocity, dtype=float)
@@ -176,6 +197,105 @@ def _normalised_state(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,
     return c, w, axis
 
 
+def _cell_invariants_with_domain(
+    velocity: np.ndarray,
+    omega: np.ndarray,
+    axis: np.ndarray,
+    mass: float = 1.0,
+    moi_perpendicular: float = 1.0,
+    sphere: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return correction features, diagnostics, and support-test features.
+
+    The correction features deliberately use unbiased pair U-statistics.  A
+    U-statistic estimating a squared population moment can be slightly
+    negative at finite particle count even though the population quantity is
+    nonnegative.  For domain classification only, the matching V-statistic
+    (the squared sample mean) is therefore used for the six one-sided
+    features.  The learned correction continues to receive the raw unbiased
+    values; no feature is clipped or changed in the physical model.
+    """
+    c, w, u = _normalised_state(velocity, omega, axis, mass, moi_perpendicular)
+    n = len(c)
+    denominator = n * (n - 1)
+    ident = np.eye(3)
+    x = np.einsum("ni,ni->n", c, c)
+    y = np.einsum("ni,ni->n", w, w)
+    cu = np.einsum("ni,ni->n", c, u)
+    cw = np.einsum("ni,ni->n", c, w)
+    uw = np.einsum("ni,ni->n", u, w)
+
+    # All tensor U-statistics depend only on tensor sums and same-particle
+    # contractions.  Forming N separate 3x3 tensors used most of the runtime
+    # and memory traffic even though those arrays were immediately reduced.
+    sum_pi = 2.0 * (c.T @ c - float(np.sum(x)) * ident / 3.0)
+    sum_rr = 3.0 * (w.T @ w - float(np.sum(y)) * ident / 3.0)
+    sum_qq = (np.zeros((3, 3)) if sphere else
+              0.5 * (3.0 * (u.T @ u) - n * ident))
+    sum_rt = sum_rr + sum_qq
+    self_pi = (8.0 / 3.0) * float(np.sum(x * x))
+    self_rr = 6.0 * float(np.sum(y * y))
+    self_qq = 0.0 if sphere else 1.5 * n
+    self_pi_qq = (0.0 if sphere else
+                  3.0 * float(np.sum(cu * cu - x / 3.0)))
+    self_pi_rr = 6.0 * float(np.sum(cw * cw - x * y / 3.0))
+    self_qq_rr = (0.0 if sphere else
+                  4.5 * float(np.sum(uw * uw - y / 3.0)))
+    self_rt = self_rr + self_qq + 2.0 * self_qq_rr
+
+    def tensor_u(sa, sb, self_cross):
+        return float((sa.ravel() @ sb.ravel() - self_cross) / denominator)
+
+    def tensor_uv(sa, self_square):
+        total_square = float(sa.ravel() @ sa.ravel())
+        return ((total_square - self_square) / denominator,
+                total_square / (n * n))
+
+    pipi_u, pipi_v = tensor_uv(sum_pi, self_pi)
+    qq_u, qq_v = tensor_uv(sum_qq, self_qq)
+    rtrt_u, rtrt_v = tensor_uv(sum_rt, self_rt)
+    pi_qq = tensor_u(sum_pi, sum_qq, self_pi_qq)
+    pi_rt = tensor_u(sum_pi, sum_rt, self_pi_rr + self_pi_qq)
+    qq_rt = tensor_u(sum_qq, sum_rt, self_qq_rr + self_qq)
+
+    qtr = 0.8 * c * (x[:, None] - 2.5)
+    qrot = 2.0 * c * (y[:, None] - 1.0)
+    qtr2_u, qtr2_v = _u_v_square_dot(qtr)
+    qrot2_u, qrot2_v = _u_v_square_dot(qrot)
+    w2_u, w2_v = _u_v_square_dot(w)
+    acu = np.zeros(n) if sphere else cu * cu - x / 3.0
+    features = np.array([
+        (4.0 / 15.0) * np.mean(x * x) - 1.0,
+        0.5 * np.mean(y * y) - 1.0,
+        (2.0 / 3.0) * np.mean(x * y) - 1.0,
+        np.mean(acu),
+        pipi_u / 8.0,
+        qq_u / 8.0,
+        rtrt_u / 8.0,
+        pi_qq / 4.0,
+        pi_rt / 4.0,
+        qq_rt / 4.0,
+        qtr2_u,
+        qrot2_u,
+        _u_dot(qtr, qrot),
+        w2_u,
+    ], dtype=float)
+    acw = cw[:, None]
+    vx = np.cross(c, w)
+    diagnostics = np.array([
+        _u_dot(acw, acw),
+        _u_dot(vx, vx),
+    ], dtype=float)
+    domain_features = features.copy()
+    domain_features[4] = pipi_v / 8.0
+    domain_features[5] = qq_v / 8.0
+    domain_features[6] = rtrt_v / 8.0
+    domain_features[10] = qtr2_v
+    domain_features[11] = qrot2_v
+    domain_features[13] = w2_v
+    return features, diagnostics, domain_features
+
+
 def cell_invariants(
     velocity: np.ndarray,
     omega: np.ndarray,
@@ -184,41 +304,21 @@ def cell_invariants(
     moi_perpendicular: float = 1.0,
     sphere: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return the fourteen production features and two diagnostics."""
-    c, w, u = _normalised_state(velocity, omega, axis, mass, moi_perpendicular)
-    moments = _particle_moments(c, w, u)
-    if sphere:
-        moments["rt"] -= moments["qq"]
-        moments["qq"][:] = 0.0
-        moments["acu"][:] = 0.0
-    x, y = moments["x"], moments["y"]
-    features = np.array([
-        (4.0 / 15.0) * np.mean(x * x) - 1.0,
-        0.5 * np.mean(y * y) - 1.0,
-        (2.0 / 3.0) * np.mean(x * y) - 1.0,
-        np.mean(moments["acu"]),
-        _u_contraction(moments["pi"], moments["pi"]) / 8.0,
-        _u_contraction(moments["qq"], moments["qq"]) / 8.0,
-        _u_contraction(moments["rt"], moments["rt"]) / 8.0,
-        _u_contraction(moments["pi"], moments["qq"]) / 4.0,
-        _u_contraction(moments["pi"], moments["rt"]) / 4.0,
-        _u_contraction(moments["qq"], moments["rt"]) / 4.0,
-        _u_dot(moments["qtr"], moments["qtr"]),
-        _u_dot(moments["qrot"], moments["qrot"]),
-        _u_dot(moments["qtr"], moments["qrot"]),
-        _u_dot(moments["w"], moments["w"]),
-    ], dtype=float)
-    acw = moments["acw"][:, None]
-    diagnostics = np.array([
-        _u_dot(acw, acw),
-        _u_dot(moments["vx"], moments["vx"]),
-    ], dtype=float)
+    """Return the fourteen unbiased production features and two diagnostics."""
+    features, diagnostics, _ = _cell_invariants_with_domain(
+        velocity, omega, axis, mass, moi_perpendicular, sphere)
     return features, diagnostics
 
 
 def cell_features(*args, **kwargs) -> np.ndarray:
     """Compatibility wrapper returning only the deployed fourteen features."""
     return cell_invariants(*args, **kwargs)[0]
+
+
+def cell_features_with_domain(*args, **kwargs) -> tuple[np.ndarray, np.ndarray]:
+    """Return raw correction features and noise-aware support-test features."""
+    features, _, domain_features = _cell_invariants_with_domain(*args, **kwargs)
+    return features, domain_features
 
 
 def legacy_cell_features(velocity: np.ndarray, omega: np.ndarray, axis: np.ndarray,

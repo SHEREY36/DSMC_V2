@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .projections import (
+    PROJECTION_TOLERANCE,
     conditional_angular_logpdf,
     fit_angular_projection,
     fit_conditional_angular_projection,
@@ -32,7 +33,7 @@ def fit_angular_kernel(cosine: np.ndarray, z: np.ndarray,
     p2 = 0.5 * (3.0 * cosine * cosine - 1.0)
     mean_c, mean_p2 = _weighted_mean(cosine, weight), _weighted_mean(p2, weight)
     projection = fit_angular_projection(mean_c, mean_p2)
-    if not projection.converged:
+    if projection.residual > PROJECTION_TOLERANCE:
         raise ValueError(f"angular I-projection residual {projection.residual:.3e}")
     rho = _weighted_correlation(z, cosine, weight)
     ess = np.sum(weight) ** 2 / np.sum(weight * weight)

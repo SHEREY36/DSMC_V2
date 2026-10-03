@@ -1,0 +1,63 @@
+# Encounter-unit closure model v1 (2026-09-30).
+#
+# One DSMC event is one CTC encounter:
+#   - clock      sigma(theta, AR) measured from this project's CTC shards,
+#                (2 b_max)^2 N_hit/N_att (models/encounter_cross_section_v2.json,
+#                built by Coll_Models_v2/scripts/build_encounter_table.py); theta is
+#                the cell's instantaneous T_tr/T_rot, re-read every time step
+#   - loss       BL Beta draw rescaled to the CTC per-encounter mean loss that the
+#                energy kernel was fitted with (fitted_mean_loss in the artifact)
+#   - angle      energy-tilted angular law with incoming-partition memory
+#                (models/angular_memory_v1.json, bound to the artifact's 144 nodes)
+# Invariant corrections are off.  Validated for USF at AR 1.5-3, alpha 0.50-0.95
+# (usf-encounter-v1) and for HCS at the DEM benchmark nodes.  See
+# reports/USF_ENCOUNTER_UNIT_2026-09-29.md.
+schema_version: "2.2.0"
+
+particle:
+  AR: 2.0
+  radius: 0.5
+  mass: 1.0
+
+system:
+  kTt: 1.0
+  kTr: 1.0
+  alpha: 0.8
+  eta: 1.0
+  phi: 0.001
+  domain: [50.0, 50.0, 50.0]
+  C_alpha: 1.0
+
+time:
+  dt: 0.01
+  dtau: 0.1
+  t_end: 10.0
+  tau_end: null
+  equilibration_time: 0.0
+
+flow:
+  mode: hcs
+  shear_rate: 0.0
+
+simulation:
+  seeds: [42]
+  output_dir: results/
+  sphere_collision: false
+  use_isotropic_eps: true
+  orientation_integrator: symmetric_midpoint_v1
+
+preprocessing:
+  model_root: DSMC_0D_v2/models
+  dissipation:
+    beta_a: 1.21
+    beta_b: 3.67
+
+microscopic_closure:
+  routing: variational_v2
+  angular: variational_v2
+  artifact: models/microscopic_closure_v2_angular_evidence/closure_v2.npz
+  invariant_corrections: false
+  state_update_cpp: 0.05
+  event_unit: encounter
+  encounter_cross_section: DSMC_0D_v2/models/encounter_cross_section_v2.json
+  angular_memory: DSMC_0D_v2/models/angular_memory_v1.json

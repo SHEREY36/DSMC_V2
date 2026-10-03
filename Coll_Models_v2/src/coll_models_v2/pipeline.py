@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 
 from dsmc_v2_contracts import FEATURE_NAMES, load_run
 
-from .estimate import estimate_node
+from .estimate import equilibrium_anchor, estimate_node
+from .weights import DEFAULT_OFFSETS
 
 
 def discover_runs(root: str | Path) -> list[Path]:
@@ -27,7 +29,20 @@ def group_runs(paths) -> dict[tuple[float, float, float, int], list[Path]]:
     return dict(grouped)
 
 
-def precision_status(result: dict) -> tuple[bool, list[str]]:
+DIRECT_RESPONSE_PRECISION_CONTRACT = "direct-pointwise-uncertainty-v1"
+
+
+def _required_uncertainties(result: dict) -> list[str]:
+    required = ["lambda1", "lambda2", "lambda3", "eta1", "eta2"]
+    if result.get("energy", {}).get("kernel_form") == "conditional_logit_cubic_v3":
+        required += ["lambda5", "lambda6"]
+    else:
+        required.append("reset_mean")
+    return required
+
+
+def precision_status(result: dict, *, excitation_contribution: bool = True
+                     ) -> tuple[bool, list[str]]:
     if "energy" not in result:
         # Read-only schema-2.1 QA adapter. Clock/loss discrepancies stay audit
         # only, exactly as they did in the released legacy pipeline.
@@ -47,32 +62,84 @@ def precision_status(result: dict) -> tuple[bool, list[str]]:
         return not reasons, reasons
     reasons = []
     qa = result["qa"]
-    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass", "energy_projection_pass",
-                "angular_projection_pass", "model_form_pass", "elastic_pass"):
+    for key in ("propensity_pass", "proposal_balance_pass", "ess_pass",
+                "energy_projection_pass", "angular_projection_pass",
+                "model_form_pass",
+                "incoming_partition_pass", "elastic_pass"):
         if not qa.get(key, False):
             reasons.append(key.removesuffix("_pass"))
-    for name in ("p_exch", "reset_mean", "lambda1", "lambda2", "eta1", "eta2"):
+    # p_exch is the slope of an affine diagnostic inherited from the retired
+    # Bernoulli-reset model.  The continuous conditional sampler does not use
+    # it; lambda3 (and, where selected, the higher memory coefficients) carry
+    # the dependence on the incoming partition.  A negative diagnostic must
+    # therefore be reported but cannot veto a kernel that never consumes it.
+    for name in _required_uncertainties(result):
         interval = result.get("uncertainty", {}).get(name)
         if interval is None:
             reasons.append(f"{name}_precision_missing")
     # Excitation continuation is driven by the contribution uncertainty, not
     # a relative coefficient error that diverges at a true zero coefficient.
-    if int(result.get("ensemble_id", 0)) != 0:
-        x = result["proposal_features"]
+    if excitation_contribution and int(result.get("ensemble_id", 0)) != 0:
+        x = result.get("cell_features") or result["proposal_features"]
         lambda_se = result.get("uncertainty", {}).get("lambda1", {}).get("standard_error")
         if lambda_se is None or max(abs(value) for value in x.values()) * 1.96 * lambda_se > 0.005:
             reasons.append("lambda1_contribution_precision")
     return not reasons, reasons
 
 
+def direct_response_precision_status(result: dict) -> tuple[bool, list[str]]:
+    """Pointwise QA for direct USF replay estimates.
+
+    A replay ``ensemble_id`` is a unique task index, not an excitation
+    amplitude.  The excitation-only lambda1 contribution test must therefore
+    not be inferred from that identifier.  Direct-response regression uses
+    the reported standard errors as weights and independently tests resolved
+    train/holdout improvements; this gate verifies that those uncertainty
+    inputs are finite, ordered, and non-negative.
+    """
+    _, reasons = precision_status(result, excitation_contribution=False)
+    for name in _required_uncertainties(result):
+        interval = result.get("uncertainty", {}).get(name)
+        if not isinstance(interval, dict):
+            continue
+        values = [interval.get(key) for key in
+                  ("standard_error", "ci_low", "ci_high")]
+        if (any(value is None or not math.isfinite(float(value))
+                for value in values)
+                or float(values[0]) < 0.0
+                or float(values[1]) > float(values[2])):
+            reasons.append(f"{name}_uncertainty_invalid")
+    return not reasons, reasons
+
+
 def estimate_grid(runs_root: str | Path, output_directory: str | Path,
-                  bl=None, n_bootstrap: int = 200) -> list[dict]:
+                  bl=None, n_bootstrap: int = 200,
+                  propensity_offsets: int | None = DEFAULT_OFFSETS) -> list[dict]:
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     grouped = group_runs(discover_runs(runs_root))
+    # One equilibrium anchor per aspect ratio, measured on the elastic
+    # equipartitioned node and shared by every node at that aspect ratio.
+    # Without this each node re-measures the reference law from its own theta
+    # and the kernel loses its restoring force everywhere except theta = 1.
+    anchors: dict[float, tuple] = {}
+    for key, shards in sorted(grouped.items()):
+        alpha, theta, aspect = (float(key[0]), float(key[1]), float(key[2]))
+        if abs(alpha - 1.0) < 1e-9 and abs(theta - 1.0) < 1e-9:
+            anchors[aspect] = equilibrium_anchor(
+                shards, propensity_offsets=propensity_offsets)
+    if not anchors:
+        raise ValueError("grid has no elastic equipartitioned node to anchor on; "
+                         "the reference law cannot be established")
     results = []
     for key, paths in sorted(grouped.items()):
-        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap)
+        aspect = float(key[2])
+        if aspect not in anchors:
+            raise ValueError(f"no elastic equipartitioned node at AR={aspect}; "
+                             "cannot anchor this aspect ratio")
+        result = estimate_node(paths, bl, n_bootstrap=n_bootstrap,
+                               anchor=anchors[aspect],
+                               propensity_offsets=propensity_offsets)
         passed, reasons = precision_status(result)
         result["qa"].update(precision_pass=passed, continuation_reasons=reasons)
         results.append(result)

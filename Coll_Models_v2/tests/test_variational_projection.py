@@ -5,7 +5,9 @@ import numpy as np
 from coll_models_v2.fit_exchange import fit_exchange_kernel
 from coll_models_v2.artifact import _incoming_partition_mean
 from coll_models_v2.projections import (
+    adaptive_energy_quantile_table,
     angular_quantiles,
+    energy_quantile_table,
     energy_quantiles,
     fit_angular_projection,
     fit_energy_projection,
@@ -42,6 +44,25 @@ class VariationalProjectionTests(unittest.TestCase):
         self.assertAlmostEqual(np.mean(sample), 0.63, delta=0.002)
         self.assertAlmostEqual(np.mean(sample * sample), 0.43, delta=0.002)
 
+    def test_adaptive_energy_table_matches_dense_runtime_interpolation(self):
+        probability = np.linspace(0.0, 1.0, 257)
+        grid, table, certified = adaptive_energy_quantile_table(
+            0.0, -12.0, -80.0, 120.0, probability,
+            kernel_form="conditional_iprojection_v2", tolerance=2.0e-4)
+        self.assertLessEqual(certified, 2.0e-4)
+        # A uniform 0.15 grid would need 1,335 rows. Saturated tails should
+        # require far fewer without changing the runtime's linear interpolant.
+        self.assertLess(len(grid), 300)
+        for a in np.linspace(-79.0, 119.0, 29):
+            exact = energy_quantile_table(
+                0.0, -12.0, np.array([a]), probability,
+                kernel_form="conditional_iprojection_v2")[0]
+            interpolated = np.array([
+                np.interp(a, grid, table[:, column])
+                for column in range(len(probability))
+            ])
+            self.assertLess(np.max(np.abs(exact - interpolated)), 3.0e-4)
+
     def test_angular_quantile_sampler_reproduces_projection(self):
         fit = fit_angular_projection(-0.21, 0.08)
         rng = np.random.default_rng(82)
@@ -58,15 +79,26 @@ class VariationalProjectionTests(unittest.TestCase):
         opened = rng.random(n) < 0.37
         zout = zin.copy()
         zout[opened] = rng.beta(3.0, 4.0, np.count_nonzero(opened))
-        fit = fit_exchange_kernel(zin, zout, np.ones(n))
+        # Conditional form: recovering a reset law that is not Beta(2,2) is
+        # precisely what the bridge gives up in exchange for an exact elastic
+        # limit.  See test_bridge_kernel.py.
+        fit = fit_exchange_kernel(zin, zout, np.ones(n), model_form=False,
+                                  kernel_form="conditional_iprojection_v2")
         self.assertAlmostEqual(fit["p_exch"], 0.37, delta=0.008)
         self.assertAlmostEqual(fit["reset_mean"], 3.0 / 7.0, delta=0.006)
 
-    def test_exchange_fit_does_not_clip_invalid_rate(self):
-        zin = np.linspace(0.1, 0.9, 100)
-        zout = 1.1 * zin - 0.05
-        with self.assertRaisesRegex(ValueError, "exchange probability"):
-            fit_exchange_kernel(zin, zout, np.ones_like(zin))
+    def test_invalid_memory_rate_is_reported_and_never_clipped(self):
+        # The affine rate is a diagnostic of the old gated form, not a kernel
+        # parameter, so it is surfaced unclipped and flagged rather than
+        # blocking a projection that is perfectly well posed.
+        rng = np.random.default_rng(84)
+        zin = rng.beta(2.0, 2.0, 20000)
+        zout = np.clip(1.1 * zin - 0.05 + 0.02 * rng.standard_normal(20000),
+                       1.0e-6, 1.0 - 1.0e-6)
+        fit = fit_exchange_kernel(zin, zout, np.ones_like(zin), model_form=False)
+        self.assertLess(fit["p_exch"], 0.0)
+        self.assertFalse(fit["memory_diagnostic_pass"])
+        self.assertTrue(fit["projection_converged"])
 
     def test_unequal_scale_gamma_ratio_is_not_ratio_of_means(self):
         self.assertAlmostEqual(_incoming_partition_mean(1.0), 0.5, places=12)
