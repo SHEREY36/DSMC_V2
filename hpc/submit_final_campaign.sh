@@ -27,6 +27,10 @@
 #   fits of the 396 existing nodes (16 cores each) ---------------+--> deep QA --> precompute --> pack
 #   CTC theta planes --> model tables (sigma, angular, loss) ------------------------------------+
 #   pack + tables --> production gate (diagnostic) + USF (320) + HCS (130) --> analysis
+#
+# Restart: RESUME=1 TAG=<same tag> [QOS=normal] bash hpc/submit_final_campaign.sh
+#   reuses the manifests and resubmits the chain; finished CTC rows, fits,
+#   precompute payloads and validation runs are skipped.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -44,7 +48,8 @@ THETA_MANIFEST=manifests/theta_refinement_${TAG}.csv
 GRID=manifests/artifact_grid_${TAG}.csv
 USF_MANIFEST=manifests/usf_encounter_${TAG}.csv
 HCS_MANIFEST=manifests/hcs_encounter_${TAG}.csv
-if [[ -e "$GRID" || -e "$MODEL/closure_v2.npz" ]]; then
+RESUME=${RESUME:-0}
+if [[ "$RESUME" != 1 && ( -e "$GRID" || -e "$MODEL/closure_v2.npz" ) ]]; then
   echo "tag $TAG already used; choose a fresh TAG (or resubmit a stage by hand; arrays skip finished work)" >&2
   exit 2
 fi
@@ -57,11 +62,17 @@ mkdir -p logs manifests "$MODEL"
 PY="hpc/python.sh"
 export PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src:$ROOT/DSMC_0D_v2/src"
 $PY hpc/migrate_propensity_cache.py
-$PY hpc/make_theta_refinement_manifest.py --base-grid "$BASE_GRID" --output "$THETA_MANIFEST"
-$PY hpc/prepare_final_campaign.py --base-grid "$BASE_GRID" --theta-manifest "$THETA_MANIFEST" --grid "$GRID"
-$PY DSMC_0D_v2/scripts/make_usf_encounter_manifest.py --tag "$TAG" --ablation-replicates 0 --output "$USF_MANIFEST"
-$PY DSMC_0D_v2/scripts/make_hcs_encounter_manifest.py --tag "$TAG" --arms encounter_memory \
-    --dem-reference DSMC_0D_v2/reference/hcs_dem_fresh_v1.csv --replicates 2 --tau-end 100 --output "$HCS_MANIFEST"
+if [[ "$RESUME" == 1 ]]; then
+  for f in "$THETA_MANIFEST" "$GRID" "$USF_MANIFEST" "$HCS_MANIFEST"; do
+    [[ -f "$f" ]] || { echo "RESUME=1 needs $f from the first submission" >&2; exit 2; }
+  done
+else
+  $PY hpc/make_theta_refinement_manifest.py --base-grid "$BASE_GRID" --output "$THETA_MANIFEST"
+  $PY hpc/prepare_final_campaign.py --base-grid "$BASE_GRID" --theta-manifest "$THETA_MANIFEST" --grid "$GRID"
+  $PY DSMC_0D_v2/scripts/make_usf_encounter_manifest.py --tag "$TAG" --ablation-replicates 0 --output "$USF_MANIFEST"
+  $PY DSMC_0D_v2/scripts/make_hcs_encounter_manifest.py --tag "$TAG" --arms encounter_memory \
+      --dem-reference DSMC_0D_v2/reference/hcs_dem_fresh_v1.csv --replicates 2 --tau-end 100 --output "$HCS_MANIFEST"
+fi
 GRID_ROWS=$(( $(wc -l < "$GRID") - 1 ))
 BASE_ROWS=$(( $(wc -l < "$BASE_GRID") - 1 ))
 USF_ROWS=$(( $(wc -l < "$USF_MANIFEST") - 1 ))
