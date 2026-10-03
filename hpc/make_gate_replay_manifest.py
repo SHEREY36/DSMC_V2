@@ -21,7 +21,7 @@ BETWEEN = [0.575, 0.675, 0.775, 0.875, 0.975, 0.99]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--harvest", default="results/usf_nonlinear_v2_20260928/harvest")
+    parser.add_argument("--harvest", default="results/dsmc_harvest/usf_nonlinear_v2_20260928")
     parser.add_argument("--aspect-ratios", default="1.5,2,2.5,3")
     parser.add_argument("--source-alphas", default="0.5,0.8")
     parser.add_argument("--window", default="cold_replay_window_02")
@@ -49,7 +49,7 @@ def main():
                     "aspect_ratio": ar, "source_alpha": source_alpha,
                     "seed": args.seed_base + len(rows), "nsamples": args.nsamples,
                     "source_json": str(stem) + ".json", "replay_file": str(stem) + ".bin",
-                    "output_directory": (f"results/production_gate_{args.tag}/replay/"
+                    "output_directory": (f"results/ctc/replays/gate_{args.tag}/"
                                          f"AR_{ar:.3f}_src_{source_alpha:.3f}_alpha_{alpha:.3f}")})
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="") as handle:

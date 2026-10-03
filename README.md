@@ -30,6 +30,26 @@ The production model is the encounter-unit closure
 Derivation and evidence: `reports/USF_ENCOUNTER_UNIT_2026-09-29.md` and the
 rendered `reports/usf_event_unit_methodology/usf_event_unit.html`.
 
+## Data layout (results/)
+
+All campaign data sit under `results/`, grouped by function
+(`hpc/organize_results.py` built it; `results/path_map.json` records every move):
+
+| folder | contents |
+|---|---|
+| `ctc/nodes/training/<set>/` | Maxwellian CTC node shards the closure is fitted on (sentinel, ar_extension, ar_near_sphere, ar_low_theta, alpha_refinement, sentinel_early, ar_ge2) |
+| `ctc/nodes/holdout/`, `ctc/nodes/test/`, `ctc/nodes/v1/` | independent holdout, local pipeline tests, first-generation CTC |
+| `ctc/replays/<set>/` | exact CTC replays of DSMC-USF incoming pairs (production-gate replays, operator probes) |
+| `dsmc_harvest/<campaign>/` | DSMC-USF collision-flux pair reservoirs, the sources of the replays |
+| `closure_estimates/` | node fits, deep-QA reports, precompute payloads |
+| `validation/usf/`, `validation/hcs/` | DSMC USF and HCS campaigns and their analyses |
+| `validation/production_gate/<tag>/` | production-measure test summaries |
+| `validation/dem_comparison/` | DEM-DSMC comparison reports and figures |
+| `archive/` | dry runs and smoke tests |
+
+Model folders stay in `models/`; each holds the artifact and its tables
+(`encounter_cross_section.json`, `angular_memory.json`, `loss_memory.json`).
+
 ## Frozen physical assumptions
 
 The following are deliberate model choices and are not refitted:

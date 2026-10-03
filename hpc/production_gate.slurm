@@ -22,5 +22,6 @@ PYTHONPATH="$PWD/contracts/python:$PWD/Coll_Models_v2/src:$PWD/DSMC_0D_v2/src" \
   hpc/python.sh DSMC_0D_v2/scripts/production_gate.py \
     --artifact "$MODEL/closure_v2.npz" --angular-memory "$MODEL/angular_memory.json" \
     --encounter-table "$MODEL/encounter_cross_section.json" \
+    $( [[ -f "$MODEL/loss_memory.json" ]] && echo --loss-memory "$MODEL/loss_memory.json" ) \
     --workers "${SLURM_CPUS_PER_TASK:-32}" --samples 40000 \
-    --output "results/production_gate_${TAG}/gate" results/production_gate_${TAG}/replay/*
+    --output "results/validation/production_gate/${TAG}/gate" results/ctc/replays/gate_${TAG}/*

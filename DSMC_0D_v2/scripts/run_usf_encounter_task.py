@@ -39,6 +39,8 @@ def main() -> None:
     parser.add_argument("--encounter-table",
                         default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     parser.add_argument("--angular-memory", default="DSMC_0D_v2/models/angular_memory_v1.json")
+    parser.add_argument("--loss-memory", default=None,
+                        help="loss-memory table (loss follows the incoming partition)")
     args = parser.parse_args()
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -78,6 +80,8 @@ def main() -> None:
                "encounter_cross_section": args.encounter_table}
     if arm["memory"]:
         closure["angular_memory"] = args.angular_memory
+        if args.loss_memory:
+            closure["loss_memory"] = args.loss_memory
     config["microscopic_closure"].update(closure)
     config.setdefault("diagnostics", {})["collision_audit"] = False
 
@@ -89,6 +93,8 @@ def main() -> None:
                   "encounter_table_sha256": digest(args.encounter_table)}
     if arm["memory"]:
         provenance["angular_memory_sha256"] = digest(args.angular_memory)
+        if args.loss_memory:
+            provenance["loss_memory_sha256"] = digest(args.loss_memory)
     diagnostics.update({
         "protocol_version": "usf-encounter-v1", "provenance": provenance,
         "validation_case": {key: row[key] for key in row},

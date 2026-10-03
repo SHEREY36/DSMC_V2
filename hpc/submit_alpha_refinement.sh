@@ -38,7 +38,7 @@ for f in manifests/artifact_grid.csv manifests/artifact_grid_repairs.csv manifes
          manifests/ar_extension.csv manifests/ar_near_sphere.csv manifests/ar_low_theta.csv; do
   [[ -f "$f" ]] || { echo "missing canonical grid manifest $f" >&2; exit 2; }
 done
-ls results/usf_nonlinear_v2_20260928/harvest/AR_3.000_alpha_0.800_cold_replay_window_02.bin >/dev/null \
+ls results/dsmc_harvest/usf_nonlinear_v2_20260928/AR_3.000_alpha_0.800_cold_replay_window_02.bin >/dev/null \
   || { echo "USF harvest reservoirs (usf_nonlinear_v2_20260928) are needed for the gate" >&2; exit 2; }
 [[ $(ls results/closure_estimates/artifact_grid/*.json | wc -l) -ge 144 ]] \
   || { echo "results/closure_estimates/artifact_grid must hold the 144 current node estimates" >&2; exit 2; }
@@ -83,6 +83,8 @@ PACK=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$P
 GATE=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES,afterany:$GATE_CTC \
   hpc/production_gate.slurm "$TAG" "$MODEL")")
 TABLE_ENV="ALL,ENCOUNTER_TABLE=$MODEL/encounter_cross_section.json,ANGULAR_MEMORY=$MODEL/angular_memory.json"
+# the loss follows the incoming split whenever the model folder carries the table
+[[ -f "$MODEL/loss_memory.json" || "$0" == *submit_alpha_refinement.sh ]] && TABLE_ENV="$TABLE_ENV,LOSS_MEMORY=$MODEL/loss_memory.json"
 USF_WORKERS=208; (( USF_WORKERS > USF_ROWS )) && USF_WORKERS=$USF_ROWS
 USF=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES \
   --array="0-$((USF_WORKERS - 1))" --export="$TABLE_ENV,USF_ENC_STRIDE=$USF_WORKERS" \
@@ -101,7 +103,7 @@ tag $TAG   model folder $MODEL
   deep QA         $QA
   precompute      $PRE        ($GRID_ROWS nodes)
   pack            $PACK
-  production gate $GATE       -> results/production_gate_${TAG}/gate.{csv,json}
+  production gate $GATE       -> results/validation/production_gate/${TAG}/gate.{csv,json}
   USF validation  $USF        ($USF_ROWS runs)  HCS validation $HCS ($HCS_ROWS runs)
-  analysis        $ANALYSIS   -> results/usf_encounter_${TAG}/usf_vs_dem.*  results/hcs_encounter_${TAG}/hcs_vs_dem.csv
+  analysis        $ANALYSIS   -> results/validation/usf/usf_encounter_${TAG}/usf_vs_dem.*  results/validation/hcs/hcs_encounter_${TAG}/hcs_vs_dem.csv
 MSG

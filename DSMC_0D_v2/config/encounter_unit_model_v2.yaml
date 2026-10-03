@@ -5,7 +5,10 @@
 #                (2 b_max)^2 N_hit/N_att (encounter_cross_section.json in the model
 #                folder); theta is the cell's instantaneous T_tr/T_rot
 #   - loss       BL Beta draw rescaled to the CTC per-encounter mean loss that the
-#                energy kernel was fitted with (fitted_mean_loss in the artifact)
+#                energy kernel was fitted with (fitted_mean_loss in the artifact),
+#                times s(z) = E[eps|z]/E[eps] with E[eps|z] = c_t z + c_r (1 - z)
+#                (loss_memory.json in the model folder): the loss follows the
+#                pair's incoming energy split
 #   - angle      energy-tilted angular law with incoming-partition memory
 #                (angular_memory.json in the model folder, one row per artifact node)
 # Nodes: alpha 0.50-0.95 in 0.05 steps plus 1.0. On a node its tables are used
@@ -63,3 +66,4 @@ microscopic_closure:
   event_unit: encounter
   encounter_cross_section: models/microscopic_closure_v2_alpha_v1_20261001/encounter_cross_section.json
   angular_memory: models/microscopic_closure_v2_alpha_v1_20261001/angular_memory.json
+  loss_memory: models/microscopic_closure_v2_alpha_v1_20261001/loss_memory.json

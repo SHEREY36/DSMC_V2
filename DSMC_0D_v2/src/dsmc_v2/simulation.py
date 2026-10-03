@@ -20,6 +20,7 @@ from dsmc_v2_contracts import (
 from .artifact import MicroscopicClosure, VariationalClosure
 from .encounter import EncounterClock
 from .angular_memory import AngularMemoryTable
+from .loss_memory import LossMemoryTable
 from .kernel import SpherocylinderKernel
 from .legacy_models import FrozenLossModel, LegacyModels
 from .non_gaussian import NonGaussianDiagnostics
@@ -230,6 +231,13 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     if angular_memory_path and routing == "variational_v2":
         angular_memory = AngularMemoryTable(angular_memory_path)
         angular_memory.bind(closure.coordinates)
+    loss_memory = None
+    loss_memory_path = config.get("microscopic_closure", {}).get("loss_memory")
+    if loss_memory_path and routing == "variational_v2":
+        if event_unit != "encounter":
+            raise ValueError("loss_memory requires event_unit: encounter")
+        loss_memory = LossMemoryTable(loss_memory_path)
+        loss_memory.bind(closure.coordinates)
 
     dt = float(config["time"]["dt"])
     orientation_integrator = str(config.get("simulation", {}).get(
@@ -475,6 +483,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
                 kernel.set_cell_variational(closure_state)
                 if angular_memory is not None:
                     kernel.angular_memory_stencil = angular_memory.stencil(closure_state)
+                if loss_memory is not None:
+                    kernel.loss_memory_rates = loss_memory.stencil(closure_state)
                 closure_state_seconds += wallclock.perf_counter() - closure_started
                 closure_state_updates += 1
                 closure_state_next_collision = collisions + closure_state_interval
@@ -689,6 +699,8 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
         "event_unit": event_unit,
         "invariant_response": "retired",
         "angular_memory": None if angular_memory is None else angular_memory.path,
+        "loss_memory": None if loss_memory is None else loss_memory.path,
+        "loss_cap_events": 0 if kernel is None else int(getattr(kernel, "loss_cap_events", 0)),
         "encounter_clock_mean_ratio": (clock_ratio_sum / clock_ratio_steps
                                        if clock_ratio_steps else None),
         "encounter_loss_mean_scale": (

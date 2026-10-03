@@ -43,7 +43,7 @@ def main() -> None:
             if float(row["aspect_ratio"]) >= 2.0 - 1e-9 and float(row["aspect_ratio"]) != 2.5:
                 arms.append("contact_legacy")
         for arm in arms:
-            prefix = (f"results/usf_encounter_{args.tag}/{arm}/"
+            prefix = (f"results/validation/usf/usf_encounter_{args.tag}/{arm}/"
                       f"AR_{float(row['aspect_ratio']):.3f}_alpha_{float(row['alpha']):.3f}_"
                       f"{row['initial_branch']}_rep_{replicate:02d}")
             rows.append({

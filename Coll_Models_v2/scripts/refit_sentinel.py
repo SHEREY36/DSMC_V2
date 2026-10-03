@@ -5,7 +5,7 @@ Writes node estimates to a fresh directory and prints a side-by-side comparison
 with the previous gated-Beta estimates, so nothing existing is overwritten.
 
     hpc/python.sh Coll_Models_v2/scripts/refit_sentinel.py \
-        --runs results/ctc_closure/sentinel \
+        --runs results/ctc/nodes/training/sentinel_early \
         --output results/closure_estimates/sentinel_v2 \
         --previous results/closure_estimates/sentinel
 """
@@ -26,7 +26,7 @@ def _key(row: dict) -> tuple[float, float, float, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs", default="results/ctc_closure/sentinel")
+    parser.add_argument("--runs", default="results/ctc/nodes/training/sentinel_early")
     parser.add_argument("--output", default="results/closure_estimates/sentinel_v2")
     parser.add_argument("--previous", default="results/closure_estimates/sentinel")
     parser.add_argument("--bootstrap", type=int, default=200)

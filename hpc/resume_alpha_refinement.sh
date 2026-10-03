@@ -94,6 +94,8 @@ GATE=$(id "$(sbatch --parsable --kill-on-invalid-dep=yes --dependency=afterok:$P
 
 # 4. validation on the packed model, then the analysis
 TABLE_ENV="ALL,ENCOUNTER_TABLE=$MODEL/encounter_cross_section.json,ANGULAR_MEMORY=$MODEL/angular_memory.json"
+# the loss follows the incoming split whenever the model folder carries the table
+[[ -f "$MODEL/loss_memory.json" || "$0" == *submit_alpha_refinement.sh ]] && TABLE_ENV="$TABLE_ENV,LOSS_MEMORY=$MODEL/loss_memory.json"
 USF_ROWS=$(( $(wc -l < "$USF_MANIFEST") - 1 ))
 HCS_ROWS=$(( $(wc -l < "$HCS_MANIFEST") - 1 ))
 USF_WORKERS=208; (( USF_WORKERS > USF_ROWS )) && USF_WORKERS=$USF_ROWS
@@ -112,7 +114,7 @@ resume of $TAG   model folder $MODEL
   precompute      $PRE    ($GRID_ROWS nodes)
   pack            $PACK
   near-elastic    $NEAR   (gate replays of the alpha=0.95 states)
-  production gate $GATE   -> results/production_gate_${TAG}/gate.{csv,json}
+  production gate $GATE   -> results/validation/production_gate/${TAG}/gate.{csv,json}
   USF validation  $USF    ($USF_ROWS runs)  HCS validation $HCS ($HCS_ROWS runs)
-  analysis        $ANALYSIS -> results/usf_encounter_${TAG}/usf_vs_dem.*  results/hcs_encounter_${TAG}/hcs_vs_dem.csv
+  analysis        $ANALYSIS -> results/validation/usf/usf_encounter_${TAG}/usf_vs_dem.*  results/validation/hcs/hcs_encounter_${TAG}/hcs_vs_dem.csv
 MSG

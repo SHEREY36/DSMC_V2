@@ -9,9 +9,12 @@ import argparse
 import csv
 from pathlib import Path
 
-# DEM HCS temperature ratios (T_tr/T_rot) from make_hcs_validation_manifest.py.
-GATE = ((1.00, 2.0, 1.0000), (1.00, 3.0, 1.0000), (0.95, 2.0, 0.9792),
-        (0.95, 3.0, 0.9962), (0.80, 2.0, 0.9365), (0.80, 3.0, 1.0158))
+# DEM HCS temperature ratios (T_tr/T_rot), two-seed means of the corrected DEM in
+# LAMMPS/runs/fresh_hcs/analysis/summary.csv (exact Hertz damping).  The earlier
+# targets 0.9365 / 1.0158 at alpha = 0.8 came from runs/HCS, which predates the
+# damping fix and is not used.
+GATE = ((1.00, 2.0, 1.0000), (1.00, 3.0, 1.0000), (0.95, 2.0, 0.9790),
+        (0.95, 3.0, 0.9960), (0.80, 2.0, 0.9586), (0.80, 3.0, 1.0049))
 
 
 def main():
@@ -34,7 +37,7 @@ def main():
                         "replicate": rep, "seed": 290930 + 97 * len(rows),
                         "particles": args.particles, "tau_end": args.tau_end,
                         "state_update_cpp": 0.05,
-                        "output_prefix": (f"results/hcs_encounter_{args.tag}/{arm}/alpha_{alpha:.2f}_"
+                        "output_prefix": (f"results/validation/hcs/hcs_encounter_{args.tag}/{arm}/alpha_{alpha:.2f}_"
                                           f"AR_{ar:.2f}_theta0_{theta0:.2f}_rep_{rep:02d}")})
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="") as handle:

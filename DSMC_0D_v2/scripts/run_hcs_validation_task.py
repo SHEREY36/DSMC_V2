@@ -54,6 +54,8 @@ def main() -> None:
         help="DSMC event = CTC contact (legacy clock and BL loss) or encounter")
     parser.add_argument("--angular-memory", default=None,
                         help="angular-memory table (incoming-partition memory)")
+    parser.add_argument("--loss-memory", default=None,
+                        help="loss-memory table (loss follows the incoming partition)")
     parser.add_argument("--encounter-table",
                         default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     args = parser.parse_args()
@@ -98,6 +100,8 @@ def main() -> None:
     })
     if args.angular_memory:
         config["microscopic_closure"]["angular_memory"] = args.angular_memory
+    if args.loss_memory:
+        config["microscopic_closure"]["loss_memory"] = args.loss_memory
     config.setdefault("diagnostics", {})["collision_audit"] = True
 
     prefix = Path(row["output_prefix"])

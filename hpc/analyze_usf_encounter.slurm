@@ -20,10 +20,10 @@ export PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src:$ROOT/DSMC_0D
 # what finished and says so plainly when nothing did.
 status=0
 hpc/python.sh DSMC_0D_v2/scripts/analyze_usf_encounter.py \
-  --results "results/usf_encounter_${TAG}" \
+  --results "results/validation/usf/usf_encounter_${TAG}" \
   --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}" \
-  --output "results/usf_encounter_${TAG}/usf_vs_dem.csv" || status=1
+  --output "results/validation/usf/usf_encounter_${TAG}/usf_vs_dem.csv" || status=1
 hpc/python.sh DSMC_0D_v2/scripts/analyze_hcs_encounter.py \
   --manifest "manifests/hcs_encounter_${TAG}.csv" \
-  --output "results/hcs_encounter_${TAG}/hcs_vs_dem.csv" || status=1
+  --output "results/validation/hcs/hcs_encounter_${TAG}/hcs_vs_dem.csv" || status=1
 exit $status

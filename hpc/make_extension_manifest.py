@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--design", choices=sorted(DESIGNS), required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--nsamples", type=int, default=200000)
-    parser.add_argument("--root", default="results/ctc_closure_200k")
+    parser.add_argument("--root", default="results/ctc/nodes/training")
     args = parser.parse_args()
 
     rows = rows_for(args.design, args.nsamples, args.root)

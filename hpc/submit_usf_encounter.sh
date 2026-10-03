@@ -10,7 +10,7 @@ MAX_CORES=${MAX_CORES:-256}
 HCS_CORES=${HCS_CORES:-48}
 USF_MANIFEST="manifests/usf_encounter_${TAG}.csv"
 HCS_MANIFEST="manifests/hcs_encounter_${TAG}.csv"
-if [[ -e "$USF_MANIFEST" || -d "results/usf_encounter_${TAG}" ]]; then
+if [[ -e "$USF_MANIFEST" || -d "results/validation/usf/usf_encounter_${TAG}" ]]; then
   echo "tag $TAG already used; pick a fresh TAG (tasks skip completed rows if you resubmit the arrays by hand)" >&2
   exit 2
 fi
@@ -36,6 +36,6 @@ cat <<MSG
 tag            $TAG
 USF manifest   $USF_MANIFEST ($USF_ROWS rows on $USF_WORKERS strided workers)  job ${USF_JOB%%;*}
 HCS manifest   $HCS_MANIFEST ($HCS_ROWS rows, <=${HCS_CORES} concurrent)        job ${HCS_JOB%%;*}
-analysis       job ${ANALYSIS_JOB%%;*} (afterany) -> results/usf_encounter_${TAG}/usf_vs_dem.{csv,png,summary.json}
-                                               results/hcs_encounter_${TAG}/hcs_vs_dem.csv
+analysis       job ${ANALYSIS_JOB%%;*} (afterany) -> results/validation/usf/usf_encounter_${TAG}/usf_vs_dem.{csv,png,summary.json}
+                                               results/validation/hcs/hcs_encounter_${TAG}/hcs_vs_dem.csv
 MSG

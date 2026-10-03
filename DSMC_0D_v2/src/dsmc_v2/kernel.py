@@ -8,6 +8,7 @@ import numpy as np
 
 from .angular import sample_direction
 from .angular_memory import direction_from_cosine, sample_cosine
+from .loss_memory import LossMemoryTable
 
 
 def prepare_theta(theta: float) -> float:
@@ -54,6 +55,9 @@ def legacy_scatter(vrel: np.ndarray, normal: np.ndarray, chi: float,
     return magnitude * post / np.linalg.norm(post)
 
 
+# A drawn loss never removes the whole pair energy.
+LOSS_CAP = 1.0 - 1.0e-9
+
 class SpherocylinderKernel:
     def __init__(self, params, models, alpha: float, beta_a: float, beta_b: float,
                  c_alpha: float, closure, routing_mode: str, angular_mode: str,
@@ -89,6 +93,11 @@ class SpherocylinderKernel:
         # Optional angular law with incoming-partition memory; the stencil is
         # refreshed with the cell state.  None keeps the artifact angular law.
         self.angular_memory_stencil = None
+        # Optional loss law with incoming-partition memory: mixture rates
+        # (c_t, c_r, eps_mean) on the cell's stencil.  None keeps a loss
+        # independent of the pair's energy split.
+        self.loss_memory_rates = None
+        self.loss_cap_events = 0
         self.encounter_loss_scale_sum = 0.0
         self.encounter_loss_scale_count = 0
         self.negative_energy_repairs = 0
@@ -281,6 +290,14 @@ class SpherocylinderKernel:
                 loss_mean *= scale
                 self.encounter_loss_scale_sum += scale
                 self.encounter_loss_scale_count += 1
+                if self.loss_memory_rates is not None:
+                    # E[eps|z] / E[eps]: the loss follows the pair's energy
+                    # split; loss_mean stays the node mean, so the routing
+                    # covariate is the drawn loss itself, as in the CTC fit.
+                    gamma *= LossMemoryTable.scale(self.loss_memory_rates, eps_tr_i)
+                    if not gamma < LOSS_CAP:
+                        gamma = LOSS_CAP
+                        self.loss_cap_events += 1
                 if not gamma < 1.0:
                     raise RuntimeError(
                         f"encounter loss draw {gamma:.6g} is not below one")

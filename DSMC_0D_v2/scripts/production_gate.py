@@ -37,8 +37,10 @@ from dsmc_v2.angular_memory import AngularMemoryTable, direction_from_cosine, sa
 from dsmc_v2.artifact import FEATURE_NAMES, VariationalClosure
 from dsmc_v2.encounter import EncounterClock, mean_projected_area
 from dsmc_v2.legacy_models import FrozenLossModel
+from dsmc_v2.loss_memory import LossMemoryTable
 from dsmc_v2_contracts.io import AI, OI, _vec as vec, load_run
 
+LOSS_CAP = 1.0 - 1.0e-9
 TOLERANCE = {"theta_shift": 0.02, "loss_ratio": 0.03, "xy_ratio": 0.04}
 ARGS = None
 _CACHE = {}
@@ -49,8 +51,12 @@ def objects():
         closure = VariationalClosure(ARGS.artifact)
         memory = AngularMemoryTable(ARGS.angular_memory)
         memory.bind(closure.coordinates)
+        loss_memory = None
+        if getattr(ARGS, "loss_memory", None):
+            loss_memory = LossMemoryTable(ARGS.loss_memory)
+            loss_memory.bind(closure.coordinates)
         _CACHE.update(closure=closure, memory=memory, clock=EncounterClock(ARGS.encounter_table),
-                      loss=FrozenLossModel(ARGS.model_root, 1.21, 3.67))
+                      loss=FrozenLossModel(ARGS.model_root, 1.21, 3.67), loss_memory=loss_memory)
     return _CACHE
 
 
@@ -112,6 +118,8 @@ def evaluate(directory):
     et, er = .25 * m * speed ** 2, .5 * inertia * (np.sum(o1 ** 2, 1) + np.sum(o2 ** 2, 1))
     energy = et + er; z = et / energy
     eps = rng.beta(1.21, 3.67, size=len(z)) * lp["gamma_max"] * lp["one_hit_probability"] * loss_scale
+    if o["loss_memory"] is not None:
+        eps = np.minimum(eps * o["loss_memory"].scale(o["loss_memory"].stencil(state), z), LOSS_CAP)
     stencil = o["memory"].stencil(state)
     zf = np.array([cl.sample_energy(state, z[i], eps[i], rng, loss_mean=fitted) for i in range(len(z))])
     gp = np.array([2 * np.sqrt(zf[i] * energy[i] * (1 - eps[i]) / m)
@@ -154,6 +162,8 @@ def main():
     parser.add_argument("--artifact", required=True)
     parser.add_argument("--angular-memory", required=True)
     parser.add_argument("--encounter-table", required=True)
+    parser.add_argument("--loss-memory", default=None,
+                        help="loss-memory table; omit for a loss independent of z")
     parser.add_argument("--model-root", default="DSMC_0D_v2/models")
     parser.add_argument("--samples", type=int, default=40000)
     parser.add_argument("--seed", type=int, default=20260930)

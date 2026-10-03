@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--base-grid", default="manifests/artifact_grid.csv")
     parser.add_argument("--alphas", default="0.55,0.6,0.65,0.7,0.75,0.85,0.9")
     parser.add_argument("--nsamples", type=int, default=200000)
-    parser.add_argument("--results-root", default="results/ctc_closure_200k/alpha_refinement")
+    parser.add_argument("--results-root", default="results/ctc/nodes/training/alpha_refinement")
     parser.add_argument("--aspect-ratios", default=None, help="optional comma list filter")
     parser.add_argument("--thetas", default=None, help="optional comma list filter")
     parser.add_argument("--output", required=True)

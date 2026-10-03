@@ -30,6 +30,7 @@ while (( INDEX < ROWS )); do
     hpc/python.sh DSMC_0D_v2/scripts/run_usf_encounter_task.py \
       --manifest "$MANIFEST" --task "$INDEX" --artifact "$ARTIFACT" \
       --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}" \
-      --angular-memory "${ANGULAR_MEMORY:-DSMC_0D_v2/models/angular_memory_v1.json}"
+      --angular-memory "${ANGULAR_MEMORY:-DSMC_0D_v2/models/angular_memory_v1.json}" \
+      ${LOSS_MEMORY:+--loss-memory "$LOSS_MEMORY"}
   INDEX=$(( INDEX + STRIDE ))
 done
