@@ -15,17 +15,17 @@
 #   * validation: USF (320 runs) and HCS at every corrected-DEM coordinate
 #     (130 runs).
 #
-# Speed: the large arrays run on Negishi's standby QOS (idle cores
-# anywhere in the cpu partition, not counted against morri353).  A node fit uses
-# 32 cores (parallel bootstrap and propensity): under an hour for a bridge
-# node, about two hours for a node that also needs its propensity and the
-# bounded-logit repair.  Every
-# array skips work that is already finished, so any stage can be resubmitted
-# as is -- on standby or, with QOS=normal, on the group allocation.
+# Speed.  QOS=normal (default): the group's 256 cores, one core per node fit
+# (about 2.6 core-hours with 50 bootstrap refits), so ~220 nodes fit at once
+# and the 627 fits take about 8 h.  QOS=standby: idle cores anywhere in the cpu
+# partition (not counted against morri353, 4 h per job), 32 cores per fit, about
+# an hour per node.  Every array skips work that is already finished, so any
+# stage can be resubmitted as is with RESUME=1, on either QOS.
 #
-#   CTC theta planes (32 x 20 cores) ---> fits of the new nodes ---+
-#   fits of the 396 existing nodes (16 cores each) ---------------+--> deep QA --> precompute --> pack
-#   CTC theta planes --> model tables (sigma, angular, loss) ------------------------------------+
+#   CTC theta planes ----------------------------> fits of the 231 new nodes --+
+#   fits of the 396 existing nodes (start at once) ---------------------------+--> deep QA ----+
+#                                                                             +--> precompute -+--> pack
+#   CTC theta planes --> model tables (sigma, angular, loss) -----------------------------------+
 #   pack + tables --> production gate (diagnostic) + USF (320) + HCS (130) --> analysis
 #
 # Restart: RESUME=1 TAG=<same tag> [QOS=normal] bash hpc/submit_final_campaign.sh
@@ -35,9 +35,19 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 TAG=${TAG:?set TAG to a fresh campaign tag}
-QOS=${QOS:-standby}
-BOOTSTRAP=${BOOTSTRAP:-200}
-FIT_CPUS=${FIT_CPUS:-32}
+QOS=${QOS:-normal}
+# The bootstrap only supplies the reported parameter uncertainties (the deep QA
+# needs them to exist; no threshold depends on their number), so 50 replicates
+# cost a quarter of 200 at ~10 % relative error in the standard errors.
+BOOTSTRAP=${BOOTSTRAP:-50}
+if [[ "$QOS" == standby ]]; then
+  # idle cores anywhere, 4 h per job: wide fits, everything short
+  FIT_CPUS=${FIT_CPUS:-32}; FIT_TIME=04:00:00; CTC_WORKERS=32; LONG=03:00:00; HCS_TIME=04:00:00
+else
+  # the group's 256 cores: one core per fit packs them best (the serial part of
+  # a fit would idle the other cores of a wide job), long limits
+  FIT_CPUS=${FIT_CPUS:-1}; FIT_TIME=24:00:00; CTC_WORKERS=8; LONG=12:00:00; HCS_TIME=12:00:00
+fi
 BASE_GRID=${BASE_GRID:-manifests/artifact_grid_alpha_alpha_v1_20261001.csv}
 REPLAY_TAG=${REPLAY_TAG:-alpha_v1_20261001}
 MODEL=models/microscopic_closure_v2_${TAG}
@@ -82,10 +92,11 @@ Q=(--qos="$QOS")              # large arrays: standby by default
 S=(--qos="${SMALL_QOS:-normal}")  # short single jobs start at once on the group allocation
 
 # 1. CTC of the theta planes: 32 x 20 cores, a few minutes per node
-CTC=$(id "$(sbatch --parsable "${Q[@]}" --time=03:00:00 --array=0-31 hpc/ctc_stride.slurm "$THETA_MANIFEST")")
+CTC=$(id "$(sbatch --parsable "${Q[@]}" --time=$LONG --array=0-$((CTC_WORKERS - 1)) hpc/ctc_stride.slurm "$THETA_MANIFEST")")
 # 2. node fits: the existing nodes start now, the new ones after their CTC
 FIT_ENV="ALL,CLOSURE_FALLBACK_FORM=conditional_logit_cubic_v3,CLOSURE_BOOTSTRAP=$BOOTSTRAP,CLOSURE_SKIP_CURRENT=1"
-FIT_RES=("${Q[@]}" --cpus-per-task="$FIT_CPUS" --mem=$(( 2 * FIT_CPUS ))G --time=04:00:00)
+# Negishi gives ~1.9 GB per core; asking for more silently adds a core
+FIT_RES=("${Q[@]}" --cpus-per-task="$FIT_CPUS" --mem=$(( 1900 * FIT_CPUS ))M --time=$FIT_TIME)
 FITS_OLD=$(id "$(sbatch --parsable "${FIT_RES[@]}" --array="0-$((BASE_ROWS - 1))" \
   --export="$FIT_ENV" hpc/closure_fit_array.slurm "$GRID" "$ESTIMATES")")
 FITS_NEW=$(id "$(sbatch --parsable "${FIT_RES[@]}" --kill-on-invalid-dep=yes --dependency=afterok:$CTC \
@@ -93,23 +104,24 @@ FITS_NEW=$(id "$(sbatch --parsable "${FIT_RES[@]}" --kill-on-invalid-dep=yes --d
 # 3. model tables from the training shards (needs the new CTC)
 TABLES=$(id "$(sbatch --parsable "${S[@]}" --time=03:00:00 --kill-on-invalid-dep=yes \
   --dependency=afterok:$CTC hpc/build_model_tables.slurm "$MODEL")")
-# 4. deep QA of every estimate, precompute (one node per task), pack
+# 4. deep QA of every estimate and, alongside it, precompute (one node per
+#    task; it indexes the whole estimate set, so it waits for every fit); pack
 QA=$(id "$(sbatch --parsable "${S[@]}" --time=03:00:00 --kill-on-invalid-dep=yes \
   --dependency=afterok:$FITS_OLD:$FITS_NEW hpc/validate_artifact_grid.slurm "$GRID" "$ESTIMATES" "$QA_REPORT")")
-PRE=$(id "$(sbatch --parsable "${Q[@]}" --time=03:00:00 --kill-on-invalid-dep=yes --dependency=afterok:$QA \
+PRE=$(id "$(sbatch --parsable "${Q[@]}" --time=$LONG --kill-on-invalid-dep=yes --dependency=afterok:$FITS_OLD:$FITS_NEW \
   --array="0-$((GRID_ROWS - 1))" --export=ALL,PRECOMPUTE_SKIP_EXISTING=1 \
   hpc/artifact_precompute_stride.slurm "$GRID" "$ESTIMATES" "$WORK" "$GRID_ROWS")")
-PACK=$(id "$(sbatch --parsable "${S[@]}" --time=04:00:00 --kill-on-invalid-dep=yes --dependency=afterok:$PRE \
+PACK=$(id "$(sbatch --parsable "${S[@]}" --time=04:00:00 --kill-on-invalid-dep=yes --dependency=afterok:$PRE:$QA \
   --export=ALL,ARTIFACT_EVENT_UNIT=encounter hpc/aggregate.slurm "$GRID" "$ESTIMATES" "$MODEL" "$WORK")")
 # 5. diagnostic gate on the existing replays, validation, analysis
 TABLE_ENV="ALL,ENCOUNTER_TABLE=$MODEL/encounter_cross_section.json,ANGULAR_MEMORY=$MODEL/angular_memory.json,LOSS_MEMORY=$MODEL/loss_memory.json"
 GATE=$(id "$(sbatch --parsable "${S[@]}" --time=02:00:00 --kill-on-invalid-dep=yes \
   --dependency=afterok:$PACK:$TABLES --export=ALL,REPLAY_TAG=$REPLAY_TAG \
   hpc/production_gate.slurm "$TAG" "$MODEL")")
-USF=$(id "$(sbatch --parsable "${Q[@]}" --time=03:30:00 --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES \
+USF=$(id "$(sbatch --parsable "${Q[@]}" --time=$LONG --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES \
   --array="0-$((USF_ROWS - 1))" --export="$TABLE_ENV,USF_ENC_STRIDE=$USF_ROWS" \
   hpc/usf_encounter_array.slurm "$USF_MANIFEST" "$MODEL/closure_v2.npz")")
-HCS=$(id "$(sbatch --parsable "${Q[@]}" --time=04:00:00 --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES \
+HCS=$(id "$(sbatch --parsable "${Q[@]}" --time=$HCS_TIME --kill-on-invalid-dep=yes --dependency=afterok:$PACK:$TABLES \
   --array="0-$((HCS_ROWS - 1))" --export="$TABLE_ENV" \
   hpc/hcs_encounter_array.slurm "$HCS_MANIFEST" "$MODEL/closure_v2.npz")")
 ANALYSIS=$(id "$(sbatch --parsable "${S[@]}" --kill-on-invalid-dep=yes --dependency=afterany:$USF:$HCS \
