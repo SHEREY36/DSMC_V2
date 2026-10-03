@@ -45,6 +45,7 @@ while (( INDEX < ROWS )); do
       --manifest "$MANIFEST" --node-estimates "${NODE_ESTIMATES[@]}" \
       --output "$WORK" --index "$INDEX" \
       --workers "${SLURM_CPUS_PER_TASK:-2}" --propensity-offsets 128 \
+      ${PRECOMPUTE_SKIP_EXISTING:+--skip-existing} \
       --gamma-max-table Coll_Models_v2/models/legacy_bl/gamma_max_table.json \
       --one-hit-table Coll_Models_v2/models/legacy_bl/one_hit_table.json \
       "${COEFFICIENT_ARGS[@]}"

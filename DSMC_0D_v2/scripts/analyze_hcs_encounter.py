@@ -21,7 +21,7 @@ def main():
         if not path.is_file() or not Path(row["output_prefix"] + ".json").is_file():
             continue
         t = np.loadtxt(path)
-        late = t[:, 1] >= args.window_start_tau
+        late = t[:, 1] >= float(row.get("evaluation_start_tau") or args.window_start_tau)
         groups[(row["arm"], float(row["alpha"]), float(row["aspect_ratio"]))].append(
             (float(np.mean(t[late, 2] / t[late, 3])), float(row["target_theta"])))
     if not groups:

@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from coll_models_v2.estimate import (
+    EXCHANGE_WEIGHTING,
     NODE_ESTIMATE_CONTRACT,
     equilibrium_anchor,
     estimate_node,
@@ -84,6 +85,13 @@ def main() -> None:
     parser.add_argument("--propensity-workers", type=int, default=1,
                         help="threads used only for deterministic geometric "
                              "propensity blocks")
+    parser.add_argument("--bootstrap-workers", type=int, default=1,
+                        help="processes for the bootstrap refits (the replicate set is "
+                             "identical for any count)")
+    parser.add_argument("--skip-current", action="store_true",
+                        help="leave a node alone when its estimate already carries the "
+                             "current estimator contract, so a resubmitted array only "
+                             "fits what is missing")
     parser.add_argument("--fallback-kernel-form", default=None,
                         help="refit with this energy-kernel form when the row's "
                              "form fails its precision QA (the repair used for "
@@ -92,6 +100,19 @@ def main() -> None:
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))
     row = rows[args.index]
+    output = Path(args.output)
+    target = output / (
+        f"alpha_{float(row['alpha']):.3f}_theta_{float(row['theta']):.3f}_"
+        f"AR_{float(row['aspect_ratio']):.3f}_ensemble_{int(row['ensemble_id']):03d}.json")
+    if args.skip_current and target.is_file():
+        try:
+            existing = json.loads(target.read_text())
+        except ValueError:
+            existing = {}
+        if (existing.get("estimator_contract") == NODE_ESTIMATE_CONTRACT
+                and existing.get("exchange_weighting") == EXCHANGE_WEIGHTING):
+            print(f"task {args.index}: {target} is current; skipped")
+            return
     run = Path(row["output_directory"])
     if not (run / "_SUCCESS").is_file():
         raise FileNotFoundError(f"closure shard is not finalized: {run}")
@@ -132,6 +153,7 @@ def main() -> None:
                                    bootstrap_seed=20260902 + args.index,
                                    propensity_offsets=args.propensity_offsets or None,
                                    propensity_workers=args.propensity_workers,
+                                   bootstrap_workers=args.bootstrap_workers,
                                    kernel_form=form)
         except SCIENTIFIC_FIT_EXCEPTIONS as exc:
             fitted = _failed_fit_result(row, run, exc)
@@ -161,11 +183,7 @@ def main() -> None:
         "anchor_run": str(anchor_run.resolve()),
         "kernel_form": result.get("energy", {}).get("kernel_form", kernel_form),
     }
-    output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    target = output / (
-        f"alpha_{float(row['alpha']):.3f}_theta_{float(row['theta']):.3f}_"
-        f"AR_{float(row['aspect_ratio']):.3f}_ensemble_{int(row['ensemble_id']):03d}.json")
     target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     status = "pass" if passed else "blocked"
     print(f"task {args.index}: {target} ({status}; {', '.join(reasons) or 'no reasons'})")

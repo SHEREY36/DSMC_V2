@@ -27,5 +27,7 @@ PYTHONPATH="$ROOT/contracts/python:$ROOT/Coll_Models_v2/src" \
     --manifest "$MANIFEST" --index "$SLURM_ARRAY_TASK_ID" --output "$OUTPUT" \
     --bootstrap "${CLOSURE_BOOTSTRAP:-200}" \
     --propensity-offsets "${CLOSURE_OFFSETS:-64}" \
-    --propensity-workers "${CLOSURE_PROPENSITY_WORKERS:-1}" \
+    --propensity-workers "${CLOSURE_PROPENSITY_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}" \
+    --bootstrap-workers "${CLOSURE_BOOTSTRAP_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}" \
+    ${CLOSURE_SKIP_CURRENT:+--skip-current} \
     ${CLOSURE_FALLBACK_FORM:+--fallback-kernel-form "$CLOSURE_FALLBACK_FORM"}

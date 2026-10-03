@@ -1,0 +1,65 @@
+# Final encounter-unit closure model (TAG=final_v1, hpc/submit_final_campaign.sh).
+#
+# One DSMC event is one CTC encounter.  Every law is fitted from exact CTC
+# encounters at Maxwellian nodes (alpha 0.50-0.95 in 0.05 steps and 1;
+# theta = T_tr/T_rot at 0.0125-0.2 near the sphere, 0.2, 0.35, 0.5, 0.7, 1, 2;
+# AR 1.1-3).  No DEM data enters the model.
+#   - clock      sigma_c(theta, AR) = mean projected area x measured dynamic factor
+#   - loss       encounter-scale BL draw with node mean eps, times
+#                s(z) = E[eps|z]/E[eps], E[eps|z] = c_t z + c_r (1 - z)
+#   - exchange   conditional I-projection p(z'|z, eps), fitted with the
+#                post-collision energy weight E_f, so every node reproduces the
+#                energy each mode gains or loses at any theta
+#   - angle      energy-tilted angular law with incoming-partition memory
+# Between nodes the laws are mixed on the physical stencil (Wasserstein average
+# of energy quantiles, mixture of angular laws).  The model folder holds the
+# artifact and its three tables.
+schema_version: "2.2.0"
+
+particle:
+  AR: 2.0
+  radius: 0.5
+  mass: 1.0
+
+system:
+  kTt: 1.0
+  kTr: 1.0
+  alpha: 0.8
+  eta: 1.0
+  phi: 0.001
+  domain: [50.0, 50.0, 50.0]
+  C_alpha: 1.0
+
+time:
+  dt: 0.01
+  dtau: 0.1
+  t_end: 10.0
+  tau_end: null
+  equilibration_time: 0.0
+
+flow:
+  mode: hcs
+  shear_rate: 0.0
+
+simulation:
+  seeds: [42]
+  output_dir: results/
+  sphere_collision: false
+  use_isotropic_eps: true
+  orientation_integrator: symmetric_midpoint_v1
+
+preprocessing:
+  model_root: DSMC_0D_v2/models
+  dissipation:
+    beta_a: 1.21
+    beta_b: 3.67
+
+microscopic_closure:
+  routing: variational_v2
+  angular: variational_v2
+  artifact: models/microscopic_closure_v2_final_v1/closure_v2.npz
+  state_update_cpp: 0.05
+  event_unit: encounter
+  encounter_cross_section: models/microscopic_closure_v2_final_v1/encounter_cross_section.json
+  angular_memory: models/microscopic_closure_v2_final_v1/angular_memory.json
+  loss_memory: models/microscopic_closure_v2_final_v1/loss_memory.json

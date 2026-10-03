@@ -61,6 +61,9 @@ def main() -> None:
     args = parser.parse_args()
 
     row = row_at(Path(args.manifest), args.task)
+    if Path(str(row["output_prefix"]) + ".json").is_file():
+        print(f"already complete: {row['output_prefix']}")
+        return
     config = yaml.safe_load(Path(args.config).read_text())
     alpha = float(row["alpha"])
     ar = float(row["aspect_ratio"])

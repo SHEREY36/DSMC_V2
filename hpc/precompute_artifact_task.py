@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from pathlib import Path
 
 from coll_models_v2.artifact import precompute_artifact_node
 from coll_models_v2.legacy_bl import LegacyBL
@@ -24,7 +25,13 @@ def main() -> None:
     parser.add_argument("--coefficient-release-policy", default="strict")
     parser.add_argument("--beta-a", type=float, default=1.21)
     parser.add_argument("--beta-b", type=float, default=3.67)
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="leave a node whose payload is already written (resubmission)")
     args = parser.parse_args()
+    done = Path(args.output) / f"node_{int(args.index):04d}.npz"
+    if args.skip_existing and done.is_file():
+        print(f"artifact node {args.index} already written: {done}", flush=True)
+        return
 
     with open(args.manifest, newline="") as handle:
         rows = list(csv.DictReader(handle))

@@ -24,4 +24,4 @@ PYTHONPATH="$PWD/contracts/python:$PWD/Coll_Models_v2/src:$PWD/DSMC_0D_v2/src" \
     --encounter-table "$MODEL/encounter_cross_section.json" \
     $( [[ -f "$MODEL/loss_memory.json" ]] && echo --loss-memory "$MODEL/loss_memory.json" ) \
     --workers "${SLURM_CPUS_PER_TASK:-32}" --samples 40000 \
-    --output "results/validation/production_gate/${TAG}/gate" results/ctc/replays/gate_${TAG}/*
+    --output "results/validation/production_gate/${TAG}/gate" results/ctc/replays/gate_${REPLAY_TAG:-$TAG}/*

@@ -31,7 +31,14 @@ from .weights import (
 
 N_BLOCKS = 128
 N_SCALARS = 10
-NODE_ESTIMATE_CONTRACT = "node_estimate_v3_energy_weighted_incoming_law"
+NODE_ESTIMATE_CONTRACT = "node_estimate_v4_post_energy_exchange"
+# The exchange kernel is fitted with each encounter weighted by its
+# post-collision pair energy E_f.  The modal energy productions are
+# Delta E_tr = E_f z' - E z, so the I-projection's moment identities then
+# carry <E_f z'> itself, and the node reproduces the energy each mode gains or
+# loses at any theta.  Unweighted moments reproduce it only at theta = 1, where
+# z and E are independent; at low theta (near-sphere HCS) they did not.
+EXCHANGE_WEIGHTING = "post_energy"
 
 
 def _evaluate(sums: np.ndarray, metadata: dict, bl) -> np.ndarray:
@@ -96,6 +103,17 @@ def _check_compatible(runs) -> None:
 PROPENSITY_CACHE = Path("results/closure_estimates/.propensity_cache")
 
 
+def propensity_identity(directory: Path, seed, stat) -> str:
+    """Cache identity of a shard's propensity.
+
+    The shard folder name, its seed and the attempt file's size and mtime pin
+    the geometry; the parent path does not, so reorganising the data keeps the
+    cache (hpc/migrate_propensity_cache.py renames older path-keyed files).
+    """
+    return hashlib.sha256((f"{Path(directory).name}|{seed}|{stat.st_size}|"
+                           f"{stat.st_mtime_ns}").encode()).hexdigest()[:16]
+
+
 def _run_propensity(run, offsets: int | None,
                     cache: Path | None = PROPENSITY_CACHE,
                     workers: int = 1) -> np.ndarray | None:
@@ -113,9 +131,7 @@ def _run_propensity(run, offsets: int | None,
         directory = Path(run.directory).resolve()
         attempt_path = directory / "attempts_v2.bin"
         stat = attempt_path.stat()
-        identity = hashlib.sha256(
-            (f"{directory}|{run.metadata.get('seed')}|{stat.st_size}|"
-             f"{stat.st_mtime_ns}").encode()).hexdigest()[:16]
+        identity = propensity_identity(directory, run.metadata.get("seed"), stat)
         key = cache / (
             f"{directory.name}_{identity}_{stat.st_size}_{int(offsets)}.npy")
         if key.is_file():
@@ -290,7 +306,11 @@ def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
          compute_stationary: bool = True) -> dict:
     weight = events["weight"]
     weight = weight * len(weight) / np.sum(weight)
-    energy = fit_exchange_kernel(events["z_in"], events["z_out"], weight,
+    exchange_weight = weight
+    if EXCHANGE_WEIGHTING == "post_energy":
+        exchange_weight = weight * events["energy"] * (1.0 - events["loss"])
+        exchange_weight = exchange_weight * len(weight) / np.sum(exchange_weight)
+    energy = fit_exchange_kernel(events["z_in"], events["z_out"], exchange_weight,
                                  loss=events.get("loss"), model_form=model_form,
                                  initial=initial, anchor=anchor,
                                  kernel_form=kernel_form,
@@ -322,9 +342,37 @@ def _energy_parameters(energy: dict) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
+_BOOTSTRAP_STATE: dict = {}
+
+
+def _bootstrap_init(events, initial, anchor, kernel_form):
+    _BOOTSTRAP_STATE.update(events=events, initial=initial, anchor=anchor,
+                            kernel_form=kernel_form)
+
+
+def _bootstrap_replicate(multiplicity):
+    state = _BOOTSTRAP_STATE
+    events, kernel_form = state["events"], state["kernel_form"]
+    selected_weight = events["weight"] * multiplicity[events["block"]]
+    mask = selected_weight > 0.0
+    sample = {key: value[mask] for key, value in events.items() if key != "block"}
+    sample["weight"] = selected_weight[mask]
+    try:
+        return _fit(sample, allow_joint=False, model_form=False, initial=state["initial"],
+                    anchor=state["anchor"], kernel_form=kernel_form,
+                    compute_stationary=kernel_form != "conditional_logit_cubic_v3")
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+
+
 def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
                initial: np.ndarray | None = None, anchor: tuple | None = None,
-               kernel_form: str = "sinkhorn_bridge_v2") -> dict:
+               kernel_form: str = "sinkhorn_bridge_v2", workers: int = 1) -> dict:
+    """Block bootstrap of the node fit.
+
+    The resamples are drawn in order from one generator, so the replicate set
+    is the same for any number of workers; only the fits run in parallel.
+    """
     if count <= 0:
         return {}
     rng = np.random.default_rng(seed)
@@ -336,18 +384,20 @@ def _bootstrap(events: dict[str, np.ndarray], count: int, seed: int,
         energy_names += ["reset_mean", "reset_second_moment"]
     values: dict[str, list[float]] = {name: [] for name in
         (*energy_names, "eta1", "eta2", "rho_z_cosine")}
-    for _ in range(count):
-        chosen = rng.integers(0, N_BLOCKS, N_BLOCKS)
-        multiplicity = np.bincount(chosen, minlength=N_BLOCKS)
-        selected_weight = events["weight"] * multiplicity[events["block"]]
-        mask = selected_weight > 0.0
-        sample = {key: value[mask] for key, value in events.items() if key != "block"}
-        sample["weight"] = selected_weight[mask]
-        try:
-            fit = _fit(sample, allow_joint=False, model_form=False, initial=initial,
-                       anchor=anchor, kernel_form=kernel_form,
-                       compute_stationary=kernel_form != "conditional_logit_cubic_v3")
-        except (ValueError, np.linalg.LinAlgError):
+    multiplicities = [np.bincount(rng.integers(0, N_BLOCKS, N_BLOCKS), minlength=N_BLOCKS)
+                      for _ in range(count)]
+    if int(workers) > 1:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(int(workers), mp_context=multiprocessing.get_context("fork"),
+                                 initializer=_bootstrap_init,
+                                 initargs=(events, initial, anchor, kernel_form)) as pool:
+            fits = list(pool.map(_bootstrap_replicate, multiplicities, chunksize=1))
+    else:
+        _bootstrap_init(events, initial, anchor, kernel_form)
+        fits = [_bootstrap_replicate(m) for m in multiplicities]
+    for fit in fits:
+        if fit is None:
             continue
         for name in values:
             source = fit["energy"] if name in fit["energy"] else fit["angular"]
@@ -370,6 +420,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
                   bootstrap_seed: int = 20260902,
                   propensity_offsets: int | None = DEFAULT_OFFSETS,
                   propensity_workers: int = 1,
+                  bootstrap_workers: int = 1,
                   measure: str = MEASURE,
                   anchor: tuple | None = None,
                   attempt_weights: list[np.ndarray] | None = None,
@@ -423,7 +474,8 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
     # of a different estimator than the point fit.
     uncertainty = _bootstrap(events, int(n_bootstrap), int(bootstrap_seed),
                              initial=_energy_parameters(fitted["energy"]),
-                             anchor=anchor, kernel_form=kernel_form)
+                             anchor=anchor, kernel_form=kernel_form,
+                             workers=int(bootstrap_workers))
     features, diagnostics, velocity = _proposal_invariants(runs)
     cell_features_value, _, _ = _proposal_invariants(runs, cell_measure=True)
     if cell_features_override is not None:
@@ -504,6 +556,7 @@ def estimate_node(run_directories, bl=None, n_bootstrap: int = 200,
         # rather than accepting an old estimate because its record schema is
         # readable.
         "estimator_contract": NODE_ESTIMATE_CONTRACT,
+        "exchange_weighting": EXCHANGE_WEIGHTING,
         "alpha": alpha,
         "theta": float(metadata["theta"]),
         "aspect_ratio": float(metadata["aspect_ratio"]),
