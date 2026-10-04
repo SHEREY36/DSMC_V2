@@ -13,8 +13,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 MODE=${1:-engineering}
-MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-angular_evidence}
-ARTIFACT=${2:-models/microscopic_closure_v2_angular_evidence/closure_v2.npz}
+# The released model folder (tag closure-v2-final-v1): the artifact runs with
+# the encounter clock, loss and angular tables beside it.
+MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-encounter_final}
+ARTIFACT=${2:-models/microscopic_closure_v2_final_v1/closure_v2.npz}
 TAG=${3:-${MODE}_${MODEL_VARIANT}_v8}
 # Fourth argument: numerics summary for MODE=engineering; engineering summary
 # for MODE=stability-sentinel; sentinel summary for MODE=stability; full
@@ -22,7 +24,7 @@ TAG=${3:-${MODE}_${MODEL_VARIANT}_v8}
 # full-domain HCS summary for domain-pilot.
 GATE_SUMMARY=${4:-}
 MANIFEST="manifests/hcs_ng_${TAG}.csv"
-RESULTS="results/hcs_ng_${TAG}"
+RESULTS="${HCS_NG_RESULTS_ROOT:-results/validation/hcs}/hcs_ng_${TAG}"
 SUMMARY="$RESULTS/summary.json"
 FIGURE="$RESULTS/non_gaussian_observables.png"
 if [[ -e "$SUMMARY" ]] || compgen -G "$RESULTS/*.txt" >/dev/null; then
@@ -63,14 +65,20 @@ if (( ROWS > MAX_ARRAY )); then
        "up to $(( (ROWS + MAX_ARRAY - 1) / MAX_ARRAY )) realizations in series" >&2
 fi
 CONCURRENT=${HCS_NG_MAX_CORES:-256}; (( CONCURRENT > TASKS )) && CONCURRENT=$TASKS
-MEMORY=${HCS_NG_MEM_PER_TASK:-1500M}
+# The encounter-unit model peaks at 0.98 GiB per process (0.68 GiB for the
+# contact-unit model); 1800M keeps ~1.8x headroom and still fits 128 one-core
+# tasks on a 256-GiB node, so memory never claims an extra core.
+MEMORY=${HCS_NG_MEM_PER_TASK:-1800M}
 # Measured protocol-v8 cost: wall time per task is set by the collision count
 # and the aspect ratio, not by the particle count.  At fixed box volume the
 # number density scales with N, so the physical time to reach a given cpp
 # falls as 1/N while the per-step cost rises as N; N=10000 therefore costs
 # only 1.1-1.5x N=2000 for the same cpp.  At tau_end=1500 the most expensive
 # coordinate (alpha=0.5, AR=1.2) is about 8.4 h, and the half-step sentinel
-# arm doubles that.  These defaults carry roughly a 2x margin.
+# arm doubles that.  These defaults carry roughly a 2x margin.  The
+# encounter-unit model costs 1.14x per collision (its clock advances 1.19x
+# more physical time per collision); measured v8 maxima of 6.2 h (sweep) and
+# 7.2 h (sentinel half step) become about 7.0 h and 8.1 h.
 case "$MODE" in
   numerics-pilot|engineering) DEFAULT_WALLTIME=06:00:00 ;;
   stability-sentinel) DEFAULT_WALLTIME=24:00:00 ;;

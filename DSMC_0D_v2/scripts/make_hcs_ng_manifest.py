@@ -182,10 +182,11 @@ def main() -> None:
                         default="engineering")
     parser.add_argument("--artifact", required=True)
     parser.add_argument(
-        "--model-variant", choices=("angular_evidence", "baseline"),
-        default="angular_evidence",
-        help=("angular_evidence enables the validated angular-only response; "
-              "baseline uses the same sampler with invariant response disabled"),
+        "--model-variant", choices=("encounter_final", "angular_evidence", "baseline"),
+        default="encounter_final",
+        help=("encounter_final runs the released encounter-unit model folder "
+              "(artifact plus its clock, loss and angular tables); "
+              "angular_evidence and baseline are the earlier contact-unit models"),
     )
     parser.add_argument("--output", required=True)
     parser.add_argument("--results", required=True)

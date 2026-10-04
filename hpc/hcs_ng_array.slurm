@@ -6,10 +6,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-# One schema-2.4 closure process peaks near 0.7 GiB in the measured pilot.
-# 1.5 GiB leaves >2x headroom while allowing all 128 one-core tasks to share
-# a standard 256-GiB Negishi node without memory-driven core fragmentation.
-#SBATCH --mem=1500M
+# One encounter-unit closure process peaks near 1.0 GiB (0.7 GiB for the
+# contact-unit model).  1.8 GiB leaves ~1.8x headroom while allowing all 128
+# one-core tasks to share a standard 256-GiB Negishi node without
+# memory-driven core fragmentation.  The submitter passes --mem explicitly.
+#SBATCH --mem=1800M
 #SBATCH --time=08:00:00
 #SBATCH --signal=B:TERM@120
 #SBATCH --output=logs/hcs_ng_%A_%a.out

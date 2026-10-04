@@ -91,7 +91,8 @@ def main() -> None:
         row.get("invariant_corrections", "false"))
     if model_variant == "angular_evidence" and not invariant_corrections:
         raise RuntimeError("angular-evidence task disabled its invariant correction")
-    if model_variant in ("baseline", "sphere_exact") and invariant_corrections:
+    if model_variant in ("baseline", "sphere_exact", "encounter_final") \
+            and invariant_corrections:
         raise RuntimeError(f"{model_variant} task unexpectedly enabled corrections")
     config["particle"]["AR"] = ar
     initial_theta = float(row.get("initial_theta") or 1.0)
@@ -122,6 +123,16 @@ def main() -> None:
             routing="variational_v2", angular="variational_v2",
             artifact=str(artifact), invariant_corrections=invariant_corrections,
             state_update_cpp=float(row.get("state_update_cpp", 0.0) or 0.0))
+        if model_variant == "encounter_final":
+            # The released model is a folder: one DSMC event is one CTC
+            # encounter, and the artifact runs only with its encounter clock,
+            # loss and angular tables (the runtime enforces model_card.json).
+            folder = artifact.parent
+            config["microscopic_closure"].update(
+                event_unit="encounter",
+                encounter_cross_section=str(folder / "encounter_cross_section.json"),
+                angular_memory=str(folder / "angular_memory.json"),
+                loss_memory=str(folder / "loss_memory.json"))
     params = particle_parameters(config)
     particles = int(row["particles"])
     volume = 64.0**3

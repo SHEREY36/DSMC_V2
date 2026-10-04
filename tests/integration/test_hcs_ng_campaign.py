@@ -291,6 +291,40 @@ def test_angular_evidence_preflight_requires_matching_evidence_manifest(tmp_path
     assert accepted.returncode == 0, accepted.stderr
 
 
+def test_encounter_final_preflight_requires_the_model_folder(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    tables = ("encounter_cross_section", "angular_memory", "loss_memory")
+    for table in tables:
+        (tmp_path / f"{table}.json").write_text(json.dumps({"table": table}))
+    manifest, rows = make_manifest(
+        tmp_path, "numerics-pilot", artifact, model_variant="encounter_final")
+    assert {row["invariant_corrections"] for row in rows} == {"false"}
+    command = [
+        sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py"),
+        "--manifest", str(manifest), "--artifact", str(artifact),
+        "--allow-engineering",
+    ]
+    missing = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert missing.returncode != 0 and "model_card" in missing.stderr
+    sha = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+           for path in [artifact] + [tmp_path / f"{t}.json" for t in tables]}
+    card = {"event_unit": "encounter", "requires": list(tables), "sha256": sha}
+    (tmp_path / "model_card.json").write_text(json.dumps(card))
+    (tmp_path / "manifest.json").write_text(json.dumps({"stability_pass": True}))
+    accepted = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert accepted.returncode == 0, accepted.stderr
+    (tmp_path / "loss_memory.json").write_text("{}")
+    altered = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    assert altered.returncode != 0 and "loss_memory" in altered.stderr
+
+
+def test_ng_runner_binds_the_encounter_model_tables():
+    text = (ROOT / "DSMC_0D_v2/scripts/run_hcs_ng_task.py").read_text()
+    assert 'event_unit="encounter"' in text
+    for table in ("encounter_cross_section", "angular_memory", "loss_memory"):
+        assert f'{table}=str(folder / "{table}.json")' in text
+
+
 def test_scientific_preflight_rejects_compact_gate_and_accepts_full_gate(tmp_path):
     surface = np.array([[alpha, theta, ar]
                         for alpha in (0.5, 0.8, 0.95, 1.0)

@@ -418,8 +418,8 @@ def save(fig, out: Path, stem: str):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--results", default="results/hcs_ng_sweep_angular_v8")
-    p.add_argument("--output", default="reports/figures/hcs_ng_v8")
+    p.add_argument("--results", default="results/validation/hcs/hcs_ng_sweep_final_v8")
+    p.add_argument("--output", default="reports/figures/hcs_ng_final_v8")
     args = p.parse_args()
     results, out = Path(args.results), Path(args.output)
     summary, sci, loss = load(results)

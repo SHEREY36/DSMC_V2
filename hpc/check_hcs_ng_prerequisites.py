@@ -95,6 +95,25 @@ def main() -> None:
     elif model_variant == "baseline":
         if corrections_enabled:
             raise SystemExit("baseline campaign must disable invariant corrections")
+    elif model_variant == "encounter_final":
+        if corrections_enabled:
+            raise SystemExit("encounter-unit model has no invariant response")
+        card_path = artifact.with_name("model_card.json")
+        if not card_path.is_file():
+            raise SystemExit(f"encounter-unit model folder lacks {card_path.name}")
+        card = json.loads(card_path.read_text())
+        if card.get("event_unit") != "encounter":
+            raise SystemExit("model card does not declare the encounter event unit")
+        if card.get("sha256", {}).get(artifact.name) != artifact_hash:
+            raise SystemExit("model card hash does not match the NPZ")
+        if not artifact_manifest.get("stability_pass", False):
+            raise SystemExit("artifact build did not pass its HCS stability check")
+        for table in card.get("requires", []):
+            path = artifact.with_name(f"{table}.json")
+            if not path.is_file():
+                raise SystemExit(f"model folder lacks required table {path.name}")
+            if card.get("sha256", {}).get(path.name) != digest(path):
+                raise SystemExit(f"{path.name} does not match the model card")
     elif model_variant != "sphere_exact":
         raise SystemExit(f"unknown model variant {model_variant!r}")
     if mode == "numerics-pilot":
