@@ -146,5 +146,37 @@ error; it is a test and does not enter the model.
 
 ## 7. Validation
 
-Independent DEM (LAMMPS, $\phi=0.01$, corrected Hertz damping; never used in fitting). Filled in
-from `results/validation/usf/usf_encounter_<tag>/` and `results/validation/hcs/hcs_encounter_<tag>/`.
+Independent DEM (LAMMPS, $\phi=0.01$, corrected Hertz damping; never used in fitting).
+Campaign `final_v1_val`: USF at AR 1.5–3 and $\alpha$ 0.50–0.95 (40 cases, 4 seeds × cold and
+hot starts, $N=10^4$); HCS at every DEM coordinate, AR 1.1–3 and $\alpha$ 0.50–0.96 plus the
+elastic limit (65 coordinates, 2 seeds, equipartition start). Figures:
+`results/validation/dem_comparison/final_v1/usf_error_by_model.png` and `hcs_theta_final.png`.
+
+**USF**, median / maximum absolute difference from DEM over the 40 rod cases:
+
+| model | $T^*$ | $\theta$ | $P^{k*}_{xy}$ | $N_1^{k*}$ | cases above 5 % |
+|---|---|---|---|---|---|
+| legacy (contact unit) | 8.1 / 26.9 % | 9.2 / 17.7 % | 8.8 / 11.7 % | 22.4 / 30.3 % | |
+| encounter unit, $\alpha$ planes 0.5/0.8/0.95 | 1.1 / 7.3 % | 3.0 / 7.9 % | 1.5 / 2.9 % | 3.3 / 5.4 % | 18 / 40 |
+| $\alpha$-refined | 0.8 / 7.0 % | 1.2 / 3.0 % | 1.5 / 2.5 % | 3.4 / 5.1 % | 1 / 40 |
+| **final** | **0.8 / 2.9 %** | **1.1 / 2.5 %** | **1.0 / 2.2 %** | **2.0 / 4.8 %** | **0 / 40** |
+
+**HCS**, steady $\theta^*$: median absolute difference from DEM 1.2 % over 63 coordinates, within
+5 % at 59 of them, and within 0.2 % of 1 in the elastic limit. By AR the median / maximum is
+2.5 / 10.5 % (AR 1.1), 1.1 / 1.6 % (1.25), 1.5 / 8.0 % (1.5), 1.4 / 3.5 % (2), 0.7 / 3.8 % (2.5)
+and 1.0 / 3.9 % (3). Where earlier models were run at the same coordinates the final model
+removes their near-sphere error: AR 1.1 at $\alpha$ = 0.7, 0.85, 0.95 went from +14, +9, −22 % to
+−0.4, +2.0, +0.3 %; AR 1.25 at 0.9 from −19 % to −0.6 %; AR 1.5 at 0.7, 0.85, 0.95 from −10,
+−8, −6 % to +0.2, −1.8, −2.2 %.
+
+The four coordinates beyond 5 % are at strong dissipation near the sphere (AR 1.1 at $\alpha$ =
+0.5, 0.55, 0.6 and AR 1.5 at 0.5). There the comparison with exact binary physics separates the
+model from the reference: the zero of the exact-CTC rate $d\ln\theta/d\tau$ on Maxwellian node
+pairs gives $\theta^*$ = 0.0210 (AR 1.1, $\alpha$ = 0.5) and 0.359 (AR 1.5, 0.5), and the model
+gives 0.0209 and 0.361, while DEM gives 0.0234 and 0.392. The model reproduces binary collisions;
+the 8–10 % gap is between CTC and DEM, consistent with effects a dilute binary closure does not
+contain (soft, rotation-driven contacts and correlated re-collisions at strong dissipation). At
+the other well-resolved near-sphere coordinates the model is within 1–5 % of CTC.
+
+The production test on identical USF pairs (diagnostic) passes 143 of 144 replays, with a
+dissipation ratio of 0.997–1.001 and a mean predicted $\theta$ error of 0.8–1.4 % at every AR.

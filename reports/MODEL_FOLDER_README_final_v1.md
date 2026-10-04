@@ -36,4 +36,10 @@ shear rate) in `model.yaml`. The simulation refuses to run `closure_v2.npz` with
 tables (`model_card.json`); in particular the loss scale comes from `loss_memory.json`, because
 the artifact's `energy_mean_loss` holds energy-weighted node means used only for diagnostics.
 
+**Validation against independent DEM.** USF (AR 1.5–3, $\alpha$ 0.50–0.95, 40 cases): median /
+maximum absolute difference 0.8 / 2.9 % in $T^*$, 1.1 / 2.5 % in $\theta$, 1.0 / 2.2 % in
+$P^{k*}_{xy}$, 2.0 / 4.8 % in $N_1^{k*}$. HCS (AR 1.1–3, $\alpha$ 0.50–0.96, 63 coordinates):
+median 1.2 %, within 5 % at 59; the four others are near the sphere at strong dissipation, where
+the model matches exact binary collisions (CTC) and DEM differs from CTC by 8–10 %.
+
 **Formulation.** `reports/DSMC_CLOSURE_FORMULATION_FINAL.md` in the repository.
