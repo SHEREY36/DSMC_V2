@@ -318,6 +318,33 @@ def test_encounter_final_preflight_requires_the_model_folder(tmp_path):
     assert altered.returncode != 0 and "loss_memory" in altered.stderr
 
 
+def test_deferred_gate_skips_only_the_upstream_summary(tmp_path):
+    artifact = _test_artifact(tmp_path)
+    check = [sys.executable, str(ROOT / "hpc/check_hcs_ng_prerequisites.py")]
+    for mode in ("engineering", "stability-sentinel", "stability", "sweep", "tails"):
+        manifest, _ = make_manifest(tmp_path, mode, artifact)
+        base = check + ["--manifest", str(manifest), "--artifact", str(artifact)]
+        gated = subprocess.run(base, cwd=ROOT, text=True, capture_output=True)
+        assert gated.returncode != 0 and "pilot-summary" in gated.stderr, mode
+        deferred = subprocess.run(base + ["--defer-gate"], cwd=ROOT, text=True,
+                                  capture_output=True)
+        assert deferred.returncode == 0, (mode, deferred.stderr)
+        assert "DEFERRED" in deferred.stdout
+        # the deferred gate is the ordinary check, rerun with the summary
+        wrong = tmp_path / f"{mode}_wrong.json"
+        wrong.write_text(json.dumps({"mode": "not-a-stage"}))
+        rerun = subprocess.run(base + ["--pilot-summary", str(wrong)], cwd=ROOT,
+                               text=True, capture_output=True)
+        assert rerun.returncode != 0, mode
+    # the hash check still runs when the gate is deferred
+    manifest, _ = make_manifest(tmp_path, "sweep", artifact)
+    np.savez_compressed(artifact, surface_coordinates=np.zeros((5, 3)))
+    altered = subprocess.run(check + ["--manifest", str(manifest), "--artifact",
+                                      str(artifact), "--defer-gate"],
+                             cwd=ROOT, text=True, capture_output=True)
+    assert altered.returncode != 0 and "artifact bytes" in altered.stderr
+
+
 def test_ng_runner_binds_the_encounter_model_tables():
     text = (ROOT / "DSMC_0D_v2/scripts/run_hcs_ng_task.py").read_text()
     assert 'event_unit="encounter"' in text

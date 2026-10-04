@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import hashlib
 import json
 from pathlib import Path
@@ -16,6 +17,9 @@ from scipy.spatial import Delaunay
 PROTOCOL_VERSION = "hcs-ng-v8"
 ORIENTATION_INTEGRATOR = "symmetric_midpoint_v1"
 ANALYSIS_REVISION = "hcs-ng-analysis-v3"
+# Stages whose upstream gate may be checked after submission instead of before:
+# the same check, rerun with --pilot-summary once the upstream summary exists.
+DEFERRABLE = ("engineering", "stability-sentinel", "stability", "sweep", "map", "tails")
 
 
 def digest(path: Path) -> str:
@@ -35,6 +39,9 @@ def main() -> None:
                         help=("passing summary from the immediately preceding "
                               "engineering/stability stage"))
     parser.add_argument("--allow-engineering", action="store_true")
+    parser.add_argument("--defer-gate", action="store_true",
+                        help=("skip only the upstream-stage gate; every other check "
+                              "runs, and the gate must be rerun with --pilot-summary"))
     args = parser.parse_args()
     rows = list(csv.DictReader(Path(args.manifest).open(newline="")))
     if not rows:
@@ -116,7 +123,11 @@ def main() -> None:
                 raise SystemExit(f"{path.name} does not match the model card")
     elif model_variant != "sphere_exact":
         raise SystemExit(f"unknown model variant {model_variant!r}")
-    if mode == "numerics-pilot":
+    deferred = args.defer_gate and mode in DEFERRABLE
+    if deferred:
+        print(f"upstream gate for {mode} deferred: rerun this check with "
+              "--pilot-summary when the upstream stage finishes", file=sys.stderr)
+    elif mode == "numerics-pilot":
         if not args.allow_engineering:
             raise SystemExit("numerics-pilot mode requires --allow-engineering")
     elif mode == "engineering":
@@ -327,7 +338,8 @@ def main() -> None:
                              f" ({len(unsupported)} rows unsupported)")
     print(f"HCS-NG prerequisites pass for {mode}: {len(rows)} tasks; "
           f"protocol={PROTOCOL_VERSION}; model={model_variant}; "
-          f"corrections={corrections_enabled}; artifact={artifact_hash}")
+          f"corrections={corrections_enabled}; artifact={artifact_hash}"
+          + ("; upstream gate DEFERRED" if deferred else ""))
 
 
 if __name__ == "__main__":

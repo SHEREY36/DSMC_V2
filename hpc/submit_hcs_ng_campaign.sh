@@ -52,15 +52,26 @@ elif [[ "$MODE" == "engineering" || "$MODE" == "stability-sentinel" \
      || "$MODE" == "stability" \
      || "$MODE" == "sweep" \
      || "$MODE" == "map" || "$MODE" == "tails" ]]; then
-  [[ -n "$GATE_SUMMARY" ]] || {
-    echo "$MODE requires a gate summary as argument 4" >&2
-    exit 2
-  }
-  CHECK+=(--pilot-summary "$GATE_SUMMARY")
+  if [[ "${HCS_NG_DEFER_GATE:-0}" == 1 ]]; then
+    # Overlap stages: every preflight check runs except the upstream gate,
+    # which is rerun with --pilot-summary once the upstream summary exists.
+    CHECK+=(--defer-gate)
+  else
+    [[ -n "$GATE_SUMMARY" ]] || {
+      echo "$MODE requires a gate summary as argument 4" >&2
+      exit 2
+    }
+    CHECK+=(--pilot-summary "$GATE_SUMMARY")
+  fi
 elif [[ -n "$GATE_SUMMARY" ]]; then
   CHECK+=(--hcs-summary "$GATE_SUMMARY")
 fi
 PYTHONPATH="$ROOT/DSMC_0D_v2/src" hpc/python.sh hpc/check_hcs_ng_prerequisites.py "${CHECK[@]}"
+if [[ " ${CHECK[*]} " == *" --defer-gate "* ]]; then
+  echo "submitted before its upstream gate; verify with hpc/check_hcs_ng_prerequisites.py" \
+       "--manifest $MANIFEST --artifact $ARTIFACT --pilot-summary <upstream summary.json>" \
+       > "$RESULTS/GATE_DEFERRED"
+fi
 ROWS=$(( $(wc -l < "$MANIFEST") - 1 ))
 MAX_ARRAY=$(scontrol show config 2>/dev/null | awk '$1 == "MaxArraySize" {print $3}') || MAX_ARRAY=1000
 MAX_ARRAY=${MAX_ARRAY:-1000}

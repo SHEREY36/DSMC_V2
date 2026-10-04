@@ -35,3 +35,15 @@ artifact and all three tables, and the artifact build passed its HCS stability c
 
 The encounter clock fires about 1.19 times less often, so each collision covers more simulated time. The measured v8 maxima, 6.2 h (sweep) and 7.2 h
 (sentinel half step), become about 7.0 h and 8.1 h, against walltimes of 16 h and 24 h.
+
+**Scheduling.** The stages are gated so that a failed control never pays for a later stage. Run
+strictly in order, they leave most of the account idle: the stages before tails use at most 144
+cores. The critical path is about 49 h without any gaps between submissions. With
+`HCS_NG_DEFER_GATE=1` a stage is submitted before its upstream stage has finished. Every preflight
+check still runs except the upstream gate, which is rerun unchanged
+(`check_hcs_ng_prerequisites.py --pilot-summary`) once the upstream summary exists. Each such stage
+leaves a `GATE_DEFERRED` note in its results folder. Submitted in order, the earlier stages start
+first. Simulated on 224 cores with the measured task times (5,857 core-hours in all), everything
+finishes in about 27 h. The pilot gates are known at about 3.4 h and the sentinel and stability
+gates at about 8–9 h; if one fails, the downstream arrays are cancelled. No task, seed or gate
+criterion changes.
