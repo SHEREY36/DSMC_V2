@@ -18,6 +18,15 @@ MODE=${1:-engineering}
 MODEL_VARIANT=${HCS_NG_MODEL_VARIANT:-encounter_final}
 ARTIFACT=${2:-models/microscopic_closure_v2_final_v1/closure_v2.npz}
 TAG=${3:-${MODE}_${MODEL_VARIANT}_v8}
+# Environment overrides outlive a campaign; show them so a stale export from an
+# earlier model (e.g. HCS_NG_MODEL_VARIANT=angular_evidence) is never silent.
+OVERRIDES=$(env | grep '^HCS_NG_' || true)
+[[ -z "$OVERRIDES" ]] || echo "environment overrides: $(echo "$OVERRIDES" | tr '\n' ' ')" >&2
+if [[ -f "$(dirname "$ARTIFACT")/model_card.json" && "$MODEL_VARIANT" != "encounter_final" ]]; then
+  echo "$ARTIFACT is an encounter-unit model folder but HCS_NG_MODEL_VARIANT=$MODEL_VARIANT;" \
+       "run: unset HCS_NG_MODEL_VARIANT" >&2
+  exit 2
+fi
 # Fourth argument: numerics summary for MODE=engineering; engineering summary
 # for MODE=stability-sentinel; sentinel summary for MODE=stability; full
 # stability summary for sweep/map; passing sweep summary for tails; or
