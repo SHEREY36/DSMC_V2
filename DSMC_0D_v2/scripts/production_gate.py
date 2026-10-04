@@ -119,7 +119,9 @@ def evaluate(directory):
     energy = et + er; z = et / energy
     eps = rng.beta(1.21, 3.67, size=len(z)) * lp["gamma_max"] * lp["one_hit_probability"] * loss_scale
     if o["loss_memory"] is not None:
-        eps = np.minimum(eps * o["loss_memory"].scale(o["loss_memory"].stencil(state), z), LOSS_CAP)
+        # the runtime's loss law: eps = E[eps|z] B/<B> with the table's node means
+        rates = o["loss_memory"].stencil(state)
+        eps = np.minimum(eps * (rates[2] / fitted) * o["loss_memory"].scale(rates, z), LOSS_CAP)
     stencil = o["memory"].stencil(state)
     zf = np.array([cl.sample_energy(state, z[i], eps[i], rng, loss_mean=fitted) for i in range(len(z))])
     gp = np.array([2 * np.sqrt(zf[i] * energy[i] * (1 - eps[i]) / m)

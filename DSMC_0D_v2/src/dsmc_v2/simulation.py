@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import resource
 import time as wallclock
@@ -231,6 +232,16 @@ def run_simulation(config: dict, seed: int, output_path: str | Path,
     if angular_memory_path and routing == "variational_v2":
         angular_memory = AngularMemoryTable(angular_memory_path)
         angular_memory.bind(closure.coordinates)
+    card_path = Path(str(config.get("microscopic_closure", {}).get("artifact", ""))).parent / "model_card.json"
+    if routing == "variational_v2" and card_path.is_file():
+        # a model folder states which tables its artifact needs; refuse to run
+        # it without them rather than fall back to a law it was not built for
+        card = json.loads(card_path.read_text())
+        closure_config = config.get("microscopic_closure", {})
+        missing = [key for key in card.get("requires", []) if not closure_config.get(key)]
+        if missing or (card.get("event_unit") and event_unit != card["event_unit"]):
+            raise ValueError(f"{card_path} requires {card.get('requires')} and event_unit "
+                             f"{card.get('event_unit')!r}; the configuration lacks {missing}")
     loss_memory = None
     loss_memory_path = config.get("microscopic_closure", {}).get("loss_memory")
     if loss_memory_path and routing == "variational_v2":

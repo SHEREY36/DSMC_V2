@@ -315,6 +315,12 @@ def _fit(events: dict[str, np.ndarray], allow_joint: bool = True,
                                  initial=initial, anchor=anchor,
                                  kernel_form=kernel_form,
                                  compute_stationary=compute_stationary)
+    if exchange_weight is not weight and "loss" in events:
+        # the kernel is fitted with weight E_f, but the node's loss is a property
+        # of the encounters: report their plain mean (the E_f-weighted one is low
+        # by about Var(eps)/(1 - eps)) and keep the weighted one as a diagnostic
+        energy["energy_weighted_mean_loss"] = energy["mean_fractional_loss"]
+        energy["mean_fractional_loss"] = float(weight @ events["loss"] / np.sum(weight))
     angular = fit_angular_kernel(events["cosine"], events["z_out"], weight,
                                  allow_joint=allow_joint)
     return {"energy": energy, "angular": angular}

@@ -284,20 +284,30 @@ class SpherocylinderKernel:
                 # Rescale the Beta draw to the encounter mean the kernels were
                 # fitted with.  The routing covariate is then the drawn loss
                 # itself, so energy removal and routing see the same number.
-                scale = (float(self.cell_variational["fitted_mean_loss"])
-                         / max(self.mean_loss_fraction, 1.0e-30))
-                gamma *= scale
-                loss_mean *= scale
-                self.encounter_loss_scale_sum += scale
-                self.encounter_loss_scale_count += 1
+                fitted = float(self.cell_variational["fitted_mean_loss"])
                 if self.loss_memory_rates is not None:
-                    # E[eps|z] / E[eps]: the loss follows the pair's energy
-                    # split; loss_mean stays the node mean, so the routing
-                    # covariate is the drawn loss itself, as in the CTC fit.
-                    gamma *= LossMemoryTable.scale(self.loss_memory_rates, eps_tr_i)
+                    # The loss law is the table's: eps = E[eps|z] * B/<B>, where
+                    # E[eps|z] = c_t z + c_r (1 - z) is the CTC conditional mean
+                    # per encounter and B the BL Beta shape.  Its node means are
+                    # the plain per-encounter means; the artifact's fitted mean
+                    # is not used for the scale, because an exchange kernel
+                    # fitted with weight E_f = (1 - eps) E reports an
+                    # E_f-weighted mean loss, low by about Var(eps)/(1 - eps).
+                    scale = (float(self.loss_memory_rates[2])
+                             / max(self.mean_loss_fraction, 1.0e-30))
+                    gamma *= scale * LossMemoryTable.scale(self.loss_memory_rates, eps_tr_i)
                     if not gamma < LOSS_CAP:
                         gamma = LOSS_CAP
                         self.loss_cap_events += 1
+                else:
+                    scale = fitted / max(self.mean_loss_fraction, 1.0e-30)
+                    gamma *= scale
+                # The routing covariate is the drawn loss itself, as in the CTC
+                # fit: loss_mean is the kernel's own node mean, so the row
+                # helper's rescaling is the identity on a node.
+                loss_mean = fitted
+                self.encounter_loss_scale_sum += scale
+                self.encounter_loss_scale_count += 1
                 if not gamma < 1.0:
                     raise RuntimeError(
                         f"encounter loss draw {gamma:.6g} is not below one")
