@@ -662,23 +662,6 @@ def test_paper_figures_refuse_an_unreleased_sweep(tmp_path):
     assert "scientific outputs" in proc.stderr
 
 
-def test_full_domain_correction_preflight_fails_closed(tmp_path):
-    surface = np.array([[0.8, 0.2, 2.0], [0.8, 1.0, 2.0],
-                        [0.95, 0.2, 3.0], [0.95, 1.0, 3.0]])
-    artifact = tmp_path / "artifact.npz"
-    np.savez_compressed(artifact, surface_coordinates=surface,
-                        beta_coordinates=surface[:-1])
-    command = [sys.executable,
-               str(ROOT / "hpc/require_full_domain_correction.py"),
-               str(artifact)]
-    blocked = subprocess.run(command, text=True, capture_output=True)
-    assert blocked.returncode != 0
-    assert "missing=1" in blocked.stderr
-    np.savez_compressed(artifact, surface_coordinates=surface,
-                        beta_coordinates=surface)
-    assert subprocess.run(command).returncode == 0
-
-
 def test_sweep_design_is_two_sided_and_includes_elastic_control(tmp_path):
     _, rows = make_manifest(tmp_path, "sweep", _test_artifact(tmp_path))
     cases = {(float(row["alpha"]), float(row["aspect_ratio"])) for row in rows}

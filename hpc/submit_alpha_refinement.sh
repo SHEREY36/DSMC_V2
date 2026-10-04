@@ -10,7 +10,7 @@
 #                                   production gate <─────────────────────────┤
 #                                   USF + HCS validation <────────────────────┘ -> analysis
 # The model folder models/microscopic_closure_v2_<TAG>/ holds the artifact
-# and its tables; DSMC_0D_v2/config/encounter_unit_model_v2.yaml points at it.
+# and its tables (the configuration pattern is DSMC_0D_v2/config/encounter_unit_model_final.yaml).
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"

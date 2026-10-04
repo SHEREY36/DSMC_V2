@@ -42,3 +42,6 @@ models/microscopic_closure_v2/
 results/hcs_demo/
 results/hcs_one/
 results/hcs_shape/
+
+# Superseded code, data and models (safe to delete; code is in history at tag closure-v2-final-v1)
+deprecated/

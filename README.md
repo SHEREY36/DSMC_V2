@@ -8,27 +8,37 @@ Schema 2.2 replaces the experimental schema-2.1 GMM/routing/VSS composition
 with an opt-in variational energy-partition and angular kernel. The complete
 legacy path remains available for controlled A/B comparisons.
 
-## Current model (2026-09-30)
+## Released model (tag `closure-v2-final-v1`)
 
-The production model is the encounter-unit closure
-(`DSMC_0D_v2/config/encounter_unit_model_v1.yaml`; the alpha-refined
-`encounter_unit_model_v2.yaml` is built by `hpc/submit_alpha_refinement.sh`):
+The shipping model is the folder `models/microscopic_closure_v2_final_v1/`
+(artifact, its three tables, `model_card.json`, a ready `model.yaml`, `SHA256SUMS`;
+see its `README.md`). `DSMC_0D_v2/config/default.yaml` and
+`encounter_unit_model_final.yaml` run it. In brief:
 
-- one DSMC event is one CTC encounter: the clock is the measured encounter
-  cross-section sigma_c(theta, AR), and the loss is drawn on the per-encounter
-  scale the kernels were fitted on (this supersedes the v1 polynomial clock and
-  the per-contact BL mean listed below);
-- the angular law conditions on the incoming energy partition;
-- the invariant (flow-moment) response is retired: the runtime does not apply
-  it and `invariant_corrections: true` is an error; the sections below that
-  describe it are kept as a record of the earlier design;
-- `DSMC_0D_v2/scripts/production_gate.py` is an experimental diagnostic, not
-  part of the model or its acceptance: it compares collisional productions with
-  exact CTC on identical replayed pairs. Nothing is fitted to it, and the USF and
-  HCS validation jobs do not wait on it.
+- one DSMC event is one CTC encounter: clock sigma_c(theta, AR) = mean projected
+  excluded area x measured dynamic factor;
+- loss eps = E[eps|z] B/<B>, E[eps|z] = c_t z + c_r (1 - z), B ~ Beta(1.21, 3.67);
+- exchange p(z'|z, eps), a conditional I-projection fitted with the
+  post-collision energy weight E_f;
+- angle p(c|z, z'), energy-tilted, with incoming-partition memory;
+- 627 nodes: alpha 0.50-0.95 in 0.05 steps and 1, AR 1.1-3, theta down to 0.0125
+  near the sphere; alpha = 1 and spheres are exact blocks;
+- the invariant (flow-moment) response is retired (`invariant_corrections: true`
+  is an error); the sections below that describe it are a record of the earlier design.
 
-Derivation and evidence: `reports/USF_ENCOUNTER_UNIT_2026-09-29.md` and the
-rendered `reports/usf_event_unit_methodology/usf_event_unit.html`.
+Formulation: `reports/DSMC_CLOSURE_FORMULATION_FINAL.md`. Validation against
+independent DEM: `results/validation/dem_comparison/final_v1/`. Development record:
+`reports/usf_event_unit_methodology/`.
+
+| step | command |
+|---|---|
+| build the model (CTC theta planes, fits, artifact, tables) | `hpc/submit_final_campaign.sh` |
+| validate it (USF, HCS, production gate, model card) | `TAG=final_v1_val hpc/submit_validation.sh` |
+| non-Gaussian HCS statistics | `hpc/submit_hcs_ng_campaign.sh` (`reports/HCS_NG_V8_FINAL_MODEL_2026-10-04.md`) |
+| figures against DEM | `DSMC_0D_v2/scripts/plot_final_validation.py` |
+
+`DSMC_0D_v2/scripts/production_gate.py` is a diagnostic, not part of the model:
+it compares collisional productions with exact CTC on identical replayed pairs.
 
 ## Data layout (results/)
 
@@ -37,18 +47,20 @@ All campaign data sit under `results/`, grouped by function
 
 | folder | contents |
 |---|---|
-| `ctc/nodes/training/<set>/` | Maxwellian CTC node shards the closure is fitted on (sentinel, ar_extension, ar_near_sphere, ar_low_theta, alpha_refinement, sentinel_early, ar_ge2) |
-| `ctc/nodes/holdout/`, `ctc/nodes/test/`, `ctc/nodes/v1/` | independent holdout, local pipeline tests, first-generation CTC |
-| `ctc/replays/<set>/` | exact CTC replays of DSMC-USF incoming pairs (production-gate replays, operator probes) |
-| `dsmc_harvest/<campaign>/` | DSMC-USF collision-flux pair reservoirs, the sources of the replays |
-| `closure_estimates/` | node fits, deep-QA reports, precompute payloads |
-| `validation/usf/`, `validation/hcs/` | DSMC USF and HCS campaigns and their analyses |
-| `validation/production_gate/<tag>/` | production-measure test summaries |
-| `validation/dem_comparison/` | DEM-DSMC comparison reports and figures |
-| `archive/` | dry runs and smoke tests |
+| `ctc/nodes/training/<set>/` | the Maxwellian CTC node shards of the 627 final nodes (sentinel, ar_extension, ar_near_sphere, ar_low_theta, alpha_refinement, theta_refinement) |
+| `ctc/nodes/holdout/` | independent CTC holdout |
+| `ctc/replays/gate_alpha_v1_20261001/` | exact CTC replays of DSMC-USF incoming pairs (production gate) |
+| `dsmc_harvest/usf_nonlinear_v2_20260928/` | DSMC-USF collision-flux pair reservoirs, the sources of the replays |
+| `closure_estimates/` | final node fits (`artifact_grid_final_v1`), precompute payloads, propensity cache |
+| `validation/usf/`, `validation/hcs/` | final-model USF and HCS campaigns (`*_final_v1_val`, local paired runs) and HCS-NG outputs |
+| `validation/production_gate/final_v1_val/` | production-measure diagnostic |
+| `validation/dem_comparison/final_v1/` | DEM-DSMC comparison figures and summary |
 
-Model folders stay in `models/`; each holds the artifact and its tables
-(`encounter_cross_section.json`, `angular_memory.json`, `loss_memory.json`).
+**Deprecated material.** Everything superseded or invalid (earlier models, their
+validations, the v1 CTC data, a duplicate zip, retired pipelines and their tests)
+was moved to `deprecated/` (git-ignored; `deprecated/MANIFEST.tsv` lists every
+move and why). It can be deleted; the code is in history at tag
+`closure-v2-final-v1`.
 
 ## Frozen physical assumptions
 
@@ -199,15 +211,21 @@ closure-overhead limits and all failure reasons.
 
 ## Runtime modes
 
-The production candidate is selected as one coupled mode:
+The released model is selected as one coupled mode:
 
 ```yaml
 microscopic_closure:
   routing: variational_v2
   angular: variational_v2
-  artifact: models/microscopic_closure_v2/closure_v2.npz
-  invariant_corrections: true
+  artifact: models/microscopic_closure_v2_final_v1/closure_v2.npz
+  event_unit: encounter
+  encounter_cross_section: models/microscopic_closure_v2_final_v1/encounter_cross_section.json
+  angular_memory: models/microscopic_closure_v2_final_v1/angular_memory.json
+  loss_memory: models/microscopic_closure_v2_final_v1/loss_memory.json
 ```
+
+The paragraphs below describe the retired invariant-response machinery and
+are kept as a record.
 
 Correction support is strict by default. HCS production and every ordinary
 run fail their runtime gate when the invariant state leaves the independently
@@ -299,35 +317,24 @@ leaves every completed run in place and moves each incomplete directory intact
 under `results/quarantine/ctc_cancel_<timestamp>` so a fresh run cannot
 overwrite it. Nothing is deleted.
 
-Then build, generate the manifest on the login node, and use the conventional
-Negishi submission for the 36-node, 5,000-hit sentinel:
+Then build, generate the manifest on the login node, and submit the 36-node
+sentinel CTC array:
 
 ```bash
 make -C HS_CTC_v2/build clean all
 hpc/python.sh hpc/make_closure_manifest.py \
-  --stage sentinel --samples 5000 --output manifests/closure_sentinel.csv
-sbatch job_closure_sentinel.slurm
+  --stage sentinel --samples 200000 --output manifests/closure_sentinel.csv
+bash hpc/submit_manifest.sh manifests/closure_sentinel.csv
 ```
 
 Each completed shard includes `runtime_v2.json`, so budgets use measured
-Negishi hits/second and attempts/hit. When all 36 `_SUCCESS` markers exist:
-
-Completed target directories are skipped. An existing target without
-`_SUCCESS` causes the task to fail closed instead of overwriting partial data;
-move that directory to `results/quarantine` before resubmitting it.
-
-```bash
-FIT_JOB=$(sbatch --parsable job_estimate_closure_sentinel.slurm)
-FIT_JOB=${FIT_JOB%%;*}
-sbatch --dependency=afterany:"$FIT_JOB" job_summarize_closure_sentinel.slurm
-cat results/closure_estimates/sentinel_report.json
-```
-
-Use `afterany`, not `afterok`, for the sentinel summary. An infeasible moment or
-projection is a scientific gate result that must appear in the report, rather
-than leaving the summary permanently pending with `DependencyNeverSatisfied`.
-Missing or corrupt binary input still makes the fit task fail hard, and the
-summary refuses release when any of the 36 node estimates is absent.
+Negishi hits/second and attempts/hit. Completed target directories are skipped.
+An existing target without `_SUCCESS` causes the task to fail closed instead of
+overwriting partial data; move that directory to `results/quarantine` before
+resubmitting it. The aspect-ratio extensions come from
+`hpc/make_extension_manifest.py`, the alpha and theta planes from
+`hpc/submit_alpha_refinement.sh` and `hpc/submit_final_campaign.sh`, which also
+fit every node and build the artifact.
 
 The sentinel axes are `alpha={0.5,0.8,0.95,1}`, `theta={0.2,1,2}`, and
 `AR={1.1,2,3}`. Do not submit the full grids unless
