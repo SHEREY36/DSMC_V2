@@ -14,6 +14,7 @@
 	DOUBLE PRECISION :: D12, RV12
 	INTEGER :: num_threads, event_id, attempt_number
 	LOGICAL :: accepted
+	INTEGER(KIND=8) :: nstep
 
 	! Saved pre-collision state for elastic replay (PRIVATE per thread)
 	DOUBLE PRECISION :: POS_SAVE(2,3), VEL_SAVE(2,3), OMEGA_SAVE(2,3)
@@ -31,7 +32,7 @@
 
 	write(*,*) 'Beginning collisions'
 
-!$OMP PARALLEL PRIVATE(R12, E12, D12, RV12, accepted, attempt_number, &
+!$OMP PARALLEL PRIVATE(R12, E12, D12, RV12, accepted, attempt_number, nstep, &
 !$OMP&    POS_SAVE, VEL_SAVE, OMEGA_SAVE,               &
 !$OMP&    U_SAVE, UX_SAVE, UY_SAVE)                     &
 !$OMP SHARED(NTRY, NHIT, NSAMPLES)
@@ -65,7 +66,13 @@
 
 		! ---- ELASTIC PASS (first) ----
 		ELASTIC_PASS = .TRUE.
+		nstep = 0
 		DO WHILE(.TRUE.)
+			nstep = nstep + 1
+			IF (nstep > MAX_STEPS_PASS) THEN
+				write(0,*) 'step guard: elastic pass of event', event_id, 'exceeded', MAX_STEPS_PASS, 'steps'
+				stop 5
+			END IF
 			PREV_CONTACT = CONTACT
 			CALL INTEGRATE_EOM
 			IF(.NOT.PREV_CONTACT.AND.CONTACT) NPHIT = NPHIT + 1
@@ -91,10 +98,22 @@
 		NPHIT = 0;         HIT = .FALSE.
 
 		! ---- INELASTIC PASS (second) ----
+		nstep = 0
 		DO WHILE(.TRUE.)
+			nstep = nstep + 1
+			IF (nstep > MAX_STEPS_PASS) THEN
+				write(0,*) 'step guard: inelastic pass of event', event_id, 'exceeded', MAX_STEPS_PASS, 'steps'
+				stop 5
+			END IF
 			PREV_CONTACT = CONTACT
 			CALL INTEGRATE_EOM
 			IF(.NOT.PREV_CONTACT.AND.CONTACT) NPHIT = NPHIT + 1
+			! steps per contact (diagnostics)
+			IF (CONTACT) CD_STEPS_CUR = CD_STEPS_CUR + 1
+			IF (PREV_CONTACT.AND..NOT.CONTACT) THEN
+				CD_MIN_STEPS = MIN(CD_MIN_STEPS, CD_STEPS_CUR)
+				CD_STEPS_CUR = 0
+			END IF
 
 			R12 = POS(2,:) - POS(1,:)
 			D12 = SQRT(DOT_PRODUCT(R12,R12))

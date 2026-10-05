@@ -38,6 +38,22 @@
 	LOGICAL :: ELASTIC_PASS
 	!$OMP THREADPRIVATE(ELASTIC_PASS)
 
+	! Contact diagnostics of the current (inelastic) trajectory, written to the
+	! sidecar contact_diag_v2.bin in the order of outcomes_v2.bin:
+	!   1 vn_contact_first   normal approach speed of the contact points at first contact
+	!   2 vn_centre_first    the same with the centre velocities only
+	!   3 dmax_over_d        largest overlap / diameter
+	!   4 min_steps_contact  fewest integration steps of any contact
+	!   5 n_dpos_steps       contact steps in which the damping did positive work
+	!   6 n_contact_steps    contact steps
+	!   7 w_dpos             positive damping work (time integral of max(P_d, 0))
+	!   8 w_dabs             time integral of |P_d|
+	INTEGER, PARAMETER :: N_DIAG_REAL = 8
+	DOUBLE PRECISION :: CD_VN_FIRST, CD_VN_CENTRE_FIRST, CD_DMAX, CD_W_DPOS, CD_W_DABS
+	INTEGER(INT64) :: CD_MIN_STEPS, CD_STEPS_CUR, CD_N_DPOS, CD_N_STEPS
+	!$OMP THREADPRIVATE(CD_VN_FIRST, CD_VN_CENTRE_FIRST, CD_DMAX, CD_W_DPOS, CD_W_DABS, &
+	!$OMP& CD_MIN_STEPS, CD_STEPS_CUR, CD_N_DPOS, CD_N_STEPS)
+
 	INTEGER, PARAMETER :: MAX_BUFFER = 1000
 	DOUBLE PRECISION, DIMENSION(MAX_BUFFER, 10) :: chi_buffer
 	DOUBLE PRECISION, DIMENSION(MAX_BUFFER, 7) :: ef_buffer
@@ -62,10 +78,11 @@
 	INTEGER(INT64), DIMENSION(MAX_BUFFER) :: outcome_event, outcome_index, outcome_block
 	INTEGER(INT32), DIMENSION(MAX_BUFFER) :: outcome_ncontact
 	REAL(REAL64), DIMENSION(MAX_BUFFER, N_OUTCOME_REAL) :: outcome_real
+	REAL(REAL64), DIMENSION(MAX_BUFFER, N_DIAG_REAL) :: diag_real
 	INTEGER :: outcome_buffer_idx
 	!$OMP THREADPRIVATE(attempt_event, attempt_index, attempt_block, attempt_hit, &
 	!$OMP& attempt_real, attempt_buffer_idx, outcome_event, outcome_index,        &
-	!$OMP& outcome_block, outcome_ncontact, outcome_real, outcome_buffer_idx)
+	!$OMP& outcome_block, outcome_ncontact, outcome_real, outcome_buffer_idx, diag_real)
 
 	contains
 
@@ -87,15 +104,16 @@
 		IF (attempt_buffer_idx >= MAX_BUFFER) CALL FLUSH_ATTEMPT_BUFFER()
 	END SUBROUTINE BUFFER_ATTEMPT
 
-	SUBROUTINE BUFFER_OUTCOME(event_id, try_index, n_contact, values)
+	SUBROUTINE BUFFER_OUTCOME(event_id, try_index, n_contact, values, diag_values)
 		INTEGER, INTENT(IN) :: event_id, try_index, n_contact
-		REAL(REAL64), INTENT(IN) :: values(N_OUTCOME_REAL)
+		REAL(REAL64), INTENT(IN) :: values(N_OUTCOME_REAL), diag_values(N_DIAG_REAL)
 		outcome_buffer_idx = outcome_buffer_idx + 1
 		outcome_event(outcome_buffer_idx) = INT(event_id, INT64)
 		outcome_index(outcome_buffer_idx) = INT(try_index, INT64)
 		outcome_block(outcome_buffer_idx) = MOD(INT(event_id - 1, INT64), 128_INT64)
 		outcome_ncontact(outcome_buffer_idx) = INT(n_contact, INT32)
 		outcome_real(outcome_buffer_idx,:) = values
+		diag_real(outcome_buffer_idx,:) = diag_values
 		IF (outcome_buffer_idx >= MAX_BUFFER) CALL FLUSH_OUTCOME_BUFFER()
 	END SUBROUTINE BUFFER_OUTCOME
 
@@ -119,8 +137,11 @@
 		DO i = 1, outcome_buffer_idx
 			WRITE(1012) outcome_event(i), outcome_index(i), outcome_block(i), &
 				outcome_ncontact(i), INT(ENSEMBLE_ID, INT32), outcome_real(i,:)
+			! sidecar in the same critical section: identical record order
+			WRITE(1013) outcome_event(i), outcome_index(i), diag_real(i,:)
 		END DO
 		FLUSH(1012)
+		FLUSH(1013)
 !$OMP END CRITICAL(v2_outcome_write)
 		outcome_buffer_idx = 0
 	END SUBROUTINE FLUSH_OUTCOME_BUFFER

@@ -50,12 +50,16 @@ def main():
         "event_unit": "encounter",
         "requires": ["encounter_cross_section", "angular_memory", "loss_memory"],
         "n_nodes": len(nodes),
+        "contact_model_id": loss.get("contact_model_id", "R1-legacy"),
         "grid": grid,
         "laws": {
             "clock": "sigma_c(theta, AR) = mean projected excluded area x measured dynamic factor "
                      "(encounter_cross_section.json)",
-            "loss": "eps = E[eps|z] B/<B>, E[eps|z] = c_t z + c_r (1 - z), B ~ Beta(1.21, 3.67) "
-                    "(loss_memory.json; node means are plain per-encounter means)",
+            "loss": ("eps ~ Beta(kappa mu, kappa (1 - mu)), mu = E[eps|z] = c_t z + c_r (1 - z), "
+                     "kappa per node (loss_memory.json, schema loss-memory-v2)"
+                     if loss.get("schema") == "loss-memory-v2" else
+                     "eps = E[eps|z] B/<B>, E[eps|z] = c_t z + c_r (1 - z), B ~ Beta(1.21, 3.67) "
+                     "(loss_memory.json; node means are plain per-encounter means)"),
             "exchange": "conditional I-projection p(z'|z, eps) per node, fitted with the "
                         "post-collision energy weight E_f (closure_v2.npz)",
             "angle": "p(c|z, z') ~ exp[(eta1 + xi z' + rho1 z) c + (eta2 + zeta z' + rho2 z) P2(c)], "

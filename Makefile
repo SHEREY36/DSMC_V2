@@ -18,7 +18,8 @@ test-python:
 
 smoke: build
 	mkdir -p results/local_smoke
-	cd HS_CTC_v2 && OMP_NUM_THREADS=1 ./build/SphCyl 0.8 1.0 1.0 1.0 ../results/local_smoke 123 32 v2
+	cd HS_CTC_v2 && OMP_NUM_THREADS=1 CTC_DAMP_VELOCITY=contact CTC_FORCE_LAW=hertz \
+		CTC_DT_RULE=energy_bound CTC_DT_DIVISOR=200 ./build/SphCyl 0.8 1.0 1.0 1.0 ../results/local_smoke 123 32 v2
 	$(PYTHON) HS_CTC_v2/scripts/finalize_run.py results/local_smoke
 	@echo "CTC binary/schema smoke passed; coefficient recovery is covered by the synthetic estimator test."
 

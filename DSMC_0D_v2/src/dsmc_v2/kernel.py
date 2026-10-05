@@ -285,7 +285,13 @@ class SpherocylinderKernel:
                 # fitted with.  The routing covariate is then the drawn loss
                 # itself, so energy removal and routing see the same number.
                 fitted = float(self.cell_variational["fitted_mean_loss"])
-                if self.loss_memory_rates is not None:
+                if self.loss_memory_rates is not None and np.isfinite(self.loss_memory_rates[3]):
+                    # Bounded loss law (loss-memory-v2, contact model C1):
+                    # eps ~ Beta(kappa mu, kappa (1 - mu)), mu = E[eps|z] = c_t z + c_r (1 - z);
+                    # 0 < eps < 1 by construction, mean mu exactly.
+                    scale = 1.0
+                    gamma = LossMemoryTable.draw(self.loss_memory_rates, eps_tr_i, np.random)
+                elif self.loss_memory_rates is not None:
                     # The loss law is the table's: eps = E[eps|z] * B/<B>, where
                     # E[eps|z] = c_t z + c_r (1 - z) is the CTC conditional mean
                     # per encounter and B the BL Beta shape.  Its node means are

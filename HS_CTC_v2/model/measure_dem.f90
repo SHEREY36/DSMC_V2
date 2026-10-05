@@ -18,7 +18,7 @@
 	double precision :: delta_E_tr, delta_E_rot, delta_E_total, f_tr
 	double precision :: elastic_rel_error, angle_cos
 	double precision :: omega1_post(3), omega2_post(3)
-	real(real64) :: outcome_values(N_OUTCOME_REAL)
+	real(real64) :: outcome_values(N_OUTCOME_REAL), diag_values(N_DIAG_REAL)
 
 	! Scattering Angle
 	VRELF = VEL(2,:) - VEL(1,:)
@@ -181,7 +181,15 @@
 		outcome_values(59) = b_out
 		outcome_values(60:62) = vrel0_unit
 		outcome_values(63:65) = vrelf_unit
-		CALL BUFFER_OUTCOME(event_id, try_index, NPHIT, outcome_values)
+		diag_values(1) = CD_VN_FIRST
+		diag_values(2) = CD_VN_CENTRE_FIRST
+		diag_values(3) = CD_DMAX
+		diag_values(4) = DBLE(MERGE(CD_MIN_STEPS, CD_STEPS_CUR, CD_MIN_STEPS < HUGE(CD_MIN_STEPS)))
+		diag_values(5) = DBLE(CD_N_DPOS)
+		diag_values(6) = DBLE(CD_N_STEPS)
+		diag_values(7) = CD_W_DPOS
+		diag_values(8) = CD_W_DABS
+		CALL BUFFER_OUTCOME(event_id, try_index, NPHIT, outcome_values, diag_values)
 	END IF
 
 	! Flush if buffer full

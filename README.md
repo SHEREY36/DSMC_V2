@@ -69,7 +69,8 @@ The following are deliberate model choices and are not refitted:
 - the v1 no-time-counter candidate clock;
 - the v1 polynomial collision cross-section;
 - the v1 scalar Borgnakke–Larsen loss draw;
-- the v1 CTC normal damping based on centre translational relative velocity;
+- (replaced 2026-10-05 by contact model C1, see `HS_CTC_v2/README.md`) the v1 CTC normal
+  damping based on centre translational relative velocity, with a linear force law;
 - the v1 contact integration at 50 steps per Hertzian contact time. Refining it
   is now cheap (`CTC_DT_DIVISOR`), and it carries a measured 1.7% per-event and
   0.5% ensemble-mean discretisation error in the dissipated energy, so this is

@@ -10,7 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
-from dsmc_v2_contracts import DIAGNOSTIC_NAMES, FEATURE_NAMES, cell_invariants, load_run, validate_run
+from dsmc_v2_contracts import (DIAGNOSTIC_NAMES, FEATURE_NAMES, cell_invariants, contact_model_id,
+                               load_run, validate_run)
 from dsmc_v2_contracts.io import AI, OI, _vec
 
 from .fit_angular import fit_angular_kernel
@@ -85,9 +86,21 @@ def frozen_cross_section(aspect_ratio: float, diameter: float = 1.0) -> float:
     return float(np.pi * diameter * diameter * (0.32 * ar * ar + 0.694 * ar - 0.0213))
 
 
+def required_contact_model() -> str:
+    """Contact model the fit accepts: CLOSURE_CONTACT_MODEL (default C1, 'any' to disable)."""
+    return os.environ.get("CLOSURE_CONTACT_MODEL", "C1")
+
+
 def _check_compatible(runs) -> None:
     if not runs:
         raise ValueError("at least one run directory is required")
+    models = sorted({contact_model_id(run.metadata) for run in runs})
+    if len(models) > 1:
+        raise ValueError(f"shards of different contact models cannot be pooled: {models}")
+    required = required_contact_model()
+    if required != "any" and models[0] != required:
+        raise ValueError(f"shards are contact model {models[0]}, this fit requires {required} "
+                         "(set CLOSURE_CONTACT_MODEL to fit another model on purpose)")
     reference = runs[0].metadata
     for key in ("alpha", "theta", "aspect_ratio", "velocity_scale", "omega_scale",
                 "proposal_area", "mass", "moi_perpendicular", "ensemble_id"):

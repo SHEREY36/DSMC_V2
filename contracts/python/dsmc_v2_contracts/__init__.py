@@ -14,16 +14,24 @@ from .features import (
 )
 from .io import (
     ATTEMPT_DTYPE,
+    CONTACT_DIAG_DTYPE,
+    CONTACT_DIAG_NAMES,
     OUTCOME_DTYPE,
     RunDataV2,
+    contact_model_id,
     finalize_run,
+    load_contact_diag,
     load_run,
     validate_run,
 )
 
 __all__ = [
     "ATTEMPT_DTYPE",
+    "CONTACT_DIAG_DTYPE",
+    "CONTACT_DIAG_NAMES",
     "OUTCOME_DTYPE",
+    "contact_model_id",
+    "load_contact_diag",
     "FEATURE_NAMES",
     "DIAGNOSTIC_NAMES",
     "ALL_INVARIANT_NAMES",

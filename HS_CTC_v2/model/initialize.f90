@@ -59,6 +59,9 @@
 		filepath = TRIM(output_dir) // '/outcomes_v2.bin'
 		open(unit=1012, status='replace', file=filepath, access='stream', &
 			form='unformatted', convert='little_endian')
+		filepath = TRIM(output_dir) // '/contact_diag_v2.bin'
+		open(unit=1013, status='replace', file=filepath, access='stream', &
+			form='unformatted', convert='little_endian')
 	END IF
 
 	!open(unit=2925, status='replace', file='ovito.txt')
@@ -73,6 +76,44 @@
 	IF (ENVLEN > 0) FAST_APPROACH = (ENVBUF(1:1) /= '0')
 	CALL GET_ENVIRONMENT_VARIABLE('CTC_DT_DIVISOR', ENVBUF, ENVLEN)
 	IF (ENVLEN > 0) READ(ENVBUF(1:ENVLEN),*) DT_DIVISOR
+	! contact model: all three options are required (no implicit model)
+	CALL GET_ENVIRONMENT_VARIABLE('CTC_DAMP_VELOCITY', DAMP_VELOCITY, ENVLEN)
+	CALL GET_ENVIRONMENT_VARIABLE('CTC_FORCE_LAW', FORCE_LAW, ENVLEN)
+	CALL GET_ENVIRONMENT_VARIABLE('CTC_DT_RULE', DT_RULE, ENVLEN)
+	SELECT CASE (TRIM(DAMP_VELOCITY))
+	CASE ('contact'); DAMP_CONTACT = .TRUE.
+	CASE ('center');  DAMP_CONTACT = .FALSE.
+	CASE DEFAULT
+		write(*,*) 'set CTC_DAMP_VELOCITY to contact or center (no default)'
+		stop 2
+	END SELECT
+	SELECT CASE (TRIM(FORCE_LAW))
+	CASE ('hertz');  HERTZ_LAW = .TRUE.
+	CASE ('linear'); HERTZ_LAW = .FALSE.
+	CASE DEFAULT
+		write(*,*) 'set CTC_FORCE_LAW to hertz or linear (no default)'
+		stop 2
+	END SELECT
+	SELECT CASE (TRIM(DT_RULE))
+	CASE ('energy_bound'); DT_ENERGY_BOUND = .TRUE.
+	CASE ('linear_tc');    DT_ENERGY_BOUND = .FALSE.
+	CASE DEFAULT
+		write(*,*) 'set CTC_DT_RULE to energy_bound or linear_tc (no default)'
+		stop 2
+	END SELECT
+	IF (DAMP_CONTACT .AND. HERTZ_LAW .AND. DT_ENERGY_BOUND) THEN
+		CONTACT_MODEL_ID = 'C1'
+	ELSE IF (.NOT.DAMP_CONTACT .AND. .NOT.HERTZ_LAW .AND. .NOT.DT_ENERGY_BOUND) THEN
+		CONTACT_MODEL_ID = 'R1'
+	ELSE
+		CONTACT_MODEL_ID = 'custom'
+	END IF
+	IF (HERTZ_LAW .AND. .NOT.DT_ENERGY_BOUND) THEN
+		write(*,*) 'the Hertz law has no fixed contact time: use CTC_DT_RULE=energy_bound'
+		stop 2
+	END IF
+	write(*,*) 'contact model ', TRIM(CONTACT_MODEL_ID), ': damping velocity ', TRIM(DAMP_VELOCITY), &
+		', force law ', TRIM(FORCE_LAW), ', time step ', TRIM(DT_RULE), ', steps per contact ', DT_DIVISOR
 	PVOL = PI*(DIA**3.D0)/6.D0 + PI*LCYL*(RAD**2.D0)
 	RHO = MASS/PVOL
 	
@@ -88,16 +129,23 @@
 		omoI(I) = 1.D0/moI(I)
 	END DO
 
-	! Hertzian Spring
+	! Contact stiffness: the Hertz prefactor 4/3 E* sqrt(R*), R* = D/4
 	EStar = EYoung/(2.D0*(1.D0-(GPoisson**2.D0)))
 	KN = 4.D0/3.D0*SQRT(RAD*0.5D0)*EStar
-	! Damper
+	! Damper, exact head-on restitution ALPHA_PP with m* = m/2
+	!   Hertz-Tsuji (C1): CN = sqrt(5) sqrt(KN m*) BETA   (force CN DN^0.25 VRN)
+	!   linear (v1)     : CN = 2 BETA sqrt(m* KN)          (force CN VRN; KN used as a linear stiffness)
 	BETA = -LOG(ALPHA_PP)/(SQRT((PI**2.D0)+(LOG(ALPHA_PP))**2.D0))
-	CN = 2.D0*BETA*SQRT(MASS*0.5D0*KN)
-	! Use one alpha-independent integration step for common random numbers along
-	! an alpha line. The elastic Hertz contact time is also the conservative
-	! reference replay time scale; damping only changes the force law.
+	IF (HERTZ_LAW) THEN
+		CN = SQRT(5.D0)*SQRT(KN*MASS*0.5D0)*BETA
+	ELSE
+		CN = 2.D0*BETA*SQRT(MASS*0.5D0*KN)
+	END IF
+	! Linear contact time (v1 time-step rule): one alpha-independent step
+	! for common random numbers along an alpha line.
 	TCOLL = PI/SQRT(KN/(MASS*0.5D0))
+	! smallest effective normal mass of a contact: lever arm L/2 on both rods
+	OMEFF_MIN = 2.D0/MASS + 2.D0*hLCYL**2.D0/moI(2)
 
 ! Sampling Temperatures
 !---------------------------------------------------------
@@ -141,7 +189,21 @@
 		END IF
 		write(1011,'(A)') '  "rng_contract": "event_stream_common_across_alpha",'
 		write(1011,'(A,A,A)') '  "output_mode": "', TRIM(OUTPUT_MODE), '",' 
-		write(1011,'(A)') '  "normal_contact_velocity": "translational_relative_velocity_only",'
+		IF (DAMP_CONTACT) THEN
+			write(1011,'(A)') '  "normal_contact_velocity": "contact_point",'
+		ELSE
+			write(1011,'(A)') '  "normal_contact_velocity": "translational_relative_velocity_only",'
+		END IF
+		write(1011,'(A,A,A)') '  "force_law": "', TRIM(FORCE_LAW), '",'
+		write(1011,'(A,A,A)') '  "dt_rule": "', TRIM(DT_RULE), '",'
+		write(1011,'(A,ES24.16,A)') '  "dt_divisor": ', DT_DIVISOR, ','
+		write(1011,'(A,A,A)') '  "contact_model_id": "', TRIM(CONTACT_MODEL_ID), '",'
+		write(1011,'(A,ES24.16,A)') '  "young_modulus": ', EYoung, ','
+		write(1011,'(A,ES24.16,A)') '  "poisson_ratio": ', GPoisson, ','
+		write(1011,'(A,ES24.16,A)') '  "kn": ', KN, ','
+		write(1011,'(A,ES24.16,A)') '  "cn": ', CN, ','
+		write(1011,'(A)') '  "contact_diag_file": "contact_diag_v2.bin",'
+		write(1011,'(A,I0,A)') '  "contact_diag_record_bytes": ', 16 + 8*N_DIAG_REAL, ','
 		write(1011,'(A)') '  "finalized": false'
 		write(1011,'(A)') '}'
 		close(1011)

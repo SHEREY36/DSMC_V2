@@ -14,6 +14,18 @@ both almost equally.  The runtime multiplies the encounter-scale loss draw by
 s(z) = E[eps | z] / E[eps], so the node mean is unchanged and the loss follows
 the pair's own energy split.  Writes the table read by
 dsmc_v2.loss_memory.LossMemoryTable.
+
+Schema loss-memory-v2 (contact model C1) adds the loss law itself:
+
+    eps | z ~ Beta(kappa mu(z), kappa (1 - mu(z))),   mu(z) = c_t z + c_r (1 - z),
+
+a Beta law with the fitted conditional mean, so 0 < eps < 1 by construction
+(the v1 draw eps = E[eps|z] B/<B> with B ~ Beta(1.21, 3.67) reached eps > 1 when
+E[eps|z] > 0.248).  kappa is the maximum-likelihood concentration at the node
+given mu(z); ks_pit is the Kolmogorov-Smirnov distance of the probability
+integral transform F(eps_i | z_i) from uniform (0 = the law reproduces the
+whole conditional distribution).  Elastic nodes (alpha = 1) have no loss and
+no kappa.
 """
 import argparse
 import glob
@@ -22,8 +34,11 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
+from scipy import optimize, special, stats
 
-from dsmc_v2_contracts.io import OI, _vec, load_run
+from dsmc_v2_contracts.io import OI, _vec, contact_model_id, load_run
+
+MU_FLOOR = 1.0e-8
 
 
 def node_events(directories):
@@ -45,18 +60,43 @@ def node_events(directories):
     return np.vstack(parts)
 
 
+def fit_kappa(eps, mu):
+    """Maximum-likelihood concentration of Beta(kappa mu, kappa (1 - mu)) for fixed mu."""
+    x = np.clip(eps, 1.0e-12, 1.0 - 1.0e-12)
+    lx, l1x = np.log(x), np.log1p(-x)
+
+    def nll(log_kappa):
+        k = np.exp(log_kappa)
+        a, b = k * mu, k * (1.0 - mu)
+        return -np.sum(special.gammaln(k) - special.gammaln(a) - special.gammaln(b)
+                       + (a - 1.0) * lx + (b - 1.0) * l1x)
+
+    res = optimize.minimize_scalar(nll, bounds=(np.log(1.0e-2), np.log(1.0e5)), method="bounded",
+                                   options={"xatol": 1.0e-6})
+    kappa = float(np.exp(res.x))
+    pit = special.betainc(kappa * mu, kappa * (1.0 - mu), x)
+    ks = float(stats.kstest(pit, "uniform").statistic)
+    return kappa, ks
+
+
 def fit_node(item):
     key, directories = item
     events = node_events(directories)
     z, eps, energy = events.T
     design = np.column_stack([z, 1.0 - z])
     (c_t, c_r), *_ = np.linalg.lstsq(design, eps, rcond=None)
+    if key[0] < 1.0 and np.any(eps > 0.0):
+        mu = np.clip(c_t * z + c_r * (1.0 - z), MU_FLOOR, 1.0 - MU_FLOOR)
+        kappa, ks_pit = fit_kappa(eps, mu)
+    else:
+        kappa, ks_pit = None, None
     mean = float(eps.mean())
     edges = np.quantile(z, np.linspace(0.0, 1.0, 6))
     bins = np.clip(np.digitize(z, edges[1:-1]), 0, 4)
     quintile = [float(eps[bins == k].mean()) for k in range(5)]
     linear = [float(c_t * z[bins == k].mean() + c_r * (1.0 - z[bins == k].mean())) for k in range(5)]
     return key, {"c_t": float(c_t), "c_r": float(c_r), "eps_mean": mean,
+                 "kappa": kappa, "ks_pit": ks_pit, "eps_max": float(eps.max()),
                  "z_mean": float(z.mean()), "events": int(len(z)),
                  "quintile_eps": quintile, "quintile_linear": linear,
                  "energy_weighted_ratio": float(np.sum(eps * energy) / energy.sum() / mean),
@@ -70,7 +110,7 @@ def main():
     parser.add_argument("--workers", type=int, default=int(os.environ.get("SLURM_CPUS_PER_TASK", 4)))
     parser.add_argument("shard_globs", nargs="+")
     args = parser.parse_args()
-    nodes = {}
+    nodes, models = {}, set()
     for pattern in args.shard_globs:
         for directory in sorted(glob.glob(pattern)):
             if not (os.path.isfile(os.path.join(directory, "metadata_v2.json"))
@@ -82,6 +122,9 @@ def main():
             key = (round(float(md["alpha"]), 6), round(float(md["theta"]), 6),
                    round(float(md["aspect_ratio"]), 6))
             nodes.setdefault(key, []).append(directory)
+            models.add(contact_model_id(md))
+    if len(models) != 1:
+        raise SystemExit(f"shards of several contact models cannot share one table: {sorted(models)}")
     report = []
     with ProcessPoolExecutor(args.workers) as pool:
         for key, fitted in pool.map(fit_node, sorted(nodes.items())):
@@ -90,10 +133,15 @@ def main():
                 raise SystemExit(f"loss-memory fit failed at {key}: {fitted}")
             report.append({"alpha": key[0], "theta": key[1], "AR": key[2], **fitted})
             print(json.dumps({k: report[-1][k] for k in
-                              ("alpha", "theta", "AR", "c_t", "c_r", "eps_mean", "events")}), flush=True)
-    json.dump({"schema": "loss-memory-v1",
-               "measure": "CTC encounters (raw hits), unweighted least squares",
-               "law": "E[eps|z] = c_t z + c_r (1 - z); runtime scale s(z) = E[eps|z] / eps_mean",
+                              ("alpha", "theta", "AR", "c_t", "c_r", "eps_mean", "kappa",
+                               "ks_pit", "events")}), flush=True)
+    kappas = np.array([r["kappa"] for r in report if r["kappa"] is not None])
+    json.dump({"schema": "loss-memory-v2", "contact_model_id": models.pop(),
+               "measure": "CTC encounters (raw hits); (c_t, c_r) by least squares, kappa by maximum "
+                          "likelihood given mu(z)",
+               "law": "eps | z ~ Beta(kappa mu, kappa (1 - mu)), mu = c_t z + c_r (1 - z)",
+               "kappa_summary": {"min": float(kappas.min()), "median": float(np.median(kappas)),
+                                 "max": float(kappas.max())} if len(kappas) else None,
                "nodes": report}, open(args.output, "w"), indent=1)
 
 

@@ -137,7 +137,19 @@
         Et_00 = MASS*(DOT_PRODUCT(V1COM,V1COM) + DOT_PRODUCT(V2COM,V2COM))
 	
 	
-	dt = TCOLL/DT_DIVISOR
+	IF (DT_ENERGY_BOUND) THEN
+		! Hertz contact time at the largest normal speed the pair can reach:
+		! (1/2) m_eff v_n^2 <= E (pair kinetic energy, centre-of-mass frame) and
+		! m_eff >= m_eff,min, so v_n <= g_b = sqrt(2 E OMEFF_MIN); the contact time
+		! 2.94 delta_max/g of a head-on Hertz impact at g_b with mass m_eff,min is a
+		! lower bound for every contact of the encounter. alpha-independent.
+		dt = HERTZ_CONTACT_TIME(0.5D0*E0)/DT_DIVISOR
+	ELSE
+		dt = TCOLL/DT_DIVISOR
+	END IF
+	CD_VN_FIRST = 0.D0; CD_VN_CENTRE_FIRST = 0.D0; CD_DMAX = 0.D0
+	CD_W_DPOS = 0.D0; CD_W_DABS = 0.D0
+	CD_MIN_STEPS = HUGE(CD_MIN_STEPS); CD_STEPS_CUR = 0; CD_N_DPOS = 0; CD_N_STEPS = 0
 	! For calls to outputs
 	VREL0 = VEL(2,:) - VEL(1,:)
 	WREL0 = OMEGA(2,:) - OMEGA(1,:)
@@ -145,6 +157,15 @@
 	HIT = .FALSE.
 	CONTACT = .FALSE.; NPHIT = 0
 	RETURN
+	CONTAINS
+	DOUBLE PRECISION FUNCTION HERTZ_CONTACT_TIME(EPAIR)
+	DOUBLE PRECISION, INTENT(IN) :: EPAIR
+	DOUBLE PRECISION :: GB, MMIN, DMAX
+	MMIN = 1.D0/OMEFF_MIN
+	GB = SQRT(2.D0*EPAIR*OMEFF_MIN)
+	DMAX = (5.D0*MMIN*GB*GB/(4.D0*KN))**0.4D0
+	HERTZ_CONTACT_TIME = 2.94D0*DMAX/GB
+	END FUNCTION HERTZ_CONTACT_TIME
 	end subroutine INIT_PART
 
 	SUBROUTINE INIT_PART_REPLAY(event_id, attempt_number)

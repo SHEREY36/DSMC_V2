@@ -33,6 +33,16 @@ printf 'task=%s stage=%s role=%s alpha=%s theta=%s AR=%s ensemble=%s seed=%s sam
 if [[ "${DSMC_DRY_RUN:-0}" == 1 ]]; then
     exit 0
 fi
+# The contact model is never implicit: the job environment must name it (model C1:
+# CTC_DAMP_VELOCITY=contact CTC_FORCE_LAW=hertz CTC_DT_RULE=energy_bound CTC_DT_DIVISOR=200).
+for var in CTC_DAMP_VELOCITY CTC_FORCE_LAW CTC_DT_RULE CTC_DT_DIVISOR; do
+    if [[ -z "${!var:-}" ]]; then
+        printf 'ERROR: %s is not set; the CTC contact model must be explicit.\n' "$var" >&2
+        exit 2
+    fi
+done
+export CTC_DAMP_VELOCITY CTC_FORCE_LAW CTC_DT_RULE CTC_DT_DIVISOR
+
 if [[ ! -x "$ROOT/HS_CTC_v2/build/SphCyl" ]]; then
     printf 'ERROR: HS_CTC_v2/build/SphCyl is missing. Run the documented build first.\n' >&2
     exit 2

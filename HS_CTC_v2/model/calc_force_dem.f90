@@ -3,10 +3,11 @@
 	USE PARTICLES
 	USE CONSTANTS
 	USE OUTPUT
+	USE RUN_PARAM, ONLY: DT, DAMP_CONTACT, HERTZ_LAW
 	implicit none
 	DOUBLE PRECISION, DIMENSION(3) :: RHO1, RHO2, E21
 	DOUBLE PRECISION, DIMENSION(3) :: VR, OMEGAI, OMEGAJ, V_ROT, VREL_CONTACT
-	DOUBLE PRECISION :: VRN
+	DOUBLE PRECISION :: VRN, VRN_C, CN_EFF, PDAMP
 	DOUBLE PRECISION :: DISTSQ, DN
 	DOUBLE PRECISION, DIMENSION(3) :: FN, F_TMP, TAU_FORCE
 	! temporary storage of torque
@@ -30,14 +31,19 @@
 	OMEGAI = OMEGA(I,2)*UX(I,:) + OMEGA(I,3)*UY(I,:)
 	OMEGAJ = OMEGA(J,2)*UX(J,:) + OMEGA(J,3)*UY(J,:)
 	V_ROT = CROSSPRDCT(OMEGAJ, RHO2) - CROSSPRDCT(OMEGAI, RHO1)
-	! Frozen v1 mechanics: damping uses centre translational relative velocity
-	! only. V_ROT is evaluated above solely to make the deliberate restriction
-	! visible. A general rigid-body contact law would use VR + V_ROT here.
-	VREL_CONTACT = VR
+	! Normal damping velocity: contact points (model C1) or centres (v1 model R1).
+	! RHO1, RHO2 are the closest points on the axes; using them instead of the
+	! surface points is exact for the normal component, since (W x N).N = 0.
+	IF (DAMP_CONTACT) THEN
+		VREL_CONTACT = VR + V_ROT
+	ELSE
+		VREL_CONTACT = VR
+	END IF
 
-	! Normal approach speed at the contact point.
-	! Positive VRN means the surfaces approach along the contact normal E21.
+	! Normal approach speed (positive: approaching along E21)
 	VRN = -(DOT_PRODUCT(VREL_CONTACT, E21))
+	! of the contact points, for the diagnostics
+	VRN_C = -(DOT_PRODUCT(VR + V_ROT, E21))
 
 	CONTACT = .FALSE.
 	IF(DISTSQ.GT.(DIA-SMALL_NUM)**2.D0) RETURN
@@ -48,10 +54,34 @@
 	! Calculate the normal contact force
 	! Force vector points from i to j
 	! Damping is skipped during the elastic replay pass (CN=0 equivalent)
-	IF (ELASTIC_PASS) THEN
-		FN(:) = KN*DN*E21
+	! Hertz-Tsuji (C1): F = KN DN^1.5 + CN DN^0.25 VRN ; linear (v1): F = KN DN + CN VRN
+	IF (HERTZ_LAW) THEN
+		CN_EFF = CN*DN**0.25D0
+		IF (ELASTIC_PASS) THEN
+			FN(:) = KN*DN**1.5D0*E21
+		ELSE
+			FN(:) = (KN*DN**1.5D0 + CN_EFF*VRN)*E21
+		END IF
 	ELSE
-		FN(:) = (KN*DN*E21) + (CN*VRN*E21)
+		CN_EFF = CN
+		IF (ELASTIC_PASS) THEN
+			FN(:) = KN*DN*E21
+		ELSE
+			FN(:) = (KN*DN*E21) + (CN*VRN*E21)
+		END IF
+	END IF
+
+	! Damping power on the relative motion of the contact points:
+	! F_damp . (v_c,j - v_c,i) = -CN_EFF VRN VRN_C (never positive for contact damping)
+	IF (.NOT.ELASTIC_PASS) THEN
+		PDAMP = -CN_EFF*VRN*VRN_C
+		CD_N_STEPS = CD_N_STEPS + 1
+		IF (PDAMP > 0.D0) THEN
+			CD_N_DPOS = CD_N_DPOS + 1
+			CD_W_DPOS = CD_W_DPOS + PDAMP*DT
+		END IF
+		CD_W_DABS = CD_W_DABS + ABS(PDAMP)*DT
+		CD_DMAX = MAX(CD_DMAX, DN/DIA)
 	END IF
 
 	F_TMP(:) = FN(:)
@@ -83,6 +113,8 @@
 		contact_mu     = MU_TMP
 		! Orientation descriptors at first contact
 		CALL CALC_ORIENTATION_AT_CONTACT(E21, VRN)
+		CD_VN_FIRST = VRN_C
+		CD_VN_CENTRE_FIRST = -(DOT_PRODUCT(VR, E21))
 	END IF
 	return
 	end subroutine calc_force_dem

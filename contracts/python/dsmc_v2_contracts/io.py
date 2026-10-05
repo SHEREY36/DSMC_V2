@@ -50,6 +50,31 @@ OUTCOME_DTYPE = np.dtype([
 AI = {name: i for i, name in enumerate(ATTEMPT_REAL_NAMES)}
 OI = {name: i for i, name in enumerate(OUTCOME_REAL_NAMES)}
 
+# Contact-diagnostics sidecar (contact_diag_v2.bin), one record per outcome in the
+# order of outcomes_v2.bin; written by CTC builds that know the contact model.
+CONTACT_DIAG_NAMES = (
+    "vn_contact_first", "vn_centre_first", "dmax_over_d", "min_steps_contact",
+    "n_dpos_steps", "n_contact_steps", "w_dpos", "w_dabs",
+)
+CONTACT_DIAG_DTYPE = np.dtype([
+    ("event_id", "<i8"), ("attempt_index", "<i8"),
+    ("values", "<f8", (len(CONTACT_DIAG_NAMES),)),
+], align=False)
+CI = {name: i for i, name in enumerate(CONTACT_DIAG_NAMES)}
+
+
+def contact_model_id(metadata: dict) -> str:
+    """C1 = contact-point damping, Hertz-Tsuji, energy-bound step; R1 = the v1 model
+    (centre damping, linear law); shards written before the switch are R1-legacy."""
+    return str(metadata.get("contact_model_id") or "R1-legacy")
+
+
+def load_contact_diag(directory: str | Path) -> np.ndarray | None:
+    path = Path(directory) / "contact_diag_v2.bin"
+    if not path.is_file():
+        return None
+    return _read_exact(path, CONTACT_DIAG_DTYPE)
+
 
 @dataclass(frozen=True)
 class RunDataV2:
@@ -224,6 +249,37 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
     negative_fraction = float(np.mean(delta < 0.0))
     if negative_fraction:
         warnings.append(f"{negative_fraction:.3%} of events have negative total loss")
+
+    model = contact_model_id(run.metadata)
+    contact = {"contact_model_id": model}
+    diag = load_contact_diag(run.directory)
+    if diag is None:
+        if model != "R1-legacy":
+            errors.append("contact_diag_v2.bin missing for a shard with a contact model")
+    else:
+        diag = np.asarray(diag)
+        if len(diag) != len(outcomes) or np.any(diag["event_id"] != outcomes["event_id"]) \
+                or np.any(diag["attempt_index"] != outcomes["attempt_index"]):
+            errors.append("contact_diag_v2.bin does not match outcomes_v2.bin record by record")
+        else:
+            dv = diag["values"]
+            contact.update(
+                events_with_positive_damping_work=float(np.mean(dv[:, CI["n_dpos_steps"]] > 0)),
+                positive_over_total_damping_work=float(
+                    dv[:, CI["w_dpos"]].sum() / max(dv[:, CI["w_dabs"]].sum(), 1.0e-300)),
+                min_steps_per_contact=float(dv[:, CI["min_steps_contact"]].min()),
+                median_steps_per_contact=float(np.median(dv[:, CI["min_steps_contact"]])),
+                max_overlap_over_d=float(dv[:, CI["dmax_over_d"]].max()),
+            )
+            if model == "C1":
+                # contact-point damping cannot do positive work; the energy-bound step
+                # resolves every contact with at least about dt_divisor steps
+                if np.any(dv[:, CI["n_dpos_steps"]] > 0):
+                    errors.append("contact-point damping did positive work (impossible for model C1)")
+                floor = 0.5 * float(run.metadata.get("dt_divisor", 50.0))
+                if contact["min_steps_per_contact"] < floor:
+                    errors.append(f"a contact was resolved by {contact['min_steps_per_contact']:.0f} "
+                                  f"steps (< {floor:.0f})")
     return {
         "status": "pass" if not errors else "fail",
         "errors": errors,
@@ -235,6 +291,7 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
         "dissipation_identity_error_max": identity_error,
         "incoming_energy_identity_error_max": incoming_error,
         "negative_loss_fraction": negative_fraction,
+        **contact,
     }
 
 
