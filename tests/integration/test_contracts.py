@@ -10,7 +10,7 @@ from dsmc_v2_contracts import (
     cell_features, cell_features_with_domain, cell_invariants, load_run,
     validate_run,
 )
-from dsmc_v2_contracts.io import OI
+from dsmc_v2_contracts.io import CI, CONTACT_DIAG_DTYPE, OI
 from dsmc_v2_contracts.features import (
     _normalised_state, _particle_moments, _u_contraction,
     _u_dot, _u_v_square_contraction, _u_v_square_dot,
@@ -58,6 +58,67 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(int(run.attempts["ensemble_id"][0]), 0)
             qa = validate_run(run)
             self.assertEqual(qa["status"], "pass", qa)
+
+    def _c1_run(self, root, steps, dpos=None):
+        """Synthetic C1 shard of len(steps) identical head-on hits with a contact sidecar."""
+        n = len(steps)
+        metadata = {
+            "schema_version": "2.1.0", "nsamples": n, "seed": 1,
+            "alpha": 0.8, "theta": 1.0, "aspect_ratio": 1.0,
+            "velocity_scale": np.sqrt(2.0), "omega_scale": np.sqrt(2.0),
+            "proposal_area": 4.0, "byte_order": "little", "mass": 1.0,
+            "moi_perpendicular": 1.0,
+            "attempt_record_bytes": 200, "outcome_record_bytes": 552,
+            "contact_model_id": "C1", "dt_divisor": 200.0,
+        }
+        (root / "metadata_v2.json").write_text(json.dumps(metadata))
+        attempt = np.zeros(n, dtype=ATTEMPT_DTYPE)
+        attempt["event_id"], attempt["attempt_index"], attempt["hit"] = np.arange(1, n + 1), 1, 1
+        attempt["values"][:, 0:3], attempt["values"][:, 3:6] = [-1, 0, 0], [1, 0, 0]
+        attempt["values"][:, 12:15], attempt["values"][:, 15:18] = [0, 0, 1], [0, 1, 0]
+        attempt.tofile(root / "attempts_v2.bin")
+        outcome = np.zeros(n, dtype=OUTCOME_DTYPE)
+        outcome["event_id"], outcome["attempt_index"], outcome["n_contact"] = np.arange(1, n + 1), 1, 1
+        ov = outcome["values"]
+        ov[:, 0:18] = attempt["values"][:, :18]
+        ov[:, 18:36] = attempt["values"][:, :18]
+        ov[:, 39:42], ov[:, 42:45] = [1, 0, 0], [1, 0, 0]
+        ov[:, 47:53] = [2.0, 0.0, 1.8, 0.0, 0.0, 2.0]
+        ov[:, OI["delta_tr"]], ov[:, OI["delta_total"]] = 0.2, 0.2
+        ov[:, 59:62], ov[:, 62:65] = [1, 0, 0], [1, 0, 0]
+        outcome.tofile(root / "outcomes_v2.bin")
+        diag = np.zeros(n, dtype=CONTACT_DIAG_DTYPE)
+        diag["event_id"], diag["attempt_index"] = np.arange(1, n + 1), 1
+        diag["values"][:, CI["min_steps_contact"]] = steps
+        diag["values"][:, CI["n_contact_steps"]] = steps
+        diag["values"][:, CI["dmax_over_d"]] = 1.0e-4
+        if dpos is not None:
+            diag["values"][dpos, CI["n_dpos_steps"]] = 1
+        diag.tofile(root / "contact_diag_v2.bin")
+        return load_run(root)
+
+    def test_c1_contact_resolution_is_judged_on_the_bulk(self):
+        steps = np.full(2000, 230.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            qa = validate_run(self._c1_run(Path(tmp), steps))
+            self.assertEqual(qa["status"], "pass", qa)
+            self.assertEqual(qa["warnings"], [])
+        steps[7] = 47.0                       # one short sub-contact in 2000: warning only
+        with tempfile.TemporaryDirectory() as tmp:
+            qa = validate_run(self._c1_run(Path(tmp), steps))
+            self.assertEqual(qa["status"], "pass", qa)
+            self.assertIn("shortest 47", qa["warnings"][-1])
+        steps[:20] = 60.0                     # 1 % of encounters under-resolved: a broken step rule
+        with tempfile.TemporaryDirectory() as tmp:
+            qa = validate_run(self._c1_run(Path(tmp), steps))
+            self.assertEqual(qa["status"], "fail")
+            self.assertIn("limit 0.1 %", qa["errors"][0])
+
+    def test_c1_positive_damping_work_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qa = validate_run(self._c1_run(Path(tmp), np.full(100, 230.0), dpos=[3]))
+            self.assertEqual(qa["status"], "fail")
+            self.assertIn("positive work", qa["errors"][0])
 
     def test_isotropic_features_are_small(self):
         rng = np.random.default_rng(7)

@@ -272,14 +272,28 @@ def validate_run(run: RunDataV2, elastic_tolerance: float = 5.0e-3) -> dict:
                 max_overlap_over_d=float(dv[:, CI["dmax_over_d"]].max()),
             )
             if model == "C1":
-                # contact-point damping cannot do positive work; the energy-bound step
-                # resolves every contact with at least about dt_divisor steps
+                # Contact-point damping cannot do positive work.  The energy-bound step
+                # gives a contact at the largest possible approach speed dt_divisor steps,
+                # and slower contacts last longer, but a sub-contact of a multi-contact
+                # encounter can end early when rotation separates the surfaces (Negishi
+                # pilot: one encounter in 200,000 at AR 2, alpha 0.5, with 47 and 63 steps
+                # and 3e-6 of the dissipated energy, while 99.999 % had >= 230).  The test
+                # is therefore on the bulk: a broken step rule shifts the whole
+                # distribution; isolated short sub-contacts are reported as warnings.
                 if np.any(dv[:, CI["n_dpos_steps"]] > 0):
                     errors.append("contact-point damping did positive work (impossible for model C1)")
-                floor = 0.5 * float(run.metadata.get("dt_divisor", 50.0))
-                if contact["min_steps_per_contact"] < floor:
-                    errors.append(f"a contact was resolved by {contact['min_steps_per_contact']:.0f} "
-                                  f"steps (< {floor:.0f})")
+                half = 0.5 * float(run.metadata.get("dt_divisor", 50.0))
+                steps = dv[:, CI["min_steps_contact"]]
+                short = steps < half
+                contact.update(steps_per_contact_q001=float(np.quantile(steps, 1.0e-3)),
+                               fraction_encounters_short_contact=float(np.mean(short)))
+                if np.mean(short) > 1.0e-3:
+                    errors.append(f"{np.mean(short):.3%} of encounters have a contact resolved by fewer "
+                                  f"than {half:.0f} steps (limit 0.1 %)")
+                elif np.any(short):
+                    warnings.append(f"{int(np.sum(short))} encounter(s) with a contact shorter than "
+                                    f"{half:.0f} steps (shortest {steps.min():.0f}): sub-contacts that "
+                                    "end geometrically")
     return {
         "status": "pass" if not errors else "fail",
         "errors": errors,
