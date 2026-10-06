@@ -8,6 +8,60 @@ Schema 2.2 replaces the experimental schema-2.1 GMM/routing/VSS composition
 with an opt-in variational energy-partition and angular kernel. The complete
 legacy path remains available for controlled A/B comparisons.
 
+## Released model (tag `closure-v2-final-v1`)
+
+The shipping model is the folder `models/microscopic_closure_v2_final_v1/`
+(artifact, its three tables, `model_card.json`, a ready `model.yaml`, `SHA256SUMS`;
+see its `README.md`). `DSMC_0D_v2/config/default.yaml` and
+`encounter_unit_model_final.yaml` run it. In brief:
+
+- one DSMC event is one CTC encounter: clock sigma_c(theta, AR) = mean projected
+  excluded area x measured dynamic factor;
+- loss eps = E[eps|z] B/<B>, E[eps|z] = c_t z + c_r (1 - z), B ~ Beta(1.21, 3.67);
+- exchange p(z'|z, eps), a conditional I-projection fitted with the
+  post-collision energy weight E_f;
+- angle p(c|z, z'), energy-tilted, with incoming-partition memory;
+- 627 nodes: alpha 0.50-0.95 in 0.05 steps and 1, AR 1.1-3, theta down to 0.0125
+  near the sphere; alpha = 1 and spheres are exact blocks;
+- the invariant (flow-moment) response is retired (`invariant_corrections: true`
+  is an error); the sections below that describe it are a record of the earlier design.
+
+Formulation: `reports/DSMC_CLOSURE_FORMULATION_FINAL.md`. Validation against
+independent DEM: `results/validation/dem_comparison/final_v1/`. Development record:
+`reports/usf_event_unit_methodology/`.
+
+| step | command |
+|---|---|
+| build the model (CTC theta planes, fits, artifact, tables) | `hpc/submit_final_campaign.sh` |
+| validate it (USF, HCS, production gate, model card) | `TAG=final_v1_val hpc/submit_validation.sh` |
+| non-Gaussian HCS statistics | `hpc/submit_hcs_ng_campaign.sh` (`reports/HCS_NG_V8_FINAL_MODEL_2026-10-04.md`) |
+| figures against DEM | `DSMC_0D_v2/scripts/plot_final_validation.py` |
+
+`DSMC_0D_v2/scripts/production_gate.py` is a diagnostic, not part of the model:
+it compares collisional productions with exact CTC on identical replayed pairs.
+
+## Data layout (results/)
+
+All campaign data sit under `results/`, grouped by function
+(`hpc/organize_results.py` built it; `results/path_map.json` records every move):
+
+| folder | contents |
+|---|---|
+| `ctc/nodes/training/<set>/` | the Maxwellian CTC node shards of the 627 final nodes (sentinel, ar_extension, ar_near_sphere, ar_low_theta, alpha_refinement, theta_refinement) |
+| `ctc/nodes/holdout/` | independent CTC holdout |
+| `ctc/replays/gate_alpha_v1_20261001/` | exact CTC replays of DSMC-USF incoming pairs (production gate) |
+| `dsmc_harvest/usf_nonlinear_v2_20260928/` | DSMC-USF collision-flux pair reservoirs, the sources of the replays |
+| `closure_estimates/` | final node fits (`artifact_grid_final_v1`), precompute payloads, propensity cache |
+| `validation/usf/`, `validation/hcs/` | final-model USF and HCS campaigns (`*_final_v1_val`, local paired runs) and HCS-NG outputs |
+| `validation/production_gate/final_v1_val/` | production-measure diagnostic |
+| `validation/dem_comparison/final_v1/` | DEM-DSMC comparison figures and summary |
+
+**Deprecated material.** Everything superseded or invalid (earlier models, their
+validations, the v1 CTC data, a duplicate zip, retired pipelines and their tests)
+was moved to `deprecated/` (git-ignored; `deprecated/MANIFEST.tsv` lists every
+move and why). It can be deleted; the code is in history at tag
+`closure-v2-final-v1`.
+
 ## Frozen physical assumptions
 
 The following are deliberate model choices and are not refitted:
@@ -15,7 +69,11 @@ The following are deliberate model choices and are not refitted:
 - the v1 no-time-counter candidate clock;
 - the v1 polynomial collision cross-section;
 - the v1 scalar Borgnakke–Larsen loss draw;
-- the v1 CTC normal damping based on centre translational relative velocity.
+- the v1 CTC normal damping based on centre translational relative velocity;
+- the v1 contact integration at 50 steps per Hertzian contact time. Refining it
+  is now cheap (`CTC_DT_DIVISOR`), and it carries a measured 1.7% per-event and
+  0.5% ensemble-mean discretisation error in the dissipated energy, so this is
+  a frozen choice rather than a converged one.
 
 The last restriction is explicitly visible in
 `HS_CTC_v2/model/calc_force_dem.f90`. General rigid-body restitution normally
@@ -39,24 +97,69 @@ A_perp = pi D^2
 L = (AR - 1) D.
 ```
 
-All proposals estimate the DSMC incoming-state measure. Accepted outcomes use
-weights proportional to `1/A_perp`; the common normalization is immaterial.
-The observed hit flag is calibrated against `A_perp/A0`. The frozen DSMC
-cross-section polynomial is reported separately as a clock audit and is never
-required to equal a geometric area.
+`A_perp` is the shadow of a *frozen* pair, and it is not the generator's
+acceptance probability. The rods turn while they close, so the acceptance is
+the dynamic excluded area, which exceeds `A_perp` by 9 to 33 percent at aspect
+ratios 2 and 3 and grows as theta falls. That is physics rather than a staging
+artefact: contact needs a centre separation below `L + D`, the generator starts
+beyond that, and free rotation preserves an isotropic director law, so the
+result cannot depend on the staging distance -- and measurably does not.
 
-The energy kernel is
+The acceptance is nevertheless pure kinematics, since no force acts before
+contact. `kinematic_propensity` integrates the force-free encounter over the
+impact-parameter plane directly from the stored pre-collision state, and
+accepted outcomes are weighted by `1/propensity`, the exact Radon-Nikodym
+derivative onto the DSMC's orientation-blind collision measure. Measured
+against the generator, the predicted acceptance is within 0.5 percent where
+`A_perp` is out by 5 to 25 percent, and with zero spin the integrator
+reproduces the analytic `A_perp` to 0.03 percent.
+
+The static weight is retained for A/B runs as `propensity_offsets=None`. The
+frozen DSMC cross-section polynomial is reported separately as a clock audit
+and is never required to equal a geometric area; note that the true dynamic
+cross-section varies by 5 percent at AR = 2 and 23 percent at AR = 3 across
+theta in [0.2, 2], which a theta-blind polynomial cannot carry.
+
+The energy kernel is the I-projection of the memoryless Borgnakke-Larsen draw
+onto the measured transfer moments:
 
 ```text
-K(z | z_in) = (1 - p_exch) delta(z - z_in) + p_exch R(z),
-R(z) proportional to Beta(2,2)(z) exp(lambda1 z + lambda2 z^2).
+p(z' | z, eps) proportional to Beta(2,2)(z')
+    * exp(lambda1 z' + lambda2 z'^2 + lambda3 z z' + lambda4 eps z').
 ```
 
-`p_exch` is identified directly from the weighted affine memory regression;
-there is no `2/Z` multiplier and no probability clipping. `lambda1` and
-`lambda2` solve the exact convex I-projection for the reset mean and ordinary
-second moment. State corrections act in the natural parameter,
-`lambda1 = lambda1_0 + beta dot X`.
+The earlier gated form, `(1 - p_exch) delta(z' - z) + p_exch R(z')`, is
+retired. The stored events have no atom at `z' = z`: only 3 to 13 percent of
+collisions leave the partition unchanged to 0.01, where the gate needs 25 to 95
+percent. Forcing one imposes a floor `p(1-p)(z - mu)^2` on the conditional
+variance that the data fall below, which is what produced the negative reset
+variances and the `reset_mean = intercept / p_exch` blow-up at AR = 1.1.
+
+Adding `z z'` and `eps z'` to the sufficient statistics keeps the same
+I-projection theorem, removes the atom, and makes the dual strictly convex on
+sample moments, so the infeasible-moment branch cannot occur. The rotational
+collision number survives as the derived lag-one slope of the mean map, and
+`lambda4` lets the runtime evaluate the kernel at its own frozen BL loss
+instead of inheriting the CTC's. State corrections act on the complete
+natural-parameter vector,
+
+```text
+(delta lambda1, ..., delta lambda4, delta eta1, delta eta2) = B (X - X0).
+```
+
+The central excitation amplitudes fit `B`; the large amplitudes are held out.
+Energy-table changes from `lambda2` and the non-affine part of `lambda3` are
+carried as logit-quantile tangent surfaces. The existing `a` axis represents
+the `lambda1`, `lambda3 z`, and `lambda4 eps` shifts exactly. At `alpha=1`,
+detailed balance structurally fixes the `lambda1`, `lambda2`, and `lambda4`
+correction rows to zero.
+
+`reset_mean` and `reset_second_moment` keep their names in the node estimates
+and the artifact, but now report the first two moments of the kernel's
+*invariant* law: the partition the kernel drives towards. That is what the
+reset law was a proxy for, it coincides with it exactly when the data really
+are gated-Beta, and it makes the elastic gate a direct test that an elastic
+kernel reaches equipartition.
 
 The angular kernel is
 
@@ -108,22 +211,53 @@ closure-overhead limits and all failure reasons.
 
 ## Runtime modes
 
-The production candidate is selected as one coupled mode:
+The released model is selected as one coupled mode:
 
 ```yaml
 microscopic_closure:
   routing: variational_v2
   angular: variational_v2
-  artifact: models/microscopic_closure_v2/closure_v2.npz
-  invariant_corrections: true
+  artifact: models/microscopic_closure_v2_final_v1/closure_v2.npz
+  event_unit: encounter
+  encounter_cross_section: models/microscopic_closure_v2_final_v1/encounter_cross_section.json
+  angular_memory: models/microscopic_closure_v2_final_v1/angular_memory.json
+  loss_memory: models/microscopic_closure_v2_final_v1/loss_memory.json
 ```
 
-It preserves the NTC clock and scalar loss. If the exchange gate stays closed,
-both the translational partition and individual rotational split are
-preserved. If it opens, the tilted reset law and a uniform `Beta(1,1)`
-rotational sub-split are drawn. Positive post-collision modal energies follow
-by construction; a non-positive energy raises an error rather than triggering
-a repair.
+The paragraphs below describe the retired invariant-response machinery and
+are kept as a record.
+
+Correction support is strict by default. HCS production and every ordinary
+run fail their runtime gate when the invariant state leaves the independently
+validated response domain. The staged USF cross-flow protocol is the only
+workflow that opts into
+
+```yaml
+microscopic_closure:
+  correction_fallback_gate: adaptive_base_law
+```
+
+That mode does not clip, extrapolate, or refit a response. The runtime
+suppresses all response increments outside support and uses the unchanged base
+collision law, while reporting correction coverage separately. USF promotion
+therefore validates this effective adaptive model; it does not claim that the
+learned correction itself covers every USF trajectory.
+
+It preserves the NTC clock and scalar loss. Positive post-collision modal
+energies follow by construction; a non-positive energy raises an error rather
+than triggering a repair.
+
+The runtime samples the conditional kernel from the two-dimensional `(a, u)`
+quantile table, where
+`a = lambda1 + lambda3 z_in + lambda4 eps` is the scalar the conditional law
+depends on.  It evaluates this law at every neighbouring fitted node before
+interpolating the conditional quantiles.  Interpolating natural parameters,
+node-specific `a` axes, and tables separately is forbidden: those nonlinear
+operations do not commute and can manufacture spurious HCS fixed points.
+
+The BL loss draw controls the surviving total energy.  Only the `lambda4 eps`
+routing covariate is rescaled to the CTC loss scale on which it was fitted;
+these two loss roles are intentionally distinct.
 
 The complete v1 path is still:
 
@@ -146,6 +280,23 @@ make -C HS_CTC_v2/build clean all
 make test
 ```
 
+### Generator cost
+
+No force acts before first contact, so the approach is integrated by
+conservative advancement: the axis-to-axis gap cannot close faster than
+`g + (|w1| + |w2|) L/2`, so stepping by `(gap - D)` over that bound provably
+cannot skip a contact, and the step is exact rather than approximate because
+translation is linear and each director precesses about a fixed axis. The
+frozen fixed-step scheme still runs from just before contact through the
+contact itself.
+
+This removes 99.996% of the integration steps. At AR = 3 the generator does
+about 714 hits per second per core against 0.12 before, so the planned
+5.1e8-event campaign moves from roughly 325,000 core-hours to about 200. The
+accepted/rejected set is bit-identical; outcomes differ only by the contact
+discretisation both schemes share, verified against a reference at 64 times the
+contact resolution. Set `CTC_FAST_APPROACH=0` for the old behaviour.
+
 The test suite includes all 28 reference numerical checks under the corrected
 projection/rate semantics. It also covers binary compatibility, projected
 area/ESS, quantile sampling, artifact validation, positive-energy collision
@@ -166,35 +317,24 @@ leaves every completed run in place and moves each incomplete directory intact
 under `results/quarantine/ctc_cancel_<timestamp>` so a fresh run cannot
 overwrite it. Nothing is deleted.
 
-Then build, generate the manifest on the login node, and use the conventional
-Negishi submission for the 36-node, 5,000-hit sentinel:
+Then build, generate the manifest on the login node, and submit the 36-node
+sentinel CTC array:
 
 ```bash
 make -C HS_CTC_v2/build clean all
 hpc/python.sh hpc/make_closure_manifest.py \
-  --stage sentinel --samples 5000 --output manifests/closure_sentinel.csv
-sbatch job_closure_sentinel.slurm
+  --stage sentinel --samples 200000 --output manifests/closure_sentinel.csv
+bash hpc/submit_manifest.sh manifests/closure_sentinel.csv
 ```
 
 Each completed shard includes `runtime_v2.json`, so budgets use measured
-Negishi hits/second and attempts/hit. When all 36 `_SUCCESS` markers exist:
-
-Completed target directories are skipped. An existing target without
-`_SUCCESS` causes the task to fail closed instead of overwriting partial data;
-move that directory to `results/quarantine` before resubmitting it.
-
-```bash
-FIT_JOB=$(sbatch --parsable job_estimate_closure_sentinel.slurm)
-FIT_JOB=${FIT_JOB%%;*}
-sbatch --dependency=afterany:"$FIT_JOB" job_summarize_closure_sentinel.slurm
-cat results/closure_estimates/sentinel_report.json
-```
-
-Use `afterany`, not `afterok`, for the sentinel summary. An infeasible moment or
-projection is a scientific gate result that must appear in the report, rather
-than leaving the summary permanently pending with `DependencyNeverSatisfied`.
-Missing or corrupt binary input still makes the fit task fail hard, and the
-summary refuses release when any of the 36 node estimates is absent.
+Negishi hits/second and attempts/hit. Completed target directories are skipped.
+An existing target without `_SUCCESS` causes the task to fail closed instead of
+overwriting partial data; move that directory to `results/quarantine` before
+resubmitting it. The aspect-ratio extensions come from
+`hpc/make_extension_manifest.py`, the alpha and theta planes from
+`hpc/submit_alpha_refinement.sh` and `hpc/submit_final_campaign.sh`, which also
+fit every node and build the artifact.
 
 The sentinel axes are `alpha={0.5,0.8,0.95,1}`, `theta={0.2,1,2}`, and
 `AR={1.1,2,3}`. Do not submit the full grids unless
@@ -229,12 +369,22 @@ per ensemble and is driven by the 95% half-width of `beta_n X_n`.
 
 Artifact or production release requires:
 
-- propensity agreement within three standard errors and inverse-area
-  `ESS/N >= 0.5`;
-- raw `0 < p_exch <= 1`, feasible reset moments, and both projection residuals
-  below `1e-6`;
-- less than 2% held-out improvement from a nonlinear memory regression;
-- equilibrium `Beta(2,2)` reset at `alpha=1, theta=1`;
+- predicted acceptance matching the observed hit fraction within three standard
+  errors or 2 percent, whichever is looser, since the z-test necessarily
+  tightens as the event count grows;
+- inverse-propensity `ESS/N >= 0.5` and proposal balance within three standard
+  errors on all 14 invariants;
+- raw `0 < p_exch <= 1` for the affine memory diagnostic and both projection
+  residuals below `1e-6`;
+- less than `0.02` nats of held-out log-density gained by adding the quadratic
+  memory statistic `z^2 z'`;
+- equilibrium `Beta(2,2)` invariant law at `alpha=1`, at every theta and
+  aspect ratio, within the looser of three bootstrap standard errors and 2%,
+  so a weakly identified node cannot buy a pass with a wide error bar and a
+  well resolved one is not failed for a negligible offset;
+- sampled `<z_in>` matching its exact law `p(z) ~ z(1-z)(z/theta + 1 - z)^-4`,
+  which is *not* `theta/(theta+1)`: that is the ratio of the means and is low
+  by 22% at `theta=0.2`;
 - numerical sampler moment error below `1e-3`;
 - one fixed point in the calibrated theta domain with negative numerical
   drift derivative, including fitted-surface derivatives;

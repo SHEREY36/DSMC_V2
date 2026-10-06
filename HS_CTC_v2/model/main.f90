@@ -6,6 +6,7 @@
 	use output
 	use constants
 	use rng_mod
+	use replay_mod, only: LOAD_REPLAY_DATA
 !$ use omp_lib
 
 	implicit none
@@ -20,6 +21,7 @@
 
 	write(*,*) 'Reading and initializing'
 	call read_input()
+	call LOAD_REPLAY_DATA()
 	call INITIALIZE()
 
 	! Report thread count
@@ -51,7 +53,7 @@
 		attempt_number = 0
 		DO WHILE(.NOT.accepted)
 		attempt_number = attempt_number + 1
-		CALL INIT_PART()
+		CALL INIT_PART(event_id, attempt_number)
 
 		! Safety initialisation: if elastic pass misses, f_tr uses Et_00
 		Et_f_elastic = Et_00

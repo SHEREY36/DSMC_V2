@@ -6,6 +6,8 @@
 	use output
 	
 	implicit none
+	CHARACTER(LEN=64) :: ENVBUF
+	INTEGER :: ENVLEN
 	INTEGER :: I
 
 ! Output Files
@@ -67,6 +69,10 @@
 	RAD = DIA*0.5D0; hLCYL = LCYL*0.5D0
 	DIASQ = DIA**2.D0
 	BMAX = LCYL + DIA; BMAX = BMAX*1.01D0
+	CALL GET_ENVIRONMENT_VARIABLE('CTC_FAST_APPROACH', ENVBUF, ENVLEN)
+	IF (ENVLEN > 0) FAST_APPROACH = (ENVBUF(1:1) /= '0')
+	CALL GET_ENVIRONMENT_VARIABLE('CTC_DT_DIVISOR', ENVBUF, ENVLEN)
+	IF (ENVLEN > 0) READ(ENVBUF(1:ENVLEN),*) DT_DIVISOR
 	PVOL = PI*(DIA**3.D0)/6.D0 + PI*LCYL*(RAD**2.D0)
 	RHO = MASS/PVOL
 	
@@ -127,6 +133,12 @@
 		write(1011,'(A,I0,A)') '  "nsamples": ', NSAMPLES, ','
 		write(1011,'(A,I0,A)') '  "seed": ', RUN_SEED, ','
 		write(1011,'(A,I0,A)') '  "ensemble_id": ', ENSEMBLE_ID, ','
+		IF (REPLAY_MODE) THEN
+			write(1011,'(A)') '  "sampling_mode": "dsmc_post_ntc_replay_v1",'
+			write(1011,'(A,I0,A)') '  "replay_record_count": ', REPLAY_RECORD_COUNT, ','
+		ELSE
+			write(1011,'(A)') '  "sampling_mode": "isotropic_collision_flux_v1",'
+		END IF
 		write(1011,'(A)') '  "rng_contract": "event_stream_common_across_alpha",'
 		write(1011,'(A,A,A)') '  "output_mode": "', TRIM(OUTPUT_MODE), '",' 
 		write(1011,'(A)') '  "normal_contact_velocity": "translational_relative_velocity_only",'

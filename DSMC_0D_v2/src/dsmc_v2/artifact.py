@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.spatial import Delaunay, QhullError
+
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 from coll_models_v2.direction_library import DirectionLibrary, conditioning
 from coll_models_v2.surfaces import SplineSurface
@@ -104,11 +108,17 @@ class MicroscopicClosure:
 class VariationalClosure:
     """Runtime view of ``closure_v2.npz`` with strict no-extrapolation rules."""
 
-    def __init__(self, path: str | Path, corrections_enabled: bool = True):
+    def __init__(self, path: str | Path, corrections_enabled: bool = False):
+        if corrections_enabled:
+            raise ValueError(
+                "the invariant (flow-moment) response was retired on 2026-09-30: "
+                "the kernel is conditioned on each pair's own state, and the fitted "
+                "responses worsened the collisional productions on held-out USF "
+                "states; see reports/USF_ENCOUNTER_UNIT_2026-09-29.md")
         data = np.load(path, allow_pickle=False)
-        if str(data["schema_version"]) != "2.2.0" \
+        if str(data["schema_version"]) not in ("2.3.0", "2.4.0") \
                 or str(data["artifact_type"]) != "bl_variational_closure":
-            raise ValueError("not a schema-2.2 BL variational closure artifact")
+            raise ValueError("not a supported BL variational closure artifact")
         if list(data["feature_names"].astype(str)) != list(FEATURE_NAMES):
             raise ValueError("variational feature ordering differs from runtime contract")
         self.coordinates = np.asarray(data["surface_coordinates"], dtype=float)
@@ -119,50 +129,178 @@ class VariationalClosure:
         self.energy_parameters = np.asarray(data["energy_parameters"], dtype=float)
         self.angular_parameters = np.asarray(data["angular_parameters"], dtype=float)
         self.probability = np.asarray(data["quantile_probability"], dtype=float)
-        self.energy_tables = np.asarray(data["energy_quantiles"], dtype=float)
+        # (node, a, u).  The energy kernel has memory: everything it needs from
+        # the incoming pair arrives as
+        # a = lambda1 + memory(z_in) + lambda4 eps, so the sampler interpolates
+        # in a as well as in the uniform draw.
+        stored_tables = np.asarray(data["energy_quantiles"], dtype=float)
+        stored_a_grid = np.asarray(data["energy_a_grid"], dtype=float)
+        if "energy_a_offsets" in data.files:
+            offsets = np.asarray(data["energy_a_offsets"], dtype=np.int64)
+            if offsets.shape != (len(self.coordinates) + 1,) \
+                    or offsets[0] != 0 or offsets[-1] != len(stored_a_grid) \
+                    or np.any(np.diff(offsets) < 2) \
+                    or stored_a_grid.ndim != 1 \
+                    or stored_tables.shape != (len(stored_a_grid), len(self.probability)):
+                raise ValueError("packed adaptive energy table layout is invalid")
+            self.energy_a_grid = [stored_a_grid[offsets[i]:offsets[i + 1]]
+                                  for i in range(len(self.coordinates))]
+            self.energy_tables = [stored_tables[offsets[i]:offsets[i + 1]]
+                                  for i in range(len(self.coordinates))]
+            if "energy_logit_sensitivities" in data.files:
+                packed_sensitivity = np.asarray(
+                    data["energy_logit_sensitivities"], dtype=float)
+                if packed_sensitivity.shape[:1] != stored_tables.shape[:1] \
+                        or packed_sensitivity.ndim != 3 \
+                        or packed_sensitivity.shape[2] != len(self.probability):
+                    raise ValueError("packed energy sensitivity layout is invalid")
+                self.energy_logit_sensitivities = [
+                    packed_sensitivity[offsets[i]:offsets[i + 1]]
+                    for i in range(len(self.coordinates))]
+            else:
+                self.energy_logit_sensitivities = None
+            self.energy_table_layout = "packed_adaptive_v1"
+        else:
+            # Backward-compatible reader for already deployed rectangular
+            # schema-2.3 artifacts.
+            self.energy_tables = stored_tables
+            self.energy_a_grid = stored_a_grid
+            self.energy_table_layout = "rectangular_v1"
+            self.energy_logit_sensitivities = (
+                np.asarray(data["energy_logit_sensitivities"], dtype=float)
+                if "energy_logit_sensitivities" in data.files else None)
+        self.energy_sensitivity_parameter_names = tuple(
+            data["energy_sensitivity_parameter_names"].astype(str)
+            if "energy_sensitivity_parameter_names" in data.files else ())
+        self.kernel_form = str(data["kernel_form"])
+        self.energy_kernel_forms = (
+            np.asarray(data["energy_kernel_forms"]).astype(str)
+            if "energy_kernel_forms" in data.files
+            else np.full(len(self.coordinates), self.kernel_form))
+        self.energy_memory_coefficients = (
+            np.asarray(data["energy_memory_coefficients"], dtype=float)
+            if "energy_memory_coefficients" in data.files
+            else np.column_stack((self.energy_parameters[:, 2],
+                                  np.zeros((len(self.coordinates), 2)))))
+        self.energy_memory_center = (
+            np.asarray(data["energy_memory_center"], dtype=float)
+            if "energy_memory_center" in data.files
+            else np.zeros(len(self.coordinates)))
+        self.energy_memory_scale = (
+            np.asarray(data["energy_memory_scale"], dtype=float)
+            if "energy_memory_scale" in data.files
+            else np.ones(len(self.coordinates)))
+        supported_energy_forms = {
+            "sinkhorn_bridge_v2", "conditional_iprojection_v2",
+            "conditional_logit_cubic_v3",
+        }
+        if self.energy_kernel_forms.shape != (len(self.coordinates),) \
+                or not set(self.energy_kernel_forms).issubset(supported_energy_forms):
+            raise ValueError("artifact has invalid per-node energy kernel forms")
+        if self.energy_memory_coefficients.shape != (len(self.coordinates), 3):
+            raise ValueError("artifact energy memory coefficients must be (node, 3)")
+        if self.energy_memory_center.shape != (len(self.coordinates),) \
+                or self.energy_memory_scale.shape != (len(self.coordinates),) \
+                or np.any(~np.isfinite(self.energy_memory_center)) \
+                or np.any(~np.isfinite(self.energy_memory_scale)) \
+                or np.any(self.energy_memory_scale <= 0.0):
+            raise ValueError("artifact energy-memory normalization is invalid")
+        self.energy_interpolation = "node_first_quantile_interpolation_v1"
+        declared_interpolation = (str(data["energy_interpolation"])
+                                  if "energy_interpolation" in data.files else None)
+        if declared_interpolation not in (None, self.energy_interpolation):
+            raise ValueError(
+                f"unsupported energy interpolation {declared_interpolation!r}")
+        # Mean fractional loss of the CTC ensemble each node was fitted on.
+        # lambda4 multiplies the loss, so the tilt it produces is only right if
+        # the loss handed to it is on the same scale it was fitted against.
+        self.energy_mean_loss = np.asarray(data["energy_mean_loss"], dtype=float)
+        # Reference law the kernel is reversible with respect to. The sampler
+        # tables already bake it in; it is carried for diagnostics and gates.
+        self.energy_anchor = np.asarray(data["energy_anchor"], dtype=float)
+        # Rotational enhancement of the collision measure, normalised to mean
+        # one so installing it changes WHICH pairs collide, not how many.
+        if "xi_grid" not in data.files or "xi_enhancement" not in data.files:
+            raise ValueError(
+                "artifact carries no collision-measure enhancement; a variational "
+                "artifact must ship xi_grid and xi_enhancement or the runtime "
+                "silently samples the wrong collision ensemble")
+        self.xi_grid = np.asarray(data["xi_grid"], dtype=float)
+        self.xi_enhancement = np.asarray(data["xi_enhancement"], dtype=float)
+        if self.xi_enhancement.ndim != 2 \
+                or self.xi_enhancement.shape[0] != len(self.coordinates) \
+                or self.xi_enhancement.shape[1] != len(self.xi_grid):
+            raise ValueError("xi_enhancement must be (node, len(xi_grid)): the "
+                             "curve depends on aspect ratio and on theta")
+        if self.energy_table_layout == "rectangular_v1":
+            if self.energy_tables.ndim != 3 \
+                    or self.energy_tables.shape[0] != len(self.coordinates) \
+                    or self.energy_tables.shape[1] != self.energy_a_grid.shape[1]:
+                raise ValueError("energy quantile table must be (node, a, u)")
+            if not np.all(np.diff(self.energy_a_grid, axis=1) > 0.0):
+                raise ValueError("energy a-grid must be strictly increasing per node")
+        elif any(not np.all(np.diff(grid) > 0.0) for grid in self.energy_a_grid):
+            raise ValueError("energy a-grid must be strictly increasing per node")
+        self.energy_axis_clamps = 0
+        self.energy_monotonic_repairs = 0
+        self.maximum_energy_monotonic_repair = 0.0
+        # In a 0-D run alpha and aspect ratio are fixed and theta drifts slowly,
+        # so the same interpolation stencil and angular state recur thousands
+        # of times. Cache the small state on a rounded key. Energy tables stay
+        # node-owned and are never copied into this cache.
+        self._state_cache: dict[tuple, dict] = {}
+        self._state_cache_hits = 0
         self.angular_tables = np.asarray(data["angular_quantiles"], dtype=float)
-        self.beta_coordinates = np.asarray(data["beta_coordinates"], dtype=float)
-        self.beta = np.asarray(data["beta"], dtype=float)
-        self.beta_deployed = np.asarray(data["beta_deployed"], dtype=bool)
-        self.feature_lower = np.asarray(data["feature_lower"], dtype=float)
-        self.feature_upper = np.asarray(data["feature_upper"], dtype=float)
+        # Cell-moment bounds are carried for diagnostics only.
+        self.feature_lower = (np.asarray(data["feature_lower"], dtype=float)
+                              if "feature_lower" in data.files else None)
+        self.feature_upper = (np.asarray(data["feature_upper"], dtype=float)
+                              if "feature_upper" in data.files else None)
         self.joint_deployed = np.asarray(data["joint_deployed"], dtype=bool)
         self.joint_parameters = np.asarray(data["joint_parameters"], dtype=float)
-        if np.any((self.p_exch <= 0.0) | (self.p_exch > 1.0)):
-            raise ValueError("artifact contains an invalid direct exchange probability")
+        if np.any(~np.isfinite(self.p_exch)):
+            raise ValueError("artifact contains a non-finite affine-memory diagnostic")
         if not np.all(np.diff(self.probability) > 0.0) \
                 or self.probability[0] != 0.0 or self.probability[-1] != 1.0:
             raise ValueError("artifact quantile axis must increase from zero to one")
         for axis in range(3):
             if not np.all(np.diff(np.unique(self.coordinates[:, axis])) > 0.0):
                 raise ValueError("artifact physical grid axes must be strictly monotone")
-        if corrections_enabled and (self.beta_deployed.size == 0 or not np.any(self.beta_deployed)):
-            raise ValueError("natural-parameter corrections requested but no beta is deployed")
-        self.corrections_enabled = bool(corrections_enabled)
+        self.corrections_enabled = False
+        # Kept at zero for callers that still read these counters.
         self.out_of_domain_queries = 0
         self.total_queries = 0
+        self.out_of_domain_by_feature = np.zeros(len(FEATURE_NAMES), dtype=np.int64)
+        self.sampling_excursion_by_feature = np.zeros(len(FEATURE_NAMES), dtype=np.int64)
         self._interpolators = {}
+        self._coordinate_index = {
+            tuple(float(value) for value in row): index
+            for index, row in enumerate(self.coordinates)
+        }
+        self._coordinate_axes = tuple(
+            np.unique(self.coordinates[:, axis]) for axis in range(3))
+        self._physical_triangulation = None
         if len(self.coordinates) >= 4:
-            self._interpolators.update(
-                p_exch=LinearNDInterpolator(self.coordinates, self.p_exch),
-                energy_parameters=LinearNDInterpolator(self.coordinates, self.energy_parameters),
-                angular_parameters=LinearNDInterpolator(self.coordinates, self.angular_parameters),
-                energy_tables=LinearNDInterpolator(self.coordinates, self.energy_tables),
-                angular_tables=LinearNDInterpolator(self.coordinates, self.angular_tables),
-            )
-        if len(self.beta_coordinates) >= 4:
-            self._interpolators["beta"] = LinearNDInterpolator(
-                self.beta_coordinates, self.beta)
-        if len(self.beta_coordinates):
-            self._interpolators["beta_mask"] = NearestNDInterpolator(
-                self.beta_coordinates, self.beta_deployed.astype(float))
+            try:
+                self._physical_triangulation = Delaunay(self.coordinates)
+            except QhullError:
+                # Exact nodes and complete tensor cells still work for a
+                # lower-dimensional test/design.  Off-grid queries fail
+                # closed in _physical_vertex_weights below.
+                self._physical_triangulation = None
         if len(self.coordinates):
             self._interpolators["joint_mask"] = NearestNDInterpolator(
                 self.coordinates, self.joint_deployed.astype(float))
         joint_coordinates = self.coordinates[self.joint_deployed]
         if len(joint_coordinates) >= 4:
-            self._interpolators["joint_parameters"] = LinearNDInterpolator(
-                joint_coordinates, self.joint_parameters[self.joint_deployed])
+            try:
+                self._interpolators["joint_parameters"] = LinearNDInterpolator(
+                    joint_coordinates, self.joint_parameters[self.joint_deployed])
+            except QhullError:
+                # A grid confined to one alpha (or theta, or AR) plane is flat in
+                # 3-D; exact-plane queries use the node stencil and need no
+                # triangulation.
+                pass
 
     @staticmethod
     def _exact(points: np.ndarray, query: np.ndarray) -> np.ndarray:
@@ -182,46 +320,121 @@ class VariationalClosure:
             raise ValueError(f"{label} query lies outside the calibrated physical hull")
         return result
 
+    def _physical_vertex_weights(self, query: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return one common interpolation stencil for a physical query.
+
+        A complete Cartesian cell is interpolated multilinearly.  This is
+        important on the sampled alpha/theta/AR grid: asking at an exact alpha
+        or aspect ratio must not mix the adjacent planes merely because a
+        Delaunay tessellation chose a diagonal through the cube.  Incomplete
+        cells (for example a deliberately truncated low-theta campaign) fall
+        back to barycentric interpolation on the measured convex hull.
+        """
+        exact_index = self._coordinate_index.get(
+            tuple(float(value) for value in query))
+        if exact_index is not None:
+            return np.array([exact_index], dtype=int), np.ones(1, dtype=float)
+
+        choices = []
+        for axis in range(3):
+            values = self._coordinate_axes[axis]
+            matched = np.flatnonzero(np.isclose(values, query[axis], atol=1.0e-12,
+                                                 rtol=0.0))
+            if len(matched):
+                choices.append([(float(values[matched[0]]), 1.0)])
+                continue
+            upper = int(np.searchsorted(values, query[axis]))
+            if upper == 0 or upper == len(values):
+                raise ValueError("physical query lies outside the calibrated hull")
+            lower = upper - 1
+            span = float(values[upper] - values[lower])
+            high_weight = float((query[axis] - values[lower]) / span)
+            choices.append([(float(values[lower]), 1.0 - high_weight),
+                            (float(values[upper]), high_weight)])
+
+        tensor_indices, tensor_weights = [], []
+        tensor_complete = True
+        for vertex in itertools.product(*choices):
+            coordinate = tuple(item[0] for item in vertex)
+            index = self._coordinate_index.get(coordinate)
+            if index is None:
+                tensor_complete = False
+                break
+            tensor_indices.append(index)
+            tensor_weights.append(float(np.prod([item[1] for item in vertex])))
+        if tensor_complete:
+            return (np.asarray(tensor_indices, dtype=int),
+                    np.asarray(tensor_weights, dtype=float))
+
+        tri = self._physical_triangulation
+        if tri is None:
+            raise ValueError("physical query has no complete interpolation cell")
+        simplex = int(tri.find_simplex(query))
+        if simplex < 0:
+            raise ValueError("physical query lies outside the calibrated hull")
+        transform = tri.transform[simplex]
+        leading = transform[:3] @ (query - transform[3])
+        weights = np.r_[leading, 1.0 - np.sum(leading)]
+        if np.any(weights < -1.0e-10):
+            raise ValueError("physical interpolation produced invalid barycentric weights")
+        weights = np.maximum(weights, 0.0)
+        weights /= np.sum(weights)
+        return tri.simplices[simplex].astype(int), weights
+
+    @staticmethod
+    def _weighted(values: np.ndarray, indices: np.ndarray,
+                  weights: np.ndarray) -> np.ndarray:
+        return np.tensordot(weights, np.asarray(values)[indices], axes=(0, 0))
+
+    def physical_axis_bounds(self, axis: int) -> tuple[float, float]:
+        """Return the closed calibrated bounds of one physical coordinate."""
+        values = self._coordinate_axes[int(axis)]
+        return float(values[0]), float(values[-1])
+
+    def physical_theta_bounds(self, alpha: float,
+                              aspect_ratio: float) -> tuple[float, float]:
+        """Return theta support at one (possibly interpolated) alpha and AR."""
+        supported = []
+        for theta in self._coordinate_axes[1]:
+            try:
+                self._physical_vertex_weights(np.array(
+                    [float(alpha), float(theta), float(aspect_ratio)]))
+            except ValueError:
+                continue
+            supported.append(float(theta))
+        if not supported:
+            raise ValueError(
+                "physical alpha/aspect-ratio query has no calibrated theta support")
+        return min(supported), max(supported)
+
+    STATE_CACHE_LIMIT = 4096
+
     def kernel_state(self, alpha: float, theta: float, aspect_ratio: float,
-                     features: np.ndarray) -> dict:
-        features = np.asarray(features, dtype=float)
-        if features.shape != (len(FEATURE_NAMES),):
-            raise ValueError("variational closure requires fourteen cell features")
+                     features: np.ndarray | None = None,
+                     domain_features: np.ndarray | None = None) -> dict:
+        """Collision-law state at (alpha, theta, AR).
+
+        On a fitted node the node's own laws are used; elsewhere the stencil
+        of Section 14 mixes neighbouring node laws.  The law depends on the
+        cell only through (alpha, theta, AR): every pair-level dependence is
+        carried by the pair's own variables inside the kernels.  ``features``
+        is accepted for call compatibility and ignored.
+        """
         self.total_queries += 1
-        ood = bool(np.any(features < self.feature_lower) or np.any(features > self.feature_upper))
-        self.out_of_domain_queries += int(ood)
+        key = (round(float(alpha), 9), round(float(theta), 3),
+               round(float(aspect_ratio), 9))
+        hit = self._state_cache.get(key)
+        if hit is not None:
+            self._state_cache_hits += 1
+            return hit
         query = np.array([alpha, theta, aspect_ratio], dtype=float)
-        p_exch = float(self._interpolate(self.coordinates, self.p_exch, query, "p_exch",
-                                         self._interpolators.get("p_exch")))
-        eparams = self._interpolate(self.coordinates, self.energy_parameters, query,
-                                    "energy parameters",
-                                    self._interpolators.get("energy_parameters")).astype(float)
-        aparams = self._interpolate(self.coordinates, self.angular_parameters, query,
-                                    "angular parameters",
-                                    self._interpolators.get("angular_parameters")).astype(float)
-        etable = self._interpolate(self.coordinates, self.energy_tables, query,
-                                   "energy quantiles",
-                                   self._interpolators.get("energy_tables")).astype(float)
-        atable = self._interpolate(self.coordinates, self.angular_tables, query,
-                                   "angular quantiles",
-                                   self._interpolators.get("angular_tables")).astype(float)
-        beta = np.zeros(len(FEATURE_NAMES))
-        if self.corrections_enabled:
-            beta = self._interpolate(self.beta_coordinates, self.beta,
-                                     query, "lambda1 coefficients",
-                                     self._interpolators.get("beta")).astype(float)
-            exact_beta = self._exact(self.beta_coordinates, query)
-            if len(exact_beta):
-                deployed = self.beta_deployed[exact_beta[0]]
-            else:
-                deployed = np.asarray(
-                    self._interpolators["beta_mask"](query[None, :]))[0] >= 0.5
-            beta *= deployed
-            correction = float(beta @ features)
-            eparams[0] += correction
-        else:
-            correction = 0.0
-        exact = self._exact(self.coordinates, query)
+        vertex_indices, vertex_weights = self._physical_vertex_weights(query)
+        weighted = lambda values: self._weighted(values, vertex_indices, vertex_weights)
+        exact = (vertex_indices[:1]
+                 if len(vertex_indices) == 1
+                 and np.all(np.isclose(self.coordinates[vertex_indices[0]], query,
+                                       atol=1.0e-12, rtol=0.0))
+                 else np.empty(0, dtype=int))
         joint = bool(len(exact) and self.joint_deployed[exact[0]])
         joint_parameters = self.joint_parameters[exact[0]].copy() if joint else None
         if not len(exact) and "joint_parameters" in self._interpolators:
@@ -232,27 +445,90 @@ class VariationalClosure:
                     self._interpolators["joint_parameters"](query[None, :]))[0]
                 if np.all(np.isfinite(candidate)):
                     joint, joint_parameters = True, candidate.astype(float)
-        return {"p_exch": p_exch, "energy_parameters": eparams,
-                "angular_parameters": aparams, "energy_quantiles": etable,
-                "angular_quantiles": atable, "beta": beta, "out_of_domain": ood,
-                "energy_corrected": correction != 0.0,
-                "joint_deployed": joint, "joint_parameters": joint_parameters}
+        state = {"p_exch": float(weighted(self.p_exch)),
+                 "energy_parameters": weighted(self.energy_parameters).astype(float),
+                 "energy_vertex_indices": vertex_indices,
+                 "energy_vertex_weights": vertex_weights,
+                 "parameter_correction": {}, "energy_correction": 0.0,
+                 "fitted_mean_loss": float(weighted(self.energy_mean_loss)),
+                 "energy_anchor": weighted(self.energy_anchor).astype(float),
+                 "xi_enhancement": weighted(self.xi_enhancement).astype(float),
+                 "angular_parameters": weighted(self.angular_parameters).astype(float),
+                 "angular_quantiles": weighted(self.angular_tables).astype(float),
+                 "out_of_domain": False, "correction_fallback": False,
+                 "energy_corrected": False,
+                 "joint_deployed": joint, "joint_parameters": joint_parameters}
+        if len(self._state_cache) >= self.STATE_CACHE_LIMIT:
+            self._state_cache.clear()
+        self._state_cache[key] = state
+        return state
 
-    def sample_energy(self, state: dict, rng: np.random.Generator) -> float:
-        if not state["energy_corrected"]:
-            return float(np.interp(rng.random(), self.probability, state["energy_quantiles"]))
-        parameter = state["energy_parameters"]
-        candidates = [0.0, 1.0]
-        if parameter[1] < 0.0:
-            vertex = -parameter[0] / (2.0 * parameter[1])
-            if 0.0 < vertex < 1.0:
-                candidates.append(vertex)
-        maximum = max(parameter[0] * z + parameter[1] * z * z for z in candidates)
-        for _ in range(10000):
-            z = rng.beta(2.0, 2.0)
-            if rng.random() <= np.exp(parameter[0] * z + parameter[1] * z * z - maximum):
-                return float(z)
-        raise RuntimeError("tilted energy rejection sampler failed")
+    def _energy_quantile_row(self, state: dict, z_in: float, loss: float,
+                             loss_mean: float = 0.0) -> np.ndarray:
+        """Evaluate at each fitted node, then interpolate the distributions.
+
+        Interpolating lambda, the a-grid and a quantile table independently is
+        not equivalent because the conditional law is nonlinear in all three.
+        That old order manufactured two extra HCS fixed points near theta=1.
+        Blending the neighbouring conditional quantiles is a one-dimensional
+        Wasserstein interpolation and remains a valid monotone quantile law.
+        It is the interpolation actually justified by the exported tables.
+        """
+        indices = np.asarray(state["energy_vertex_indices"], dtype=int)
+        weights = np.asarray(state["energy_vertex_weights"], dtype=float)
+        result = np.zeros_like(self.probability, dtype=float)
+        clamped = False
+        for index, physical_weight in zip(indices, weights):
+            lambda1, _, _, lambda4 = self.energy_parameters[index]
+            covariate = float(loss)
+            fitted_mean = float(self.energy_mean_loss[index])
+            if loss_mean > 0.0 and fitted_mean > 0.0:
+                covariate *= fitted_mean / float(loss_mean)
+            coefficients = self.energy_memory_coefficients[index]
+            if self.energy_kernel_forms[index] == "conditional_logit_cubic_v3":
+                z = min(max(float(z_in), 1.0e-12), 1.0 - 1.0e-12)
+                scale = max(float(self.energy_memory_scale[index]), 1.0e-8)
+                standardized = ((np.log(z / (1.0 - z))
+                                 - float(self.energy_memory_center[index])) / scale)
+                x = float(np.tanh(standardized / 2.0))
+                memory = float(coefficients @ np.array([x, x * x, x * x * x]))
+            else:
+                memory = float(coefficients[0] * float(z_in))
+            a = float(lambda1 + memory + lambda4 * covariate)
+            grid = self.energy_a_grid[index]
+            if a < grid[0] or a > grid[-1]:
+                clamped = True
+                a = min(max(a, grid[0]), grid[-1])
+            upper = int(np.searchsorted(grid, a).clip(1, len(grid) - 1))
+            lower = upper - 1
+            span = grid[upper] - grid[lower]
+            blend = 0.0 if span <= 0.0 else (a - grid[lower]) / span
+            table = self.energy_tables[index]
+            result += physical_weight * ((1.0 - blend) * table[lower] + blend * table[upper])
+        self.energy_axis_clamps += int(clamped)
+        return result
+
+    def mean_energy(self, state: dict, z_in: float, loss: float,
+                    loss_mean: float = 0.0) -> float:
+        """Conditional mean of the exact quantile law deployed at runtime."""
+        row = self._energy_quantile_row(state, z_in, loss, loss_mean)
+        return float(_trapezoid(row, self.probability))
+
+    def sample_energy(self, state: dict, z_in: float, loss: float,
+                      rng: np.random.Generator, loss_mean: float = 0.0) -> float:
+        """Draw the outgoing partition from the memory kernel.
+
+        ``z_in`` is the pair's incoming translational share and ``loss`` the
+        fractional energy the collision removes.  They enter only through
+        ``a = lambda1 + memory(z_in) + lambda4 loss``; the table is indexed by
+        that scalar, so the draw is a bilinear interpolation and costs the same
+        as the memoryless one it replaces.
+        """
+        # The loss has two jobs and they must not be confused. How much energy
+        # is destroyed uses the raw BL draw. The row helper rescales only the
+        # routing covariate onto the CTC loss scale used to fit lambda4.
+        row = self._energy_quantile_row(state, z_in, loss, loss_mean)
+        return float(np.interp(rng.random(), self.probability, row))
 
     def sample_direction(self, ghat_pre: np.ndarray, state: dict, z: float,
                          rng: np.random.Generator) -> np.ndarray:

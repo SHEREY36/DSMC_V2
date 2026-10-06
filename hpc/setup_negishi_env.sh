@@ -32,6 +32,7 @@ CONDA_PACKAGES=(
     'numpy>=1.23'
     'scipy>=1.9'
     'scikit-learn>=1.2'
+    'matplotlib>=3.7'
     'pyyaml>=6'
     'pytest>=8'
 )
@@ -52,6 +53,7 @@ fi
     -e "$ROOT/Coll_Models_v2" \
     -e "$ROOT/DSMC_0D_v2"
 
-"$ENV_DIR/bin/python" -c \
-    'import numpy, scipy, sklearn, yaml, dsmc_v2_contracts, coll_models_v2, dsmc_v2; print("DSMC_V2 Python environment ready")'
+DSMC_V2_PYTHON="$ENV_DIR/bin/python" "$ROOT/hpc/python.sh" \
+    "$ROOT/hpc/verify_python_environment.py"
+printf 'DSMC_V2 Python environment ready: %s\n' "$ENV_DIR"
 "$ENV_DIR/bin/python" --version

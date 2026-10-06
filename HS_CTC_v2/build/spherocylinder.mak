@@ -13,7 +13,8 @@ constants_mod.o \
 rng_mod.o \
 output_mod.o \
 particle_mod.o \
-run_param_mod.o
+run_param_mod.o \
+replay_mod.o
 
 OBJS = \
 calc_force_dem.o \
@@ -38,6 +39,9 @@ particle_mod.o : $(MODDIR)/particle_mod.f90
 	$(FC) $(FCFLAGS) -c $<
 	
 run_param_mod.o : $(MODDIR)/run_param_mod.f90
+	$(FC) $(FCFLAGS) -c $<
+
+replay_mod.o : $(MODDIR)/replay_mod.f90 run_param_mod.o
 	$(FC) $(FCFLAGS) -c $<
 
 constants_mod.o : $(MODDIR)/constants_mod.f90

@@ -21,6 +21,7 @@ class NTCWorkspace:
         self.abs_cr = None
         self.norm = None
         self.mask = None
+        self.last_violations = 0
         self.ensure_capacity(capacity)
 
     def ensure_capacity(self, n):
@@ -77,6 +78,9 @@ class NTCWorkspace:
         np.abs(self.cr[:n], out=self.abs_cr[:n])
 
         vrmax_temp = float(np.max(self.abs_cr[:n]))
+        # Candidates above the majorant are accepted with probability 1
+        # instead of |cr|/vrmax: the only way NTC itself biases the rate.
+        self.last_violations = int(np.count_nonzero(self.abs_cr[:n] > vrmax))
         self.rng.random(n, out=self.rand[:n])
         np.multiply(self.rand[:n], vrmax, out=self.rand[:n])
         np.greater_equal(self.abs_cr[:n], self.rand[:n], out=self.mask[:n])
