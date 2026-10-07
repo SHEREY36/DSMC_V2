@@ -125,7 +125,7 @@ HCS=$(id "$(sbatch --parsable "${Q[@]}" --time=$HCS_TIME --kill-on-invalid-dep=y
   --array="0-$((HCS_ROWS - 1))" --export="$TABLE_ENV" \
   hpc/hcs_encounter_array.slurm "$HCS_MANIFEST" "$MODEL/closure_v2.npz")")
 ANALYSIS=$(id "$(sbatch --parsable "${S[@]}" --kill-on-invalid-dep=yes --dependency=afterany:$USF:$HCS \
-  --export="$TABLE_ENV" hpc/analyze_usf_encounter.slurm "$TAG")")
+  --export="$TABLE_ENV,USF_BENCHMARK=DSMC_0D_v2/reference/usf_dem_and_legacy_v1.csv" hpc/analyze_usf_encounter.slurm "$TAG")")
 cat <<MSG
 final campaign $TAG on QOS $QOS   model folder $MODEL
   CTC theta planes  $CTC        ($(( $(wc -l < "$THETA_MANIFEST") - 1 )) nodes)

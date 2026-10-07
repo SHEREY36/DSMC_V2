@@ -1,0 +1,42 @@
+{
+  "schema_version": "dem_reference_provenance_v2",
+  "contact_model_id": "C1",
+  "damp_velocity": "contact",
+  "role": "independent_comparison_only_not_closure_calibration",
+  "lammps_repository_revision_at_campaign_start": "ce7a89dc70d28551a3139bd43892a56a08872d52",
+  "lammps_binary_sha256": "966b9dda94e14bfffb2f69b0a9b8b2118ee1cb6b829e0473585ce2202afc3c16",
+  "campaign_record": "2026-10-06T050709+0000_production_start.json",
+  "campaign_tag": "C1_20261005",
+  "hcs": {
+    "frozen_path": "DSMC_0D_v2/reference/hcs_dem_C1.csv",
+    "frozen_sha256": "8a9f919ea44bc4e27d7d4e78fa061a880769aeec434075cbc7478c2e42478c90",
+    "rows": 66,
+    "sources": [
+      {
+        "relative_path": "runs/fresh_hcs/analysis/summary.csv",
+        "sha256": "bde90a9f902edbb2f07ceb802b72d47053c4241ac91c6c3b903ae714616ef59b"
+      }
+    ]
+  },
+  "usf": {
+    "frozen_path": "DSMC_0D_v2/reference/usf_dem_C1.csv",
+    "frozen_sha256": "ca6dee6b69b3c9cd88705c594bdf5b8834960b3da1de1abbbefab72b431e166c",
+    "rows": 40,
+    "sources": [
+      {
+        "relative_path": "runs/fresh_usf/s1/summary.csv",
+        "sha256": "026c30d2028c1c47031a739565c7aa84947ec1648f398d50b785e36332e63c98"
+      },
+      {
+        "relative_path": "runs/fresh_usf/s2/summary.csv",
+        "sha256": "96a9355b68916d034967970e28edd2085319e4eea272d0569647d8e46d72e5df"
+      }
+    ],
+    "benchmark_path": "DSMC_0D_v2/reference/usf_benchmark_C1.csv",
+    "benchmark_sha256": "3b6a36abdb0e0afe7df06364d8d7e71c0477527aaa206ced19824feba3b62fef"
+  },
+  "statistics": {
+    "hcs": "mean over seeds; *_se = sample std / sqrt(seeds)",
+    "usf": "mean over realizations; *_se = sqrt(sum of block se^2) / n; *_seed_spread = sample std of the realizations"
+  }
+}

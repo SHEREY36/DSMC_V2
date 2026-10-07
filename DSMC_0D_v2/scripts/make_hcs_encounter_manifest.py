@@ -26,14 +26,15 @@ def main():
     parser.add_argument("--replicates", type=int, default=2)
     parser.add_argument("--arms", default="encounter_memory,contact_legacy")
     parser.add_argument("--dem-reference", default=None,
-                        help="validate at every coordinate of this DEM HCS table "
-                             "(DSMC_0D_v2/reference/hcs_dem_fresh_v1.csv), from an "
+                        help="validate at every rod coordinate of this DEM HCS table "
+                             "(e.g. DSMC_0D_v2/reference/hcs_dem_C1.csv), from an "
                              "equipartition start as the DEM runs are")
     args = parser.parse_args()
     rows = []
     if args.dem_reference:
+        # rods only: the closure grid starts at AR 1.1 (the DEM sphere rows are a DEM check)
         coordinates = [(float(r["alpha"]), float(r["AR"]), float(r["theta_star"]))
-                       for r in csv.DictReader(open(args.dem_reference))]
+                       for r in csv.DictReader(open(args.dem_reference)) if float(r["AR"]) >= 1.1 - 1e-9]
         coordinates += [(1.0, 2.0, 1.0), (1.0, 3.0, 1.0)]
         starts = (1.0,)
     else:

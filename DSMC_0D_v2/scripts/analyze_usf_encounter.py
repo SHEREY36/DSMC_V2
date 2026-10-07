@@ -74,7 +74,9 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", required=True)
-    parser.add_argument("--benchmark", default="DSMC_0D_v2/reference/usf_dem_and_legacy_v1.csv")
+    parser.add_argument("--benchmark", required=True,
+                        help="DEM USF table, e.g. DSMC_0D_v2/reference/usf_benchmark_C1.csv "
+                             "(usf_dem_and_legacy_v1.csv for Model R)")
     parser.add_argument("--encounter-table", default="DSMC_0D_v2/models/encounter_cross_section_v2.json")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -116,7 +118,8 @@ def main() -> None:
             row.update({key: val for key, val in ref.items() if key not in ("AR", "alpha")})
             for q in ("Tstar", "theta", "Pk_xy", "N1k", "N2k", "Pk_yy", "Pk_zz"):
                 row[f"{q}_vs_DEM"] = row[q] / ref[f"DEM_{q}"] - 1.0
-                row[f"legacy_{q}_vs_DEM"] = ref[f"legacy_{q}"] / ref[f"DEM_{q}"] - 1.0
+                if f"legacy_{q}" in ref:          # the Model R benchmark also carries a legacy model
+                    row[f"legacy_{q}_vs_DEM"] = ref[f"legacy_{q}"] / ref[f"DEM_{q}"] - 1.0
             row["collisions_vs_DEM"] = row["contacts_per_strain"] / ref["DEM_collisions_per_strain"] - 1.0
         rows.append(row)
     write_csv(output, rows)
@@ -130,7 +133,7 @@ def main() -> None:
                         for q in ("Tstar", "theta", "Pk_xy", "N1k")}
         summary[arm]["collisions"] = {"median_abs": float(np.median([abs(r["collisions_vs_DEM"]) for r in g]))}
         summary[arm]["cases"] = len(g)
-    legacy = {(r["AR"], r["alpha"]): r for r in rows if "Tstar_vs_DEM" in r}.values()
+    legacy = {(r["AR"], r["alpha"]): r for r in rows if "legacy_Tstar_vs_DEM" in r}.values()
     if legacy:
         summary["legacy_study_reference"] = {
             q: {"median_abs": float(np.nanmedian([abs(r[f"legacy_{q}_vs_DEM"]) for r in legacy])),

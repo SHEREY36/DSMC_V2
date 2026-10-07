@@ -40,6 +40,11 @@ def main():
     parser.add_argument("--tag", default="final_v1_val")
     parser.add_argument("--previous", default="alpha_v1_20261001")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--dem-reference", required=True,
+                        help="DEM HCS table, e.g. DSMC_0D_v2/reference/hcs_dem_C1.csv")
+    parser.add_argument("--ctc-roots", default=None,
+                        help="exact-CTC theta* (Coll_Models_v2/scripts/ctc_hcs_root.py output); "
+                             "default: the Model R values below")
     args = parser.parse_args()
     out = Path(args.output); out.mkdir(parents=True, exist_ok=True)
     final = usf_table(f"results/validation/usf/usf_encounter_{args.tag}/usf_vs_dem.csv")
@@ -80,7 +85,11 @@ def main():
     hcs = {(float(r["AR"]), round(float(r["alpha"]), 2)): r for r in
            csv.DictReader(open(f"results/validation/hcs/hcs_encounter_{args.tag}/hcs_vs_dem.csv"))}
     dem = {(float(r["AR"]), round(float(r["alpha"]), 2)): float(r["theta_star"])
-           for r in csv.DictReader(open("DSMC_0D_v2/reference/hcs_dem_fresh_v1.csv"))}
+           for r in csv.DictReader(open(args.dem_reference))}
+    ctc = CTC_HCS
+    if args.ctc_roots:
+        ctc = {(round(p["AR"], 2), round(p["alpha"], 2)): p["theta_star"]
+               for p in json.load(open(args.ctc_roots))["planes"] if p.get("theta_star") is not None}
     fig, (left, right) = plt.subplots(1, 2, figsize=(13, 5.2))
     for ar in sorted({k[0] for k in dem}):
         keys = sorted(k for k in dem if k[0] == ar and k in hcs)
@@ -90,11 +99,11 @@ def main():
                   mfc="white", ms=6, lw=1.2)
         right.plot(a, [100 * float(hcs[k]["vs_DEM"]) for k in keys], "-", color=COLORS[ar],
                    marker=MARKERS[ar], ms=5, lw=1.4)
-        ck = sorted(k for k in CTC_HCS if k[0] == ar)
+        ck = sorted(k for k in ctc if k[0] == ar and k in dem)
         if ck:
-            left.plot([k[1] for k in ck], [CTC_HCS[k] for k in ck], "*", color=COLORS[ar], ms=11,
+            left.plot([k[1] for k in ck], [ctc[k] for k in ck], "*", color=COLORS[ar], ms=11,
                       markeredgecolor="k", markeredgewidth=0.6, ls="none")
-            right.plot([k[1] for k in ck], [100 * (CTC_HCS[k] / dem[k] - 1) for k in ck], "*",
+            right.plot([k[1] for k in ck], [100 * (ctc[k] / dem[k] - 1) for k in ck], "*",
                        color=COLORS[ar], ms=11, markeredgecolor="k", markeredgewidth=0.6, ls="none")
     left.set_yscale("log"); left.set_ylabel(r"HCS $\theta^*=T_{tr}/T_{rot}$")
     right.axhspan(-5, 5, color="0.92", zorder=0); right.axhline(0, color="k", lw=0.8)

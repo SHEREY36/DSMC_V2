@@ -22,6 +22,7 @@ status=0
 hpc/python.sh DSMC_0D_v2/scripts/analyze_usf_encounter.py \
   --results "results/validation/usf/usf_encounter_${TAG}" \
   --encounter-table "${ENCOUNTER_TABLE:-DSMC_0D_v2/models/encounter_cross_section_v2.json}" \
+  --benchmark "${USF_BENCHMARK:?set USF_BENCHMARK to the DEM USF table}" \
   --output "results/validation/usf/usf_encounter_${TAG}/usf_vs_dem.csv" || status=1
 hpc/python.sh DSMC_0D_v2/scripts/analyze_hcs_encounter.py \
   --manifest "manifests/hcs_encounter_${TAG}.csv" \
